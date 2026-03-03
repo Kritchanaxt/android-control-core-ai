@@ -132,9 +132,9 @@ std::vector<TextBox> getTextBoxes(const cv::Mat & src, float boxScoreThresh, flo
     in_pad.substract_mean_normalize(meanValues, normValues);
     ncnn::Extractor extractor = dbNet.create_extractor();
 
-    extractor.input("input0", in_pad);
+    extractor.input("input", in_pad);
     ncnn::Mat out;
-    extractor.extract("out1", out);
+    extractor.extract("output", out);
 
     cv::Mat fMapMat(in_pad.h, in_pad.w, CV_32FC1, (float*)out.data);
     cv::Mat norfMapMat;
@@ -207,7 +207,7 @@ TextLine getTextLine(const cv::Mat & src)
     extractor.input("input", input);
 
     ncnn::Mat out;
-    extractor.extract("out", out);
+    extractor.extract("output", out);
     float* floatArray = (float*)out.data;
     std::vector<float> outputData(floatArray, floatArray + out.h * out.w);
     TextLine res = scoreToTextLine(outputData, out.h, out.w);

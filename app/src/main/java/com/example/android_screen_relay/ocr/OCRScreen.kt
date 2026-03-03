@@ -369,11 +369,88 @@ fun OCRResultScreen(
                             put("type", "ocr_result")
                             put("device", device.toJson())
                             put("resource", resource.toJson())
+                            
+                            val ocrData = JSONObject()
                             try {
-                                put("ocr_data", JSONArray(jsonResult))
-                            } catch(e: Exception) {
-                                put("ocr_data", jsonResult)
+                                val jsonArr = JSONArray(jsonResult)
+                                val textLines = JSONObject()
+                                var recognizedText = ""
+                                var totalConfidence = 0.0
+
+                                if (jsonArr.length() > 0) {
+                                    val sb = StringBuilder()
+                                    for (i in 0 until jsonArr.length()) {
+                                        val item = jsonArr.getJSONObject(i)
+                                        val text = item.getString("label")
+                                        val conf = item.getDouble("prob")
+                                        // "box": [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]
+                                        val box = item.getJSONArray("box")
+
+                                        val lineObj = JSONObject()
+                                        lineObj.put("id", "line_${i + 1}")
+                                        lineObj.put("text", text)
+                                        lineObj.put("confidence", conf)
+
+                                        // Calculate bounding box from 4 points
+                                        val xs = mutableListOf<Double>()
+                                        val ys = mutableListOf<Double>()
+                                        for (j in 0 until box.length()) {
+                                            val p = box.getJSONArray(j)
+                                            xs.add(p.getDouble(0))
+                                            ys.add(p.getDouble(1))
+                                        }
+                                        val minX = xs.minOrNull() ?: 0.0
+                                        val minY = ys.minOrNull() ?: 0.0
+                                        val maxX = xs.maxOrNull() ?: 0.0
+                                        val maxY = ys.maxOrNull() ?: 0.0
+                                        
+                                        val posObj = JSONObject()
+                                        posObj.put("x", minX)
+                                        posObj.put("y", minY)
+                                        posObj.put("width", maxX - minX)
+                                        posObj.put("height", maxY - minY)
+                                        lineObj.put("position", posObj)
+                                        
+                                        textLines.put("line_${i + 1}", lineObj)
+                                        
+                                        if (sb.isNotEmpty()) sb.append(" ")
+                                        sb.append(text)
+                                        totalConfidence += conf
+                                    }
+                                    recognizedText = sb.toString()
+                                    totalConfidence /= jsonArr.length()
+                                }
+
+                                ocrData.put("document_type", "image")
+                                ocrData.put("recognized_text", recognizedText)
+                                ocrData.put("confidence", totalConfidence)
+                                ocrData.put("text_lines", textLines)
+
+                                val dimensions = JSONObject()
+                                dimensions.put("width", image.width)
+                                dimensions.put("height", image.height)
+                                dimensions.put("unit", "pixel")
+                                ocrData.put("dimensions", dimensions)
+
+                                // Calculate simulated file size for JPG
+                                val stream = java.io.ByteArrayOutputStream()
+                                image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                                val sizeBytes = stream.size()
+
+                                ocrData.put("fast_rate", 0)
+                                ocrData.put("rack_cooling_rate", 0)
+                                ocrData.put("processing_time", timeMs) // Ensure timeMs is Long/Double
+                                ocrData.put("text_object_count", jsonArr.length())
+                                ocrData.put("output_path", "")
+                                ocrData.put("file_extension", "jpg")
+                                ocrData.put("file_size", sizeBytes)
+
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                ocrData.put("error", e.message)
+                                try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
                             }
+                            put("ocr_data", ocrData)
                             put("timestamp", System.currentTimeMillis())
                         }
                         
