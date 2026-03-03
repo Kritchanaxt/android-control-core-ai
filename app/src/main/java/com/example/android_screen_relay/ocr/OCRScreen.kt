@@ -315,232 +315,230 @@ fun OCRResultScreen(
     var fullJsonOutput by remember { mutableStateOf("") }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
 
-    Column(modifier = Modifier.fillMaxSize().background(Color.White)) {
-        // 1. App Bar (PaddleOCR style)
-        TopAppBar(
-            title = { Text("PaddleOCR", color = Color.White) },
-            navigationIcon = {
-                IconButton(onClick = onClear) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF00796B))
-        )
-        
-        // 2. Operation Area (Control Row) - Modified for "OCR" and "Send"
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFFE0E0E0)) // Light gray background
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            // "OCR" Button
-            Button(
-                onClick = {
-                    onRunModel()
-                },
-                enabled = !isProcessing,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray, contentColor = Color.Black),
-                shape = RoundedCornerShape(0.dp),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier.weight(1f).height(40.dp)
-            ) {
-                Text(if (isProcessing) "Running..." else "OCR", fontSize = 12.sp)
-            }
-            
-            // "Send" Button
-            Button(
-                onClick = {
-                    onRunModel() // Ensure model runs first if not run? No, user logic flow.
-                    
-                    if (jsonResult == "[]" || jsonResult.isEmpty()) {
-                        Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
-                        return@Button
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { 
+                    Column {
+                        Text("OCR Result", style = MaterialTheme.typography.titleMedium)
+                        if (timeMs > 0) {
+                            Text("Process time: ${timeMs}ms", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
                     }
-                    
-                    // Generate Full JSON
-                     scope.launch(Dispatchers.IO) {
-                        val device = SystemMonitor.getDeviceInfo(context)
-                        val resource = SystemMonitor.getCurrentResourceUsage(context)
-                        
-                        val payload = JSONObject().apply {
-                            put("type", "ocr_result")
-                            put("device", device.toJson())
-                            put("resource", resource.toJson())
+                },
+                navigationIcon = {
+                    IconButton(onClick = onClear) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onGalleryClick) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = "Import")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface
+                )
+            )
+        },
+        bottomBar = {
+            BottomAppBar(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                contentPadding = PaddingValues(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Start OCR Button
+                    Button(
+                        onClick = onRunModel,
+                        enabled = !isProcessing,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        if (isProcessing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Processing...")
+                        } else {
+                            Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Scan Text")
+                        }
+                    }
+
+                    // Send JSON Button
+                    Button(
+                        onClick = {
+                            if (jsonResult == "[]" || jsonResult.isEmpty()) {
+                                Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
                             
-                            val ocrData = JSONObject()
-                            try {
-                                val jsonArr = JSONArray(jsonResult)
-                                val textLines = JSONObject()
-                                var recognizedText = ""
-                                var totalConfidence = 0.0
+                            // Generate Full JSON
+                             scope.launch(Dispatchers.IO) {
+                                val device = SystemMonitor.getDeviceInfo(context)
+                                val resource = SystemMonitor.getCurrentResourceUsage(context)
+                                
+                                val payload = JSONObject().apply {
+                                    put("type", "ocr_result")
+                                    put("device", device.toJson())
+                                    put("resource", resource.toJson())
+                                    
+                                    val ocrData = JSONObject()
+                                    try {
+                                        val jsonArr = JSONArray(jsonResult)
+                                        val textLines = JSONObject()
+                                        var recognizedText = ""
+                                        var totalConfidence = 0.0
 
-                                if (jsonArr.length() > 0) {
-                                    val sb = StringBuilder()
-                                    for (i in 0 until jsonArr.length()) {
-                                        val item = jsonArr.getJSONObject(i)
-                                        val text = item.getString("label")
-                                        val conf = item.getDouble("prob")
-                                        // "box": [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]
-                                        val box = item.getJSONArray("box")
+                                        if (jsonArr.length() > 0) {
+                                            val sb = StringBuilder()
+                                            for (i in 0 until jsonArr.length()) {
+                                                val item = jsonArr.getJSONObject(i)
+                                                val text = item.getString("label")
+                                                val conf = item.getDouble("prob")
+                                                // "box": [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]
+                                                val box = item.getJSONArray("box")
 
-                                        val lineObj = JSONObject()
-                                        lineObj.put("id", "line_${i + 1}")
-                                        lineObj.put("text", text)
-                                        lineObj.put("confidence", conf)
+                                                val lineObj = JSONObject()
+                                                lineObj.put("id", "line_${i + 1}")
+                                                lineObj.put("text", text)
+                                                lineObj.put("confidence", conf)
 
-                                        // Calculate bounding box from 4 points
-                                        val xs = mutableListOf<Double>()
-                                        val ys = mutableListOf<Double>()
-                                        for (j in 0 until box.length()) {
-                                            val p = box.getJSONArray(j)
-                                            xs.add(p.getDouble(0))
-                                            ys.add(p.getDouble(1))
+                                                // Calculate bounding box from 4 points
+                                                val xs = mutableListOf<Double>()
+                                                val ys = mutableListOf<Double>()
+                                                for (j in 0 until box.length()) {
+                                                    val p = box.getJSONArray(j)
+                                                    xs.add(p.getDouble(0))
+                                                    ys.add(p.getDouble(1))
+                                                }
+                                                val minX = xs.minOrNull() ?: 0.0
+                                                val minY = ys.minOrNull() ?: 0.0
+                                                val maxX = xs.maxOrNull() ?: 0.0
+                                                val maxY = ys.maxOrNull() ?: 0.0
+                                                
+                                                val posObj = JSONObject()
+                                                posObj.put("x", minX)
+                                                posObj.put("y", minY)
+                                                posObj.put("width", maxX - minX)
+                                                posObj.put("height", maxY - minY)
+                                                lineObj.put("position", posObj)
+                                                
+                                                textLines.put("line_${i + 1}", lineObj)
+                                                
+                                                if (sb.isNotEmpty()) sb.append(" ")
+                                                sb.append(text)
+                                                totalConfidence += conf
+                                            }
+                                            recognizedText = sb.toString()
+                                            totalConfidence /= jsonArr.length()
                                         }
-                                        val minX = xs.minOrNull() ?: 0.0
-                                        val minY = ys.minOrNull() ?: 0.0
-                                        val maxX = xs.maxOrNull() ?: 0.0
-                                        val maxY = ys.maxOrNull() ?: 0.0
-                                        
-                                        val posObj = JSONObject()
-                                        posObj.put("x", minX)
-                                        posObj.put("y", minY)
-                                        posObj.put("width", maxX - minX)
-                                        posObj.put("height", maxY - minY)
-                                        lineObj.put("position", posObj)
-                                        
-                                        textLines.put("line_${i + 1}", lineObj)
-                                        
-                                        if (sb.isNotEmpty()) sb.append(" ")
-                                        sb.append(text)
-                                        totalConfidence += conf
+
+                                        ocrData.put("document_type", "image")
+                                        ocrData.put("recognized_text", recognizedText)
+                                        ocrData.put("confidence", totalConfidence)
+                                        ocrData.put("text_lines", textLines)
+
+                                        val dimensions = JSONObject()
+                                        dimensions.put("width", image.width)
+                                        dimensions.put("height", image.height)
+                                        dimensions.put("unit", "pixel")
+                                        ocrData.put("dimensions", dimensions)
+
+                                        // Calculate simulated file size for JPG
+                                        val stream = java.io.ByteArrayOutputStream()
+                                        image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                                        val sizeBytes = stream.size()
+
+                                        ocrData.put("fast_rate", 0)
+                                        ocrData.put("rack_cooling_rate", 0)
+                                        ocrData.put("processing_time", timeMs) // Ensure timeMs is Long/Double
+                                        ocrData.put("text_object_count", jsonArr.length())
+                                        ocrData.put("output_path", "")
+                                        ocrData.put("file_extension", "jpg")
+                                        ocrData.put("file_size", sizeBytes)
+
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        ocrData.put("error", e.message)
+                                        try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
                                     }
-                                    recognizedText = sb.toString()
-                                    totalConfidence /= jsonArr.length()
+                                    put("ocr_data", ocrData)
+                                    put("timestamp", System.currentTimeMillis())
                                 }
-
-                                ocrData.put("document_type", "image")
-                                ocrData.put("recognized_text", recognizedText)
-                                ocrData.put("confidence", totalConfidence)
-                                ocrData.put("text_lines", textLines)
-
-                                val dimensions = JSONObject()
-                                dimensions.put("width", image.width)
-                                dimensions.put("height", image.height)
-                                dimensions.put("unit", "pixel")
-                                ocrData.put("dimensions", dimensions)
-
-                                // Calculate simulated file size for JPG
-                                val stream = java.io.ByteArrayOutputStream()
-                                image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                                val sizeBytes = stream.size()
-
-                                ocrData.put("fast_rate", 0)
-                                ocrData.put("rack_cooling_rate", 0)
-                                ocrData.put("processing_time", timeMs) // Ensure timeMs is Long/Double
-                                ocrData.put("text_object_count", jsonArr.length())
-                                ocrData.put("output_path", "")
-                                ocrData.put("file_extension", "jpg")
-                                ocrData.put("file_size", sizeBytes)
-
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                ocrData.put("error", e.message)
-                                try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
-                            }
-                            put("ocr_data", ocrData)
-                            put("timestamp", System.currentTimeMillis())
-                        }
-                        
-                        val jsonString = payload.toString(2)
-                        
-                        withContext(Dispatchers.Main) {
-                            fullJsonOutput = jsonString
-                            showJsonDialog = true
-                            
-                            // Send to WebSocket
-                            val service = RelayService.getInstance()
-                            if (service != null) {
-                                service.broadcastMessage(jsonString)
                                 
-                                // Requirement 7: Add Log to System View
-                                com.example.android_screen_relay.LogRepository.addLog(
-                                    component = "OCR",
-                                    event = "send_json",
-                                    data = mapOf("payload_size" to jsonString.length, "blocks" to try { JSONArray(jsonResult).length() } catch(e:Exception){0}),
-                                    type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
-                                )
+                                val jsonString = payload.toString(2)
                                 
-                                // Toast.makeText(context, "Sent & Logged", Toast.LENGTH_SHORT).show()
-                            } else {
-                                Toast.makeText(context, "Service not running", Toast.LENGTH_SHORT).show()
+                                withContext(Dispatchers.Main) {
+                                    fullJsonOutput = jsonString
+                                    showJsonDialog = true
+                                    
+                                    // Send to WebSocket
+                                    val service = RelayService.getInstance()
+                                    if (service != null) {
+                                        service.broadcastMessage(jsonString)
+                                        
+                                        // Requirement 7: Add Log to System View
+                                        com.example.android_screen_relay.LogRepository.addLog(
+                                            component = "OCR",
+                                            event = "send_json",
+                                            data = mapOf("payload_size" to jsonString.length, "blocks" to try { JSONArray(jsonResult).length() } catch(e:Exception){0}),
+                                            type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
+                                        )
+                                        
+                                        // Toast.makeText(context, "Sent & Logged", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Service not running", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             }
-                        }
+                        },
+                        enabled = !isProcessing && jsonResult != "[]",  
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Send Data")
                     }
-                },
-                enabled = !isProcessing && jsonResult != "[]",  
-                colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray, contentColor = Color.Black),
-                shape = RoundedCornerShape(0.dp),
-                contentPadding = PaddingValues(0.dp),
-                modifier = Modifier.weight(1f).height(40.dp)
-            ) {
-                Text("Send JSON", fontSize = 12.sp)
-            }
-
-            Button(
-                 onClick = onGalleryClick,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray, contentColor = Color.Black),
-                shape = RoundedCornerShape(0.dp),
-                contentPadding = PaddingValues(0.dp),
-                 modifier = Modifier.weight(1f).height(40.dp)
-            ) {
-                Text("Import", fontSize = 12.sp)
-            }
-             Button(
-                 onClick = onClear,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.LightGray, contentColor = Color.Black),
-                shape = RoundedCornerShape(0.dp),
-                contentPadding = PaddingValues(0.dp),
-                 modifier = Modifier.weight(1f).height(40.dp)
-            ) {
-                Text("Clear", fontSize = 12.sp)
+                }
             }
         }
-        
-
-        // 3. Status Area (Model Info)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(2.dp, Color.Red)
-                .padding(8.dp)
-        ) {
-            Text("Model: PP-OCRv4 (NCNN)", color = Color.Black, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text("OPENCL: false", color = Color.Black, fontSize = 16.sp)
-            Text("CPU Thread Num: 4", color = Color.Black, fontSize = 16.sp)
-            Text("CPU Power Mode: LITE_POWER_HIGH", color = Color.Black, fontSize = 16.sp)
-            Text("STATUS: ${(try { JSONArray(jsonResult).length() } catch(e:Exception){0})} items (${timeMs}ms)", color = Color.Black, fontSize = 16.sp)
-        }
-        
-        // 4. Image Display Area
+    ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .weight(1f)
-                .background(Color.LightGray)
+                .padding(padding)
+                .background(Color(0xFFF5F5F5))
         ) {
             Image(
                 bitmap = image.asImageBitmap(),
                 contentDescription = "Target Image",
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().padding(16.dp),
                 contentScale = ContentScale.Fit
             )
             
             // Overlay
             val density = LocalContext.current.resources.displayMetrics.density
-            Canvas(modifier = Modifier.fillMaxSize()) {
+            Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 val scaleX = size.width / image.width.toFloat()
                 val scaleY = size.height / image.height.toFloat()
                 
@@ -558,6 +556,10 @@ fun OCRResultScreen(
                          color = android.graphics.Color.RED
                          style = Paint.Style.STROKE
                          strokeWidth = 2f / scale
+                    }
+                    val fillPaint = Paint().apply {
+                        color = android.graphics.Color.parseColor("#33FF0000") // Red with alpha
+                        style = Paint.Style.FILL
                     }
 
                     drawContext.canvas.nativeCanvas.save()
@@ -579,6 +581,7 @@ fun OCRResultScreen(
                                     path.lineTo(p.getInt(0).toFloat(), p.getInt(1).toFloat())
                                 }
                                 path.close()
+                                drawContext.canvas.nativeCanvas.drawPath(path, fillPaint)
                                 drawContext.canvas.nativeCanvas.drawPath(path, paint)
                             }
                         }
@@ -588,44 +591,113 @@ fun OCRResultScreen(
                     // Log.e("OCR", "Draw error", e)
                 }
             }
+
+            // Model Info Overlay (Subtle)
+            if (isProcessing || jsonResult != "[]") {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                    shape = RoundedCornerShape(8.dp),
+                    tonalElevation = 2.dp
+                ) {
+                    Column(Modifier.padding(8.dp)) {
+                         Text(
+                             text = "Model: PP-OCRv4",
+                             style = MaterialTheme.typography.labelSmall,
+                             fontWeight = FontWeight.Bold
+                         )
+                         if (jsonResult != "[]") {
+                             val count = try { JSONArray(jsonResult).length() } catch(e:Exception){0}
+                             Text(text = "$count items found", style = MaterialTheme.typography.labelSmall)
+                         }
+                    }
+                }
+            }
         }
     }
     
         if (showJsonDialog) {
-            // Enhanced Bottom Sheet for Requirement 4 & 6 (Slide Up)
-            val sheetState = rememberModalBottomSheetState()
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
             
             ModalBottomSheet(
                 onDismissRequest = { showJsonDialog = false },
-                sheetState = sheetState
+                sheetState = sheetState,
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp).fillMaxWidth()
-                ) {
-                    Text("Result & Notification", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(16.dp))
-                    
-                    Text("✅ Send WebSocket Success", color = Color(0xFF00796B), fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(8.dp))
-                    Text("JSON Payload:", fontWeight = FontWeight.SemiBold)
-                    
-                    Box(modifier = Modifier
-                        .height(300.dp)
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFFEEEEEE), RoundedCornerShape(8.dp))
-                        .padding(8.dp)
-                        .verticalScroll(rememberScrollState())) {
-                        Text(fullJsonOutput, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 12.sp)
-                    }
-                    
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = { showJsonDialog = false },
-                        modifier = Modifier.fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 16.dp)
                     ) {
-                        Text("Close")
+                        Icon(
+                            Icons.Default.CheckCircle, 
+                            contentDescription = "Success", 
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(Modifier.width(16.dp))
+                        Column {
+                            Text("Data Sent Successfully", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("Payload transmitted via WebSocket", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        }
                     }
-                    Spacer(Modifier.height(32.dp)) // Bottom padding
+
+                    HorizontalDivider()
+                    Spacer(Modifier.height(16.dp))
+                    
+                    Text(
+                        "JSON Payload", 
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp)
+                    ) {
+                        val scrollState = rememberScrollState()
+                        Box(modifier = Modifier.padding(12.dp).verticalScroll(scrollState)) {
+                             Text(
+                                 text = fullJsonOutput,
+                                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                 fontSize = 12.sp,
+                                 lineHeight = 16.sp,
+                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                             )
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(fullJsonOutput))
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Copy")
+                        }
+                        
+                        Button(
+                            onClick = { showJsonDialog = false },
+                             modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Close")
+                        }
+                    }
+                    Spacer(Modifier.height(32.dp))
                 }
             }
         }
