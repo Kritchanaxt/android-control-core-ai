@@ -63,12 +63,41 @@ class RelayService : Service() {
 
         overlayManager = OverlayManager(this)
         screenCaptureManager = ScreenCaptureManager(this)
+        
+        // Expose instance for simple singleton access (not ideal for strict architectures, but fine here)
+        sInstance = this
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        sInstance = null
+        try {
+            android.util.Log.d("RelayService", "Stopping RelayServer...")
+            relayServer?.stop(2000) // Wait up to 2 seconds for clean shutdown
+            android.util.Log.d("RelayService", "RelayServer stopped.")
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        discoveryJob?.cancel()
+        screenCaptureManager.stopCapture()
+        // overlayManager.hideOverlay() // Assuming this method exists or you might need to check OverlayManager content
+        overlayManager.removeOverlay()
+    }
+
+    // Public method to broadcast message to all connected clients
+    fun broadcastMessage(message: String) {
+        relayServer?.broadcast(message)
     }
 
     companion object {
         const val ACTION_STOP = "com.example.android_screen_relay.STOP"
         var currentPasskey: String? = null
             private set
+            
+        private var sInstance: RelayService? = null
+        fun getInstance(): RelayService? {
+            return sInstance
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -114,23 +143,6 @@ class RelayService : Service() {
 
         // Using START_STICKY so if the service is killed, it restarts (without the intent data, so no screen capture, but server is alive)
         return START_STICKY
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        try {
-            android.util.Log.d("RelayService", "Stopping RelayServer...")
-            relayServer?.stop(2000) // Wait up to 2 seconds for clean shutdown
-            android.util.Log.d("RelayService", "RelayServer stopped.")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        discoveryJob?.cancel()
-        scope.cancel()
-        currentPasskey = null
-        
-        overlayManager.removeOverlay()
-        screenCaptureManager.stopCapture()
     }
 
     override fun onBind(intent: Intent?): IBinder? {

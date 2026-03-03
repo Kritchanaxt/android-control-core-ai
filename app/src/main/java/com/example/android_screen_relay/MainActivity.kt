@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.android_screen_relay.ui.theme.AndroidscreenrelayTheme
+import com.example.android_screen_relay.ocr.OCRScreen
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.launch
@@ -194,10 +195,17 @@ fun AppNavigation(
                         colors = NavigationBarItemDefaults.colors(indicatorColor = Color(0xFFE3F2FD))
                     )
                     NavigationBarItem(
-                        icon = { Icon(Icons.Filled.Person, contentDescription = "Me") }, // Reused Settings Icon for Me Screen or just skip Connect
-                        label = { Text("Me") },
+                        icon = { Icon(Icons.Filled.CameraAlt, contentDescription = "OCR") },
+                        label = { Text("OCR") },
                         selected = currentTab == 2,
                         onClick = { currentTab = 2 },
+                        colors = NavigationBarItemDefaults.colors(indicatorColor = Color(0xFFE3F2FD))
+                    )
+                    NavigationBarItem(
+                        icon = { Icon(Icons.Filled.Person, contentDescription = "Me") }, // Reused Settings Icon for Me Screen or just skip Connect
+                        label = { Text("Me") },
+                        selected = currentTab == 3,
+                        onClick = { currentTab = 3 },
                         colors = NavigationBarItemDefaults.colors(indicatorColor = Color(0xFFE3F2FD))
                     )
                 }
@@ -233,7 +241,8 @@ fun AppNavigation(
                             isViewerMode = true
                         }
                     )
-                    2 -> MeScreen(
+                    2 -> OCRScreen()
+                    3 -> MeScreen(
                         onPermissionGuideClick = { isPermissionSettingsOpen = true },
                         onLogClick = { isLogViewerOpen = true }
                     )
