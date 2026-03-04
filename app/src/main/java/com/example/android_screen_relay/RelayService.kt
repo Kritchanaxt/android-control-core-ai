@@ -51,6 +51,11 @@ class RelayService : Service() {
             relayServer?.onShowNotification = { title, msg ->
                 showClientNotification(title, msg)
             }
+
+            // Handle Connection Requests
+            relayServer?.onConnectionRequest = { requestId, ip ->
+                showConnectionRequestNotification(requestId, ip)
+            }
             
             relayServer?.start()
             android.util.Log.d("RelayService", "RelayServer started successfully on port 8887")
@@ -86,7 +91,15 @@ class RelayService : Service() {
 
     // Public method to broadcast message to all connected clients
     fun broadcastMessage(message: String) {
-        relayServer?.broadcast(message)
+        relayServer?.broadcastToAuthenticated(message)
+    }
+
+    fun approveConnection(requestId: String) {
+        relayServer?.approveConnection(requestId)
+    }
+
+    fun denyConnection(requestId: String) {
+        relayServer?.denyConnection(requestId)
     }
 
     companion object {
@@ -233,15 +246,46 @@ class RelayService : Service() {
     }
 
     private fun showClientNotification(title: String, message: String) {
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(title)
             .setContentText(message)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
             .build()
         
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(Random.nextInt(), notification)
+    }
+
+    private fun showConnectionRequestNotification(requestId: String, ip: String) {
+        val intent = Intent(this, ConnectionRequestActivity::class.java).apply {
+            putExtra("REQUEST_ID", requestId)
+            putExtra("CLIENT_IP", ip)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        
+        val pendingIntent = PendingIntent.getActivity(
+            this, 
+            requestId.hashCode(), 
+            intent, 
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Add a "Deny" action directly to notification?
+        // For simplicity, just make the notification tap open the activity.
+        
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Connection Request")
+            .setContentText("Web Client ($ip) wants to connect.")
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setFullScreenIntent(pendingIntent, true) // Try to float or open
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(requestId.hashCode(), notification)
     }
 }

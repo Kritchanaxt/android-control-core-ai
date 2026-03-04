@@ -12,9 +12,36 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
     private var currentPasskey: String? = null
     // Use thread-safe collection for authenticated sessions to avoid ConcurrentModificationException
     private val authenticatedSessions = java.util.concurrent.CopyOnWriteArraySet<WebSocket>()
+    private val pendingConnections = java.util.concurrent.ConcurrentHashMap<String, WebSocket>()
     
     // Callback for notifications
     var onShowNotification: ((String, String) -> Unit)? = null
+    var onConnectionRequest: ((String, String) -> Unit)? = null
+
+    fun approveConnection(requestId: String) {
+        val conn = pendingConnections.remove(requestId)
+        if (conn != null && conn.isOpen) {
+            authenticatedSessions.add(conn)
+            val response = org.json.JSONObject()
+            response.put("type", "auth_response")
+            response.put("status", "ok")
+            conn.send(response.toString())
+            
+            val remoteAddr = conn.remoteSocketAddress?.address?.hostAddress ?: "Unknown"
+            android.util.Log.d("RelayServer", "Connection Approved: $remoteAddr")
+        }
+    }
+
+    fun denyConnection(requestId: String) {
+        val conn = pendingConnections.remove(requestId)
+        if (conn != null) {
+            val response = org.json.JSONObject()
+            response.put("type", "auth_response")
+            response.put("status", "denied")
+            conn.send(response.toString())
+            conn.close(1008, "Connection Denied by User")
+        }
+    }
 
     fun updatePasskey(passkey: String?) {
         this.currentPasskey = passkey
@@ -67,6 +94,14 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
             type = LogRepository.LogType.INFO
         )
         authenticatedSessions.remove(conn)
+        
+        // Remove from pending connections if present (This is O(N) but necessary to prevent leaks)
+        val iterator = pendingConnections.entries.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next().value == conn) {
+                iterator.remove()
+            }
+        }
     }
 
     override fun onMessage(conn: WebSocket, message: String) {
@@ -87,17 +122,23 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                 )
                 
                 if (currentPasskey != null && attemptKey == currentPasskey) {
-                    authenticatedSessions.add(conn)
+                    // NEW LOGIC: Move to Pending State instead of direct approval
+                    val requestId = java.util.UUID.randomUUID().toString()
+                    pendingConnections[requestId] = conn
+
                     val response = org.json.JSONObject()
                     response.put("type", "auth_response")
-                    response.put("status", "ok")
+                    response.put("status", "pending")
                     conn.send(response.toString())
+
+                    // Notify Service to show UI
+                    onConnectionRequest?.invoke(requestId, remoteAddr)
                     
-                    Log.d("RelayServer", "AUTH SUCCESS: Client $remoteAddr is now authenticated.")
+                    Log.d("RelayServer", "AUTH PENDING: Client $remoteAddr waiting for approval.")
                     LogRepository.addLog(
                         component = "RelayServer",
-                        event = "auth_success",
-                        data = mapOf("ip" to remoteAddr),
+                        event = "auth_pending",
+                        data = mapOf("ip" to remoteAddr, "requestId" to requestId),
                         level = "INFO",
                         type = LogRepository.LogType.INFO
                     )

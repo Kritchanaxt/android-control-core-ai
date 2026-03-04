@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Android Relay Tester</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; background-color: #f5f5f5; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; max-width: 1200px; margin: 0 auto; background-color: #f5f5f5; }
         .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        .row { display: flex; gap: 20px; margin-bottom: 20px; }
+        .col { flex: 1; margin-bottom: 0; } /* Reset margin for cards inside row */
+        
+        @media (max-width: 768px) {
+            .row { flex-direction: column; }
+            .col { margin-bottom: 20px; }
+        }
+
         h2 { margin-top: 0; color: #333; }
         label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
         input[type="text"], textarea { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
@@ -14,7 +22,15 @@
         button:disabled { background-color: #ccc; cursor: not-allowed; }
         button.red { background-color: #FF3B30; }
         button.green { background-color: #34C759; }
-        #log { background: #333; color: #0f0; padding: 15px; border-radius: 6px; height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; border: 1px solid #ddd; }
+        #log { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; height: 300px; overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; border: 1px solid #333; line-height: 1.4; }
+        .log-entry { margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+        .log-time { color: #888; margin-right: 8px; font-size: 11px; }
+        .log-type-info { color: #4ec9b0; }
+        .log-type-success { color: #b5cea8; }
+        .log-type-warning { color: #ce9178; }
+        .log-type-error { color: #f44747; }
+        .log-type-tx { color: #569cd6; } /* Transmit */
+        .log-type-rx { color: #dcdcaa; } /* Receive */
         .status { padding: 5px 10px; border-radius: 4px; font-size: 14px; font-weight: bold; display: inline-block; margin-bottom: 15px; }
         .status.connected { background-color: #d4edda; color: #155724; }
         .status.disconnected { background-color: #f8d7da; color: #721c24; }
@@ -22,37 +38,39 @@
 </head>
 <body>
 
-    <div class="card">
-        <h2>📡 Connection</h2>
-        <div id="statusBadge" class="status disconnected">Disconnected</div>
-        
-        <label for="urlInput">WebSocket URL:</label>
-        <div style="font-size: 12px; color: #666; margin-bottom: 5px;">*Check IP Address on your Android App screen</div>
-        <input type="text" id="urlInput" value="ws://192.168.1.X:8887" placeholder="ws://YOUR_ANDROID_IP:8887">
-        
-        <label for="passkeyInput">Passkey (Optional):</label>
-        <input type="text" id="passkeyInput" placeholder="Enter 6-digit passkey">
-        
-        <div style="margin-top: 10px;">
-            <button id="connectBtn" onclick="connect()" class="green">Connect</button>
-            <button id="disconnectBtn" onclick="disconnect()" class="red" disabled>Disconnect</button>
-            <span id="frameCounter" style="margin-left: 10px; font-size: 12px; color: #888; display: none;">Received Frames: 0</span>
-        </div>
-    </div>
-
-    <div class="card">
-        <h2>📩 Send Command</h2>
-        <label>Presets:</label>
-        <div style="margin-bottom: 10px;">
-            <button onclick="setPayload('ping')">Ping</button>
-            <button onclick="setPayload('notification')">Test Notification</button>
-            <button onclick="setPayload('auth')">Auth</button>
+    <div class="row">
+        <div class="card col">
+            <h2>📡 Connection</h2>
+            <div id="statusBadge" class="status disconnected">Disconnected</div>
+            
+            <label for="urlInput">WebSocket URL:</label>
+            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">*Check IP Address on your Android App screen</div>
+            <input type="text" id="urlInput" value="ws://192.168.1.X:8887" placeholder="ws://YOUR_ANDROID_IP:8887">
+            
+            <label for="passkeyInput">Passkey (Optional):</label>
+            <input type="text" id="passkeyInput" placeholder="Enter 6-digit passkey">
+            
+            <div style="margin-top: 10px;">
+                <button id="connectBtn" onclick="connect()" class="green">Connect</button>
+                <button id="disconnectBtn" onclick="disconnect()" class="red" disabled>Disconnect</button>
+                <span id="frameCounter" style="margin-left: 10px; font-size: 12px; color: #888; display: none;">Received Frames: 0</span>
+            </div>
         </div>
 
-        <label for="payloadInput">JSON Payload:</label>
-        <textarea id="payloadInput" rows="5">{"type": "ping"}</textarea>
-        
-        <button onclick="sendData()" id="sendBtn" disabled>Send Payload</button>
+        <div class="card col">
+            <h2>📩 Send Command</h2>
+            <label>Presets:</label>
+            <div style="margin-bottom: 10px;">
+                <button onclick="setPayload('ping')">Ping</button>
+                <button onclick="setPayload('notification')">Test Notification</button>
+                <button onclick="setPayload('auth')">Auth</button>
+            </div>
+
+            <label for="payloadInput">JSON Payload:</label>
+            <textarea id="payloadInput" rows="5">{"type": "ping"}</textarea>
+            
+            <button onclick="sendData()" id="sendBtn" disabled>Send Payload</button>
+        </div>
     </div>
 
     <div class="card">
@@ -90,14 +108,14 @@
                     // Check if really open
                     if (ws.readyState === WebSocket.OPEN) {
                         updateStatus(true);
-                        log("✅ Connected! (Socket OPEN)");
+                        log("✅ Connected! (Socket OPEN)", "success");
                         
                         // Auto-auth if passkey is present
                         const passkey = document.getElementById('passkeyInput').value;
                         if(passkey) {
                             const authPacket = { type: "auth", key: passkey };
                             ws.send(JSON.stringify(authPacket));
-                            log("📤 Sent Auto-Auth: " + JSON.stringify(authPacket));
+                            log("📤 Sent Auto-Auth: " + JSON.stringify(authPacket), "tx");
                         }
                     } else {
                         log("⚠️ Connection opened but state is " + getReadyStateName(ws.readyState));
@@ -129,14 +147,14 @@
                                 
                                 const currentHeartbeatStr = JSON.stringify(cleanData);
                                 if (currentHeartbeatStr !== lastHeartbeatJSON) {
-                                    log("💓 Heartbeat Status Changed: " + JSON.stringify(cleanData));
+                                    log("💓 Heartbeat Status Changed: " + JSON.stringify(cleanData), "warning");
                                     lastHeartbeatJSON = currentHeartbeatStr;
                                 }
                             } else {
-                                log("📥 Received: " + event.data);
+                                log("📥 Received: " + event.data, "rx");
                             }
                         } catch (e) {
-                             log("📥 Received: " + event.data);
+                             log("📥 Received: " + event.data, "rx");
                         }
                     }
                 };
@@ -166,7 +184,7 @@
                     try {
                         JSON.parse(data); 
                         ws.send(data);
-                        log("📤 Sent: " + data);
+                        log("📤 Sent: " + data, "tx");
                     } catch (e) {
                         log("⚠️ Invalid JSON format, sending anyway...");
                         ws.send(data);
@@ -210,10 +228,26 @@
             }
         }
 
-        function log(msg) {
-            const time = new Date().toLocaleTimeString();
-            logDiv.innerHTML += `<div>[${time}] ${msg}</div>`;
-            logDiv.scrollTop = logDiv.scrollHeight;
+        function log(msg, type = "info") {
+            const now = new Date();
+            const time = now.toLocaleTimeString() + "." + String(now.getMilliseconds()).padStart(3, '0');
+            
+            let color = "#d4d4d4"; // Default info
+            if (type === "success") color = "#4ec9b0";
+            if (type === "warning") color = "#ce9178";
+            if (type === "error") color = "#f44747";
+            if (type === "tx") color = "#569cd6";
+            if (type === "rx") color = "#dcdcaa";
+
+            const item = document.createElement("div");
+            item.className = "log-entry";
+            item.innerHTML = `<span style="color:#666; font-size:11px; margin-right:8px;">[${time}]</span><span style="color:${color}">${msg}</span>`;
+            
+            logDiv.appendChild(item);
+            // Auto-scroll
+            if(logDiv.scrollTop + logDiv.clientHeight >= logDiv.scrollHeight - 50) {
+                 logDiv.scrollTop = logDiv.scrollHeight;
+            }
         }
 
         function setPayload(type) {
