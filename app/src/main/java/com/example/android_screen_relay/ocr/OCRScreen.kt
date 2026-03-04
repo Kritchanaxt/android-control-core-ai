@@ -58,6 +58,15 @@ import com.example.android_screen_relay.RelayService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.toSize
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.PathEffect
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.min
@@ -75,6 +84,7 @@ fun OCRScreen() {
     // States
     var isInitialized by remember { mutableStateOf(false) }
     var currentImage by remember { mutableStateOf<Bitmap?>(null) }
+    var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
@@ -108,7 +118,8 @@ fun OCRScreen() {
                     val stream: InputStream? = context.contentResolver.openInputStream(uri)
                     val bitmap = BitmapFactory.decodeStream(stream)
                     withContext(Dispatchers.Main) {
-                        currentImage = bitmap
+                        cropImage = bitmap
+                        // currentImage = bitmap // Was moved to crop stage
                         ocrResultJson = "[]"
                         ocrTimeMs = 0
                     }
@@ -119,7 +130,21 @@ fun OCRScreen() {
         }
     }
 
-    if (currentImage != null) {
+    if (cropImage != null) {
+        ImageCropScreen(
+            bitmap = cropImage!!,
+            onCropDone = { cropped ->
+                currentImage = cropped
+                cropImage = null
+                ocrResultJson = "[]"
+                ocrTimeMs = 0
+            },
+            onCancel = {
+                cropImage = null
+                // If it was captured, it goes back to camera. If gallery, it goes back.
+            }
+        )
+    } else if (currentImage != null) {
         // Image Analysis Mode (Screenshot 2 style)
         OCRResultScreen(
             image = currentImage!!,
@@ -163,9 +188,7 @@ fun OCRScreen() {
         if (hasPermission && isInitialized) {
             CameraPreviewScreen(
                 onImageCaptured = { bitmap ->
-                    currentImage = bitmap
-                    // Auto run? Or let user press run? The screenshot has "Run Model" button.
-                    // Let's create the image view first.
+                    cropImage = bitmap
                 },
                 onGalleryClick = {
                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -475,31 +498,58 @@ fun OCRResultScreen(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Start OCR Button
-                    Button(
+                    FilledTonalButton(
                         onClick = onRunModel,
                         enabled = !isProcessing,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                        modifier = Modifier.weight(1.2f).height(48.dp),
+                         colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     ) {
                         if (isProcessing) {
                             CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(14.dp),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 strokeWidth = 2.dp
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Processing...")
+                            Text("Processing", style = MaterialTheme.typography.labelMedium)
                         } else {
-                            Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Scan Text")
+                            Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Scan", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
+                    }
+
+                    // Preview JSON Button
+                    OutlinedButton(
+                        onClick = {
+                            if (jsonResult == "[]" || jsonResult.isEmpty()) {
+                                Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                return@OutlinedButton
+                            }
+
+                            scope.launch(Dispatchers.IO) {
+                                val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                val jsonString = payload.toString(2)
+                                withContext(Dispatchers.Main) {
+                                    fullJsonOutput = jsonString
+                                    showJsonDialog = true
+                                }
+                            }
+                        },
+                        enabled = !isProcessing && jsonResult != "[]",
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Preview", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                     }
 
                     // Send JSON Button
@@ -510,112 +560,17 @@ fun OCRResultScreen(
                                 return@Button
                             }
                             
-                            // Generate Full JSON
-                             scope.launch(Dispatchers.IO) {
-                                val device = SystemMonitor.getDeviceInfo(context)
-                                val resource = SystemMonitor.getCurrentResourceUsage(context)
-                                
-                                val payload = JSONObject().apply {
-                                    put("type", "ocr_result")
-                                    put("device", device.toJson())
-                                    put("resource", resource.toJson())
-                                    
-                                    val ocrData = JSONObject()
-                                    try {
-                                        val jsonArr = JSONArray(jsonResult)
-                                        val textLines = JSONObject()
-                                        var recognizedText = ""
-                                        var totalConfidence = 0.0
-
-                                        if (jsonArr.length() > 0) {
-                                            val sb = StringBuilder()
-                                            for (i in 0 until jsonArr.length()) {
-                                                val item = jsonArr.getJSONObject(i)
-                                                val text = item.getString("label")
-                                                val conf = item.getDouble("prob")
-                                                // "box": [[x0,y0],[x1,y1],[x2,y2],[x3,y3]]
-                                                val box = item.getJSONArray("box")
-
-                                                val lineObj = JSONObject()
-                                                lineObj.put("id", "line_${i + 1}")
-                                                lineObj.put("text", text)
-                                                lineObj.put("confidence", conf)
-
-                                                // Calculate bounding box from 4 points
-                                                val xs = mutableListOf<Double>()
-                                                val ys = mutableListOf<Double>()
-                                                for (j in 0 until box.length()) {
-                                                    val p = box.getJSONArray(j)
-                                                    xs.add(p.getDouble(0))
-                                                    ys.add(p.getDouble(1))
-                                                }
-                                                val minX = xs.minOrNull() ?: 0.0
-                                                val minY = ys.minOrNull() ?: 0.0
-                                                val maxX = xs.maxOrNull() ?: 0.0
-                                                val maxY = ys.maxOrNull() ?: 0.0
-                                                
-                                                val posObj = JSONObject()
-                                                posObj.put("x", minX)
-                                                posObj.put("y", minY)
-                                                posObj.put("width", maxX - minX)
-                                                posObj.put("height", maxY - minY)
-                                                lineObj.put("position", posObj)
-                                                
-                                                textLines.put("line_${i + 1}", lineObj)
-                                                
-                                                if (sb.isNotEmpty()) sb.append(" ")
-                                                sb.append(text)
-                                                totalConfidence += conf
-                                            }
-                                            recognizedText = sb.toString()
-                                            totalConfidence /= jsonArr.length()
-                                        }
-
-                                        ocrData.put("document_type", "image")
-                                        ocrData.put("recognized_text", recognizedText)
-                                        ocrData.put("confidence", totalConfidence)
-                                        ocrData.put("text_lines", textLines)
-
-                                        val dimensions = JSONObject()
-                                        dimensions.put("width", image.width)
-                                        dimensions.put("height", image.height)
-                                        dimensions.put("unit", "pixel")
-                                        ocrData.put("dimensions", dimensions)
-
-                                        // Calculate simulated file size for JPG
-                                        val stream = java.io.ByteArrayOutputStream()
-                                        image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                                        val sizeBytes = stream.size()
-
-                                        ocrData.put("fast_rate", 0)
-                                        ocrData.put("rack_cooling_rate", 0)
-                                        ocrData.put("processing_time", timeMs) // Ensure timeMs is Long/Double
-                                        ocrData.put("text_object_count", jsonArr.length())
-                                        ocrData.put("output_path", "")
-                                        ocrData.put("file_extension", "jpg")
-                                        ocrData.put("file_size", sizeBytes)
-
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                        ocrData.put("error", e.message)
-                                        try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
-                                    }
-                                    put("ocr_data", ocrData)
-                                    put("timestamp", System.currentTimeMillis())
-                                }
-                                
+                            scope.launch(Dispatchers.IO) {
+                                val payload = generateOCRPayload(context, image, jsonResult, timeMs)
                                 val jsonString = payload.toString(2)
                                 
                                 withContext(Dispatchers.Main) {
                                     fullJsonOutput = jsonString
-                                    showJsonDialog = true
                                     
-                                    // Send to WebSocket
                                     val service = RelayService.getInstance()
                                     if (service != null) {
                                         service.broadcastMessage(jsonString)
                                         
-                                        // Requirement 7: Add Log to System View
                                         com.example.android_screen_relay.LogRepository.addLog(
                                             component = "OCR",
                                             event = "send_json",
@@ -623,7 +578,7 @@ fun OCRResultScreen(
                                             type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
                                         )
                                         
-                                        // Toast.makeText(context, "Sent & Logged", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Data Sent!", Toast.LENGTH_SHORT).show()
                                     } else {
                                         Toast.makeText(context, "Service not running", Toast.LENGTH_SHORT).show()
                                     }
@@ -631,15 +586,12 @@ fun OCRResultScreen(
                             }
                         },
                         enabled = !isProcessing && jsonResult != "[]",  
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
                     ) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Send Data")
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Send", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -688,6 +640,13 @@ fun OCRResultScreen(
                     drawContext.canvas.nativeCanvas.translate(offsetX, offsetY)
                     drawContext.canvas.nativeCanvas.scale(scale, scale)
 
+                    val textPaint = Paint().apply {
+                         color = android.graphics.Color.WHITE
+                         textSize = 12f
+                         textAlign = Paint.Align.LEFT
+                         setShadowLayer(3f, 0f, 0f, android.graphics.Color.BLACK)
+                    }
+
                     for (i in 0 until boxes.length()) {
                         val boxObj = boxes.getJSONObject(i)
                         
@@ -705,6 +664,14 @@ fun OCRResultScreen(
                                 path.close()
                                 drawContext.canvas.nativeCanvas.drawPath(path, fillPaint)
                                 drawContext.canvas.nativeCanvas.drawPath(path, paint)
+
+                                // Draw label
+                                if (boxObj.has("label")) {
+                                    val label = boxObj.getString("label")
+                                    val x = p0.getInt(0).toFloat()
+                                    val y = p0.getInt(1).toFloat()
+                                    drawContext.canvas.nativeCanvas.drawText(label, x, y - 5f, textPaint)
+                                }
                             }
                         }
                     }
@@ -750,73 +717,87 @@ fun OCRResultScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 8.dp)
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(bottom = 16.dp)
+                    // Header
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            Icons.Default.CheckCircle, 
-                            contentDescription = "Success", 
-                            tint = Color(0xFF4CAF50),
-                            modifier = Modifier.size(32.dp)
+                            Icons.Default.Description, 
+                            contentDescription = "JSON", 
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp)
                         )
-                        Spacer(Modifier.width(16.dp))
-                        Column {
-                            Text("Data Sent Successfully", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text("Payload transmitted via WebSocket", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                        }
                     }
-
-                    HorizontalDivider()
+                    
                     Spacer(Modifier.height(16.dp))
                     
                     Text(
                         "JSON Payload", 
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        style = MaterialTheme.typography.headlineSmall, 
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Review the generated data structure", 
+                        style = MaterialTheme.typography.bodyMedium, 
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
+                    Spacer(Modifier.height(24.dp))
+
+                    // JSON Content Area
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFE0E0E0)),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false) // Allow it to take available space but not force it
+                            .heightIn(min = 200.dp, max = 450.dp)
                     ) {
                         val scrollState = rememberScrollState()
-                        Box(modifier = Modifier.padding(12.dp).verticalScroll(scrollState)) {
+                        Box(modifier = Modifier.padding(16.dp).verticalScroll(scrollState)) {
                              Text(
                                  text = fullJsonOutput,
                                  fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                 fontSize = 12.sp,
-                                 lineHeight = 16.sp,
-                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                                 fontSize = 13.sp,
+                                 lineHeight = 18.sp,
+                                 color = Color(0xFF333333) // Dark gray for better contrast on white
                              )
                         }
                     }
 
                     Spacer(Modifier.height(24.dp))
                     
+                    // Action Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         OutlinedButton(
+                            onClick = { showJsonDialog = false },
+                            shape = RoundedCornerShape(8.dp),
+                             modifier = Modifier.weight(1f).height(50.dp)
+                        ) {
+                            Text("Close")
+                        }
+
+                        Button(
                             onClick = {
                                 clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(fullJsonOutput))
                                 Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
-                            modifier = Modifier.weight(1f)
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f).height(50.dp)
                         ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Copy")
-                        }
-                        
-                        Button(
-                            onClick = { showJsonDialog = false },
-                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Close")
                         }
                     }
                     Spacer(Modifier.height(32.dp))
@@ -825,4 +806,323 @@ fun OCRResultScreen(
         }
 }
 
-fun minWith(a: Float, b: Float): Float = min(a, b)
+fun minWith(a: Float, b: Float): Float = kotlin.math.min(a, b)
+
+private fun generateOCRPayload(
+    context: Context,
+    image: Bitmap,
+    jsonResult: String,
+    timeMs: Long
+): JSONObject {
+    val device = SystemMonitor.getDeviceInfo(context)
+    val resource = SystemMonitor.getCurrentResourceUsage(context)
+    
+    val payload = JSONObject().apply {
+        put("type", "ocr_result")
+        put("device", device.toJson())
+        put("resource", resource.toJson())
+        
+        val ocrData = JSONObject()
+        try {
+            val jsonArr = JSONArray(jsonResult)
+            
+            // Calculate simulated file size for JPG
+            val stream = java.io.ByteArrayOutputStream()
+            image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+            val sizeBytes = stream.size()
+
+            val dimensions = JSONObject()
+            dimensions.put("width", image.width)
+            dimensions.put("height", image.height)
+            dimensions.put("unit", "pixel")
+
+            ocrData.put("timestamp", System.currentTimeMillis())
+            ocrData.put("processing_time", timeMs)
+            ocrData.put("text_object_count", jsonArr.length())
+            ocrData.put("file_extension", "jpg")
+            ocrData.put("file_size", sizeBytes)
+            ocrData.put("dimensions", dimensions)
+
+            val textLines = JSONObject()
+            var recognizedText = ""
+            var totalConfidence = 0.0
+
+            if (jsonArr.length() > 0) {
+                val sb = StringBuilder()
+                for (i in 0 until jsonArr.length()) {
+                    val item = jsonArr.getJSONObject(i)
+                    val text = item.getString("label")
+                    val conf = item.getDouble("prob")
+                    val box = item.getJSONArray("box")
+
+                    val lineObj = JSONObject()
+                    lineObj.put("id", "line_${i + 1}")
+                    lineObj.put("text", text)
+                    lineObj.put("confidence", conf)
+
+                    val xs = mutableListOf<Double>()
+                    val ys = mutableListOf<Double>()
+                    for (j in 0 until box.length()) {
+                        val p = box.getJSONArray(j)
+                        xs.add(p.getDouble(0))
+                        ys.add(p.getDouble(1))
+                    }
+                    val minX = xs.minOrNull() ?: 0.0
+                    val minY = ys.minOrNull() ?: 0.0
+                    val maxX = xs.maxOrNull() ?: 0.0
+                    val maxY = ys.maxOrNull() ?: 0.0
+                    
+                    val posObj = JSONObject()
+                    posObj.put("x", minX)
+                    posObj.put("y", minY)
+                    posObj.put("width", maxX - minX)
+                    posObj.put("height", maxY - minY)
+                    lineObj.put("position", posObj)
+                    
+                    textLines.put("line_${i + 1}", lineObj)
+                    
+                    if (sb.isNotEmpty()) sb.append(" ")
+                    sb.append(text)
+                    totalConfidence += conf
+                }
+                recognizedText = sb.toString()
+                totalConfidence /= jsonArr.length()
+            }
+
+            ocrData.put("document_type", "image")
+            ocrData.put("recognized_text", recognizedText)
+            ocrData.put("confidence", totalConfidence)
+            ocrData.put("text_lines", textLines)
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ocrData.put("error", e.message)
+            try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
+        }
+        put("ocr_data", ocrData)
+    }
+    return payload
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ImageCropScreen(
+    bitmap: Bitmap,
+    onCropDone: (Bitmap) -> Unit,
+    onCancel: () -> Unit
+) {
+    var cropRectNormalized by remember { mutableStateOf(Rect(0.1f, 0.1f, 0.9f, 0.9f)) }
+    
+    // Helper enum for drag Logic
+    var activeHandle by remember { mutableStateOf("NONE") } 
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Crop Image") },
+                navigationIcon = {
+                    IconButton(onClick = onCancel) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        val width = bitmap.width
+                        val height = bitmap.height
+                        
+                        val left = cropRectNormalized.left.coerceIn(0f, 1f)
+                        val top = cropRectNormalized.top.coerceIn(0f, 1f)
+                        val right = cropRectNormalized.right.coerceIn(0f, 1f)
+                        val bottom = cropRectNormalized.bottom.coerceIn(0f, 1f)
+
+                        val x = (left * width).toInt()
+                        val y = (top * height).toInt()
+                        val w = ((right - left) * width).toInt().coerceAtLeast(1)
+                        val h = ((bottom - top) * height).toInt().coerceAtLeast(1)
+                        
+                        // Final safety check
+                        val safeX = x.coerceIn(0, width - 1)
+                        val safeY = y.coerceIn(0, height - 1)
+                        val safeW = w.coerceAtMost(width - safeX)
+                        val safeH = h.coerceAtMost(height - safeY)
+
+                        val cropped = Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
+                        onCropDone(cropped)
+                    }) {
+                        Icon(Icons.Default.Check, contentDescription = "Done")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            // Measure container
+            BoxWithConstraints(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                 val density = LocalDensity.current.density
+                 val containerWidth = maxWidth.value * density
+                 val containerHeight = maxHeight.value * density
+                 
+                 // Calculate displayed image size (Fit Center)
+                 val imageRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+                 val containerRatio = containerWidth / containerHeight
+                 
+                 val displayWidth: Float
+                 val displayHeight: Float
+                 
+                 if (imageRatio > containerRatio) {
+                     displayWidth = containerWidth
+                     displayHeight = containerWidth / imageRatio
+                 } else {
+                     displayHeight = containerHeight
+                     displayWidth = displayHeight * imageRatio
+                 }
+                 
+                 val displayWidthDp = (displayWidth / density).dp
+                 val displayHeightDp = (displayHeight / density).dp
+
+                 Box(
+                     modifier = Modifier
+                         .size(displayWidthDp, displayHeightDp)
+                 ) {
+                     Image(
+                         bitmap = bitmap.asImageBitmap(),
+                         contentDescription = null,
+                         contentScale = ContentScale.FillBounds,
+                         modifier = Modifier.fillMaxSize()
+                     )
+                     
+                     // Overlay & Gestures
+                     Canvas(
+                         modifier = Modifier
+                             .fillMaxSize()
+                             .pointerInput(Unit) {
+                                 detectDragGestures(
+                                     onDragStart = { offset ->
+                                         val w = size.width
+                                         val h = size.height
+                                         val rect = cropRectNormalized
+                                         val l = rect.left * w
+                                         val t = rect.top * h
+                                         val r = rect.right * w
+                                         val b = rect.bottom * h
+                                         
+                                         // Hit test radius
+                                         val rad = 40f 
+
+                                         activeHandle = when {
+                                             (offset - Offset(l, t)).getDistance() < rad -> "TL"
+                                             (offset - Offset(r, t)).getDistance() < rad -> "TR"
+                                             (offset - Offset(l, b)).getDistance() < rad -> "BL"
+                                             (offset - Offset(r, b)).getDistance() < rad -> "BR"
+                                             offset.x in l..r && offset.y in t..b -> "CENTER"
+                                             else -> "NONE"
+                                         }
+                                     },
+                                     onDrag = { change, dragAmount ->
+                                         change.consume()
+                                         val dx = dragAmount.x / size.width
+                                         val dy = dragAmount.y / size.height
+                                         
+                                         var (l, t, r, b) = cropRectNormalized
+                                         
+                                         when (activeHandle) {
+                                             "TL" -> { l += dx; t += dy }
+                                             "TR" -> { r += dx; t += dy }
+                                             "BL" -> { l += dx; b += dy }
+                                             "BR" -> { r += dx; b += dy }
+                                             "CENTER" -> {
+                                                 l += dx; r += dx
+                                                 t += dy; b += dy
+                                             }
+                                         }
+                                         
+                                         // Constraint logic could be improved but this prevents flipping
+                                         if (l > r - 0.05f) l = r - 0.05f
+                                         if (t > b - 0.05f) t = b - 0.05f
+                                         
+                                         // Keep Center inside bounds
+                                         if (activeHandle == "CENTER") {
+                                              val w = r - l
+                                              val h = b - t
+                                              if (l < 0) { l = 0f; r = w }
+                                              if (t < 0) { t = 0f; b = h }
+                                              if (r > 1) { r = 1f; l = 1f - w }
+                                              if (b > 1) { b = 1f; t = 1f - h }
+                                         }
+
+                                         cropRectNormalized = Rect(
+                                             l.coerceIn(0f, 1f),
+                                             t.coerceIn(0f, 1f),
+                                             r.coerceIn(0f, 1f),
+                                             b.coerceIn(0f, 1f)
+                                         )
+                                     },
+                                     onDragEnd = { activeHandle = "NONE" }
+                                 )
+                             }
+                     ) {
+                         val w = size.width
+                         val h = size.height
+                         
+                         val l = cropRectNormalized.left * w
+                         val t = cropRectNormalized.top * h
+                         val r = cropRectNormalized.right * w
+                         val b = cropRectNormalized.bottom * h
+                         
+                         // Dim background (Draw 4 rectangles around crop area)
+                         val dimColor = Color(0x99000000)
+                         
+                         // Top
+                         drawRect(
+                             color = dimColor,
+                             topLeft = Offset(0f, 0f),
+                             size = androidx.compose.ui.geometry.Size(w, t)
+                         )
+                         // Bottom
+                         drawRect(
+                             color = dimColor,
+                             topLeft = Offset(0f, b),
+                             size = androidx.compose.ui.geometry.Size(w, h - b)
+                         )
+                         // Left
+                         drawRect(
+                             color = dimColor,
+                             topLeft = Offset(0f, t),
+                             size = androidx.compose.ui.geometry.Size(l, b - t)
+                         )
+                         // Right
+                         drawRect(
+                             color = dimColor,
+                             topLeft = Offset(r, t),
+                             size = androidx.compose.ui.geometry.Size(w - r, b - t)
+                         )
+                         
+                         // UI: Border
+                         drawRect(
+                             color = Color.White,
+                             topLeft = Offset(l, t),
+                             size = androidx.compose.ui.geometry.Size(r - l, b - t),
+                             style = Stroke(2.dp.toPx())
+                         )
+                         
+                         // UI: Handles
+                         val handleRadius = 8.dp.toPx()
+                         drawCircle(Color.White, handleRadius, Offset(l, t))
+                         drawCircle(Color.White, handleRadius, Offset(r, t))
+                         drawCircle(Color.White, handleRadius, Offset(l, b))
+                         drawCircle(Color.White, handleRadius, Offset(r, b))
+                     }
+                 }
+            }
+        }
+    }
+}
