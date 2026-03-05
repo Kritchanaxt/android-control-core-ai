@@ -61,6 +61,15 @@ class RelayService : Service() {
             android.util.Log.d("RelayService", "RelayServer started successfully on port 8887")
             // Start heartbeat for testing background connectivity
             startHeartbeat()
+            
+            // Listen to App State Changes and broadcast to clients
+            AppStateManager.setOnStateChangeListener { newState ->
+                val stateJson = org.json.JSONObject().apply {
+                    put("type", "state_update")
+                    put("state", newState.name)
+                }
+                relayServer?.broadcastToAuthenticated(stateJson.toString())
+            }
         } catch (e: Exception) {
             android.util.Log.e("RelayService", "Failed to start RelayServer: ${e.message}")
             e.printStackTrace()

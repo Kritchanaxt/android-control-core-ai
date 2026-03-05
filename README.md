@@ -28,9 +28,11 @@ Android system-level control core featuring a persistent background service, **A
 * **Auto-Reconnect**: Automatically retries connection when disconnected.
 * **Live Log Viewer**: View real-time logs and responses from the Android device directly in the browser.
 
-### **Background Operation**
+### **Background Operation & Reliability 🛡️**
 
 * **Heartbeat System**: Continuously sends status signals to the web client to confirm the app is alive—even when running in the background.
+* **Smart State Tracking**: Uses `ProcessLifecycleOwner` & `BroadcastReceiver` to detect and broadcast real-time states (`SCREEN_OFF`, `BACKGROUND`, `FOREGROUND`) to connected clients via WebSocket.
+* **Watchdog (Self-Healing)**: Implements `androidx.work.WorkManager` to wake up every 15 minutes, check service health, and perform **auto-revival** if the OS kills the process.
 * **Foreground Service**: Ensures long-running execution without being killed by the system.
 * **Auto-Start on Boot**: Automatically starts the service when the device boots (via Boot Receiver).
 
@@ -92,16 +94,6 @@ Android system-level control core featuring a persistent background service, **A
     * [ncnn_paddleocr Repository (Implementation Base)](https://github.com/FeiGeChuanShu/ncnn_paddleocr)
     * [PaddleOCR Android Demo Guide](https://www.paddleocr.ai/main/en/version2.x/legacy/android_demo.html#33-running-the-demo)
     * [Paddle Lite Library Preparation](https://www.paddleocr.ai/main/en/version2.x/legacy/lite.html#12-prepare-paddle-lite-library)
-
-### **Problem Solving & Techniques**
-
-#### **1. Camera Black Screen (Camera2 API + Compose)**
-* **Problem**: The camera preview was rendering a black screen when integrated into the Jetpack Compose UI.
-* **Cause**: `AndroidView` factory only runs once. If the camera permission or controller wasn't ready during the initial composition, the `openCamera` command was never called.
-* **Solution**: Moved the `openCamera` logic into the `update` block of `AndroidView`. This ensures that whenever the `cameraController` becomes available or state changes, the camera stream is correctly re-attached to the `TextureView`.
-
-#### **2. Lifecycle Management**
-* **Technique**: Implemented `DisposableEffect` to strictly manage Camera2 resources. The camera is released immediately when the user navigates away from the OCR screen or puts the app in the background, preventing resource locks that would crash other apps.
 
 ---
 
@@ -165,61 +157,6 @@ graph TD
 ```
 
 ---
-
-## 📝 Engineering Notes
-
-### Objectives (Latest Updates)
-
-* **Stability First**: Focus on connection stability and command reliability before introducing video streaming.
-* **True Two-Way Control**: Validate real remote control with confirmed acknowledgements (notifications + logs).
-* **High Debuggability**: Improve logging detail and exportability to minimize time-to-resolution.
-
-### Technical Overview
-
-* **Architecture**: MVVM with a service-centric execution model.
-* **Networking**:
-  * Mobile server: `org.java_websocket` (Port 8887)
-  * Web client: Browser WebSocket API
-* **Security**: Passkey-based authentication before command execution.
-* **Reliability**: Foreground Service + Heartbeat mechanism to maintain persistent connectivity.
-
----
-
-## ✅ Completed Tasks
-
-* [x] **Project Setup**
-  * Android project with MVVM / Compose support
-* [x] **Network Core**
-  * WebSocket server (`RelayServer`) on port 8887
-  * Custom JSON protocol design
-* [x] **Web Client**
-  * Controller dashboard (`index.html`)
-  * Auto-reconnect, authentication, and log viewer
-* [x] **OCR Integration (New)**
-  * Camera2 API implementation in Compose
-  * PaddleOCR (NCNN) linkage
-  * JSON Result export
-* [x] **Control System**
-  * Heartbeat status reporting
-  * Remote notification execution
-  * Background execution support
-* [x] **Logging System**
-  * JSON log export (local time)
-  * Reliable logging (no data loss)
-  * Centralized `LogRepository` for auditing
-
-
----
-
-## 🔗 References
-
-* Java-WebSocket Library: [https://github.com/TooTallNate/Java-WebSocket](https://github.com/TooTallNate/Java-WebSocket)
-* Android Foreground Services: [https://developer.android.com/guide/components/foreground-services](https://developer.android.com/guide/components/foreground-services)
-* Android Accessibility Service: [https://developer.android.com/reference/android/accessibilityservice/AccessibilityService](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService)
-* MediaProjection API: [https://developer.android.com/guide/topics/large-screens/media-projection](https://developer.android.com/guide/topics/large-screens/media-projection)
-* Reference App: *Let’s View* (background & overlay behavior)
-
-
 ## Unified OCR JSON Response Format
 
 The newly integrated JSON structure merges standard OCR processing with real-time hardware telemetry and benchmarking. This allows downstream backend/WebSockets to consume a clean, production-ready payload directly from the edge devices.
@@ -288,33 +225,60 @@ The newly integrated JSON structure merges standard OCR processing with real-tim
   }
 }
 ```
+---
+
+## 📝 Engineering Notes
+
+### Objectives (Latest Updates)
+
+* **Stability First**: Focus on connection stability and command reliability before introducing video streaming.
+* **True Two-Way Control**: Validate real remote control with confirmed acknowledgements (notifications + logs).
+* **High Debuggability**: Improve logging detail and exportability to minimize time-to-resolution.
+
+### Technical Overview
+
+* **Architecture**: MVVM with a service-centric execution model.
+* **Networking**:
+  * Mobile server: `org.java_websocket` (Port 8887)
+  * Web client: Browser WebSocket API
+* **Security**: Passkey-based authentication before command execution.
+* **Reliability**: Foreground Service + Heartbeat mechanism to maintain persistent connectivity.
 
 ---
 
-## 📈 Project Progress
+## ✅ Completed Tasks
 
-**Current Progress: 95%**
+* [x] **Project Setup**
+  * Android project with MVVM / Compose support
+* [x] **Network Core**
+  * WebSocket server (`RelayServer`) on port 8887
+  * Custom JSON protocol design
+* [x] **Web Client**
+  * Controller dashboard (`index.html`)
+  * Auto-reconnect, authentication, and log viewer
+* [x] **OCR Integration (New)**
+  * Camera2 API implementation in Compose
+  * PaddleOCR (NCNN) linkage
+  * JSON Result export
+* [x] **Control System**
+  * Heartbeat status reporting
+  * Remote notification execution
+  * Background execution support
+  * **App State Awareness** (Screen On/Off, App Background detection)
+  * **Watchdog Service** (Auto-restart via WorkManager)
+* [x] **Logging System**
+  * JSON log export (local time)
+  * Reliable logging (no data loss)
+  * Centralized `LogRepository` for auditing
 
-The project structure is broken down as follows:
 
-| System                   | Progress | Status |
-| ------------------------ | -------- | ------ |
-| Android Control Core     | 90%      | Active |
-| WebSocket Control        | 90%      | Active |
-| Background Runtime       | 90%      | Active |
-| OCR Integration          | 100%     | Active |
-| AI Performance Benchmark | 100%     | Active |
+---
 
-### 🛠 Recently Added (Boosting progress from 90% to 95%)
+## 🔗 References
 
-1. **Unified JSON Payload Architecture**:
-   - OCR results and performance benchmarks (`OCRBenchmarkRunner`) are now seamlessly unified into a single, clean, production-ready structure.
-   - Outputs include standardized bounding boxes (`[x1, y1, x2, y2]`), distinct latency breakdowns, and system telemetry stats logically separated under `"benchmark"`.
+* Java-WebSocket Library: [https://github.com/TooTallNate/Java-WebSocket](https://github.com/TooTallNate/Java-WebSocket)
+* Android Foreground Services: [https://developer.android.com/guide/components/foreground-services](https://developer.android.com/guide/components/foreground-services)
+* Android Accessibility Service: [https://developer.android.com/reference/android/accessibilityservice/AccessibilityService](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService)
+* MediaProjection API: [https://developer.android.com/guide/topics/large-screens/media-projection](https://developer.android.com/guide/topics/large-screens/media-projection)
+* Reference App: *Let’s View* (background & overlay behavior)
 
-2. **Invisible Automatic Benchmarking**:
-   - The standalone benchmark button was removed to reduce UI clutter. Instead, scanning an image now quietly runs the full device benchmark suite (Full res, 720p, 480p, Center crop) and includes varying hardware stats silently at the tail-end of the generated JSON payload.
-
-3. **Jetpack Compose UI & Lifecycle Fixes**:
-   - Addressed fixed-height UI clipping on `BottomAppBar` across different layouts by switching to dynamic surfaces. Improved camera lifecycle destruction inside `DisposableEffect` to properly relinquish the `Camera2` stream during background state.
-
-By applying these aggressive optimizations, adding a structured benchmarking framework, and standardizing JSON schemas for the API contracts, the app can run optimally around-the-clock while proving absolute stability and data-cleanliness to all internal stakeholders.
