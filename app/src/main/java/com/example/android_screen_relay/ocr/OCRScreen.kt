@@ -162,17 +162,17 @@ fun OCRScreen() {
                     scope.launch(Dispatchers.IO) {
                         try {
                             val start = System.currentTimeMillis()
-                            // Ensure mutable ARGB_8888 bitmap for NCNN
                             val mutableBitmap = currentImage!!.copy(Bitmap.Config.ARGB_8888, true)
-                            val result = ocr.detect(mutableBitmap)
+                            // Run the comprehensive benchmark suite automatically upon scan
+                            val benchmarkResults = OCRBenchmarkRunner.runFullBenchmarkSuite(context, ocr, mutableBitmap)
                             val end = System.currentTimeMillis()
                             withContext(Dispatchers.Main) {
-                                ocrResultJson = result
+                                ocrResultJson = benchmarkResults.toString()
                                 ocrTimeMs = end - start
                                 isProcessing = false
                             }
                         } catch (e: Exception) {
-                            Log.e("OCR", "Detect error", e)
+                            Log.e("OCR", "Scan/Benchmark error", e)
                             withContext(Dispatchers.Main) {
                                 isProcessing = false
                                 Toast.makeText(context, "OCR Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -621,106 +621,117 @@ fun OCRResultScreen(
             )
         },
         bottomBar = {
-            BottomAppBar(
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                contentPadding = PaddingValues(16.dp)
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Start OCR Button
-                    FilledTonalButton(
-                        onClick = onRunModel,
-                        enabled = !isProcessing,
-                        modifier = Modifier.weight(1.2f).height(48.dp),
-                         colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (isProcessing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                strokeWidth = 2.dp
+                        // Start OCR Button
+                        FilledTonalButton(
+                            onClick = onRunModel,
+                            enabled = !isProcessing,
+                            modifier = Modifier.weight(1f).height(48.dp),
+                             colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                             )
-                            Spacer(Modifier.width(8.dp))
-                            Text("Processing", style = MaterialTheme.typography.labelMedium)
-                        } else {
-                            Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
+                        ) {
+                            if (isProcessing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            } else {
+                                Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                            }
                             Text("Scan", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+
+                        // Preview JSON Button
+                        OutlinedButton(
+                            onClick = {
+                                if (jsonResult == "[]" || jsonResult.isEmpty()) {
+                                    Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                    return@OutlinedButton
+                                }
+
+                                scope.launch(Dispatchers.IO) {
+                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                    val jsonString = payload.toString(2)
+                                    withContext(Dispatchers.Main) {
+                                        fullJsonOutput = jsonString
+                                        showJsonDialog = true
+                                    }
+                                }
+                            },
+                            enabled = !isProcessing && jsonResult != "[]",
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Preview", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                     }
 
-                    // Preview JSON Button
-                    OutlinedButton(
-                        onClick = {
-                            if (jsonResult == "[]" || jsonResult.isEmpty()) {
-                                Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
-                                return@OutlinedButton
-                            }
-
-                            scope.launch(Dispatchers.IO) {
-                                val payload = generateOCRPayload(context, image, jsonResult, timeMs)
-                                val jsonString = payload.toString(2)
-                                withContext(Dispatchers.Main) {
-                                    fullJsonOutput = jsonString
-                                    showJsonDialog = true
-                                }
-                            }
-                        },
-                        enabled = !isProcessing && jsonResult != "[]",
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Preview", maxLines = 1, style = MaterialTheme.typography.labelMedium)
-                    }
-
-                    // Send JSON Button
-                    Button(
-                        onClick = {
-                            if (jsonResult == "[]" || jsonResult.isEmpty()) {
-                                Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            
-                            scope.launch(Dispatchers.IO) {
-                                val payload = generateOCRPayload(context, image, jsonResult, timeMs)
-                                val jsonString = payload.toString(2)
+                        // Send JSON Button
+                        Button(
+                            onClick = {
+                                if (jsonResult == "[]" || jsonResult.isEmpty()) {
+                                    Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
                                 
-                                withContext(Dispatchers.Main) {
-                                    fullJsonOutput = jsonString
+                                scope.launch(Dispatchers.IO) {
+                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                    val jsonString = payload.toString(2)
                                     
-                                    val service = RelayService.getInstance()
-                                    if (service != null) {
-                                        service.broadcastMessage(jsonString)
+                                    withContext(Dispatchers.Main) {
+                                        fullJsonOutput = jsonString
                                         
-                                        com.example.android_screen_relay.LogRepository.addLog(
-                                            component = "OCR",
-                                            event = "send_json",
-                                            data = mapOf("payload_size" to jsonString.length, "blocks" to try { JSONArray(jsonResult).length() } catch(e:Exception){0}),
-                                            type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
-                                        )
-                                        
-                                        Toast.makeText(context, "Data Sent!", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "Service not running", Toast.LENGTH_SHORT).show()
+                                        val service = RelayService.getInstance()
+                                        if (service != null) {
+                                            service.broadcastMessage(jsonString)
+                                            
+                                            com.example.android_screen_relay.LogRepository.addLog(
+                                                component = "OCR",
+                                                event = "send_json",
+                                                data = mapOf("payload_size" to jsonString.length, "blocks" to try { JSONArray(jsonResult).length() } catch(e:Exception){0}),
+                                                type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
+                                            )
+                                            
+                                            Toast.makeText(context, "Data Sent!", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Service not running", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
-                            }
-                        },
-                        enabled = !isProcessing && jsonResult != "[]",  
-                        modifier = Modifier.weight(1f).height(48.dp),
-                        contentPadding = PaddingValues(horizontal = 4.dp)
-                    ) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Send", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            },
+                            enabled = !isProcessing && jsonResult != "[]",  
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp)
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Send", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }
@@ -946,92 +957,161 @@ private fun generateOCRPayload(
     val device = SystemMonitor.getDeviceInfo(context)
     val resource = SystemMonitor.getCurrentResourceUsage(context)
     
-    val payload = JSONObject().apply {
-        put("type", "ocr_result")
-        put("device", device.toJson())
-        put("resource", resource.toJson())
+    val payload = JSONObject()
+    payload.put("timestamp", System.currentTimeMillis())
+    
+    // engine_info (new format)
+    val engineInfo = JSONObject().apply {
+        put("engine", "paddleocr")
+        put("version", "v4")
+        put("runtime", "ncnn")
+        put("model", "PP-OCRv4_mobile_rec")
+    }
+    payload.put("engine_info", engineInfo)
+    payload.put("pipeline", "on-device")
+    
+    payload.put("device_info", device.toJson())
+    
+    // image_info: measure simulated jpeg size from bitmap
+    val stream = java.io.ByteArrayOutputStream()
+    image.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+    val sizeBytes = stream.size().toLong()
+
+    payload.put("image_info", JSONObject().apply {
+        put("width", image.width)
+        put("height", image.height)
+        put("file_size_bytes", sizeBytes)
+        put("format", "jpeg")
+    })
+    
+    try {
+        val benchmarkArr = JSONArray(jsonResult)
         
-        val ocrData = JSONObject()
-        try {
-            val jsonArr = JSONArray(jsonResult)
+        // Handle empty array case cleanly
+        if (benchmarkArr.length() == 0) {
+            payload.put("result", JSONObject().apply {
+                put("full_text", "")
+                put("lines", JSONArray())
+            })
+            payload.put("benchmark", JSONArray())
+            payload.put("summary", JSONObject().apply {
+                put("text_object_count", 0)
+                put("average_confidence", 0.0)
+            })
+            return payload
+        }
+        
+        // 1. Result (full_text & lines)
+        val primaryRun = benchmarkArr.getJSONObject(0)
+        val primaryResultBox = primaryRun.getJSONArray("result")
+        
+        val sb = java.lang.StringBuilder()
+        var totalConfidence = 0.0
+        val linesArray = JSONArray()
+        
+        for (i in 0 until primaryResultBox.length()) {
+            val item = primaryResultBox.getJSONObject(i)
+            if (!item.has("label")) continue 
+
+            val text = item.getString("label")
+            val conf = item.getDouble("prob")
+            val box = item.getJSONArray("box")
             
-            // Calculate simulated file size for JPG
-            val stream = java.io.ByteArrayOutputStream()
-            image.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-            val sizeBytes = stream.size()
-            val sizeMb = sizeBytes / (1024.0 * 1024.0)
+            val xs = mutableListOf<Double>()
+            val ys = mutableListOf<Double>()
+            for (j in 0 until box.length()) {
+                val p = box.getJSONArray(j)
+                xs.add(p.getDouble(0))
+                ys.add(p.getDouble(1))
+            }
+            
+            val minX = xs.minOrNull() ?: 0.0
+            val minY = ys.minOrNull() ?: 0.0
+            val maxX = xs.maxOrNull() ?: 0.0
+            val maxY = ys.maxOrNull() ?: 0.0
+            
+            val resultObj = JSONObject().apply {
+                put("text", text)
+                put("confidence", conf)
+                
+                // Using [x1, y1, x2, y2]
+                val bboxArray = JSONArray()
+                bboxArray.put(minX) // x1
+                bboxArray.put(minY) // y1
+                bboxArray.put(maxX) // x2
+                bboxArray.put(maxY) // y2
+                
+                put("bbox", bboxArray)
+                put("polygon", box) 
+            }
+            
+            linesArray.put(resultObj)
+            
+            if (sb.isNotEmpty()) sb.append("\n")
+            sb.append(text)
+            totalConfidence += conf
+        }
+        
+        val finalObjCount = linesArray.length()
+        val avgConf = if (finalObjCount > 0) totalConfidence / finalObjCount else 0.0
+        
+        payload.put("result", JSONObject().apply {
+            put("full_text", sb.toString())
+            put("lines", linesArray)
+        })
+        
+        // 2. Benchmark points
+        val benchmarkStats = JSONArray()
+        var fullImageTotalMs = 0L // Store total latency for summary
 
-            val dimensions = JSONObject()
-            dimensions.put("width", image.width)
-            dimensions.put("height", image.height)
-            dimensions.put("unit", "pixel")
-
-            ocrData.put("timestamp", System.currentTimeMillis())
-            ocrData.put("processing_time", timeMs)
-            ocrData.put("text_object_count", jsonArr.length())
-            ocrData.put("file_extension", "jpg")
-            ocrData.put("file_size_bytes", sizeBytes)
-            ocrData.put("file_size_mb", String.format(java.util.Locale.US, "%.2f MB", sizeMb))
-            ocrData.put("dimensions", dimensions)
-
-            val textLines = JSONObject()
-            var recognizedText = ""
-            var totalConfidence = 0.0
-
-            if (jsonArr.length() > 0) {
-                val sb = StringBuilder()
-                for (i in 0 until jsonArr.length()) {
-                    val item = jsonArr.getJSONObject(i)
-                    val text = item.getString("label")
-                    val conf = item.getDouble("prob")
-                    val box = item.getJSONArray("box")
-
-                    val lineObj = JSONObject()
-                    lineObj.put("id", "line_${i + 1}")
-                    lineObj.put("text", text)
-                    lineObj.put("confidence", conf)
-
-                    val xs = mutableListOf<Double>()
-                    val ys = mutableListOf<Double>()
-                    for (j in 0 until box.length()) {
-                        val p = box.getJSONArray(j)
-                        xs.add(p.getDouble(0))
-                        ys.add(p.getDouble(1))
-                    }
-                    val minX = xs.minOrNull() ?: 0.0
-                    val minY = ys.minOrNull() ?: 0.0
-                    val maxX = xs.maxOrNull() ?: 0.0
-                    val maxY = ys.maxOrNull() ?: 0.0
-                    
-                    val posObj = JSONObject()
-                    posObj.put("x", minX)
-                    posObj.put("y", minY)
-                    posObj.put("width", maxX - minX)
-                    posObj.put("height", maxY - minY)
-                    lineObj.put("position", posObj)
-                    
-                    textLines.put("line_${i + 1}", lineObj)
-                    
-                    if (sb.isNotEmpty()) sb.append(" ")
-                    sb.append(text)
-                    totalConfidence += conf
-                }
-                recognizedText = sb.toString()
-                totalConfidence /= jsonArr.length()
+        for (i in 0 until benchmarkArr.length()) {
+            val runInfo = benchmarkArr.getJSONObject(i)
+            val totalMs = runInfo.optLong("latency_ms", 0L)
+            
+            // Normalize title to match standard test_case names
+            val title = runInfo.optString("title", "Unknown")
+            val testCase = when {
+                title.contains("Full Image") -> "full_image"
+                title.contains("720p") -> "downscaled_720p"
+                title.contains("480p") -> "downscaled_480p"
+                title.contains("Cropped") -> "center_cropped"
+                else -> title
             }
 
-            ocrData.put("document_type", "image")
-            ocrData.put("recognized_text", recognizedText)
-            ocrData.put("confidence", totalConfidence)
-            ocrData.put("text_lines", textLines)
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-            ocrData.put("error", e.message)
-            try { ocrData.put("raw", JSONArray(jsonResult)) } catch(ex: Exception) {}
+            if (testCase == "full_image") {
+                fullImageTotalMs = totalMs
+            }
+            
+            val statObj = JSONObject().apply {
+                put("test_case", testCase)
+                
+                put("latency", JSONObject().apply {
+                    put("preprocess_ms", JSONObject.NULL)  // Using null as requested
+                    put("detection_ms", JSONObject.NULL)   // Using null as requested
+                    put("recognition_ms", JSONObject.NULL) // Using null as requested
+                    put("total_ms", totalMs)
+                })
+                
+                put("resource_usage", runInfo.optJSONObject("resource_usage") ?: JSONObject())
+            }
+            benchmarkStats.put(statObj)
         }
-        put("ocr_data", ocrData)
+        
+        payload.put("benchmark", benchmarkStats)
+        
+        // 3. Summary
+        payload.put("summary", JSONObject().apply {
+            put("text_object_count", finalObjCount)
+            put("average_confidence", avgConf)
+            put("total_latency_ms", fullImageTotalMs)
+        })
+
+    } catch (e: Exception) {
+        e.printStackTrace()
+        payload.put("type", "error")
+        payload.put("error", e.message)
     }
+    
     return payload
 }
 
