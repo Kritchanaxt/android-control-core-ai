@@ -129,6 +129,15 @@ cv::Mat getRotateCropImage(const cv::Mat& src, std::vector<cv::Point> box) {
     int top = int(*std::min_element(collectY, collectY + 4));
     int bottom = int(*std::max_element(collectY, collectY + 4));
 
+    left = std::max(0, left);
+    right = std::min(image.cols, right);
+    top = std::max(0, top);
+    bottom = std::min(image.rows, bottom);
+
+    if (right <= left || bottom <= top) {
+        return cv::Mat();
+    }
+
     cv::Mat imgCrop;
     image(cv::Rect(left, top, right - left, bottom - top)).copyTo(imgCrop);
 
@@ -181,7 +190,13 @@ std::vector<cv::Mat> getPartImages(const cv::Mat& src, std::vector<TextBox>& tex
         for (int i = 0; i < textBoxes.size(); ++i)
         {
             cv::Mat partImg = getRotateCropImage(src, textBoxes[i].boxPoint);
-            partImages.emplace_back(partImg);
+            if (!partImg.empty() && partImg.total() > 0) {
+                partImages.emplace_back(partImg);
+            } else {
+                // Remove the textbox if the image crop failed
+                textBoxes.erase(textBoxes.begin() + i);
+                i--;
+            }
         }
     }
 

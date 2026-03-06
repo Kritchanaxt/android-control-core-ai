@@ -45,7 +45,10 @@ class PaddleOCR {
             jsonObject.put("x3", obj.x3)
             jsonObject.put("y3", obj.y3)
             jsonObject.put("label", obj.label)
-            jsonObject.put("prob", obj.prob)
+            
+            // Fix for org.json.JSONException: Forbidden numeric value: NaN
+            val safeProb = if (obj.prob.isNaN() || obj.prob.isInfinite()) 0f else obj.prob
+            jsonObject.put("prob", safeProb)
 
             // OCRScreen compatibility: box [[x,y],...]
             val box = JSONArray()

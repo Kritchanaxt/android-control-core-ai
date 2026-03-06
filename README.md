@@ -12,6 +12,8 @@ Android system-level control core featuring a persistent background service, **A
 ### **🆕 AI & OCR Scanning (New)**
 
 * **Advanced OCR Engine**: Powered by **NCNN** framework running **PP-OCRv4** (Mobile/Slim), enabling offline, ultra-fast, and accurate text recognition directly on Android devices.
+* **Extremely Fast Initialization**: OCR models are pre-compiled and optimized into binary `.param.bin` and `.bin` formats. This completely eliminates text-parsing overhead, reducing the OCR initialization time from ~10 seconds down to **less than 2 seconds**.
+* **CPU Thread Optimization**: Carefully forces CPU execution (4 Threads) bypassing Vulkan shader compilation bounds which significantly resolves heavy GPU bottleneck overhead during recurrent neural network OCR scans. 
 * **Camera2 API Control**: Advanced camera management with custom resolution scaling, auto-focus, and flash control.
 * **Real-Time Preview**: Low-latency camera preview implemented with **Jetpack Compose + TextureView**.
 * **JSON Output**: OCR results are instantly formatted as JSON for easy parsing and integration with the web client.

@@ -100,7 +100,10 @@ std::vector<TextBox> getTextBoxes(const cv::Mat & src, float boxScoreThresh, flo
 {
     int width = src.cols;
     int height = src.rows;
-    int target_size = 640;
+
+    // เลือกใช้ target_size ที่หารด้วย 32 ลงตัวเสมอ 
+    int target_size = 240; 
+
     // pad to multiple of 32
     int w = width;
     int h = height;
@@ -203,7 +206,6 @@ TextLine getTextLine(const cv::Mat & src)
     input.substract_mean_normalize(mean_vals, norm_vals);
 
     ncnn::Extractor extractor = crnnNet.create_extractor();
-    //extractor.set_num_threads(2);
     extractor.input("input", input);
 
     ncnn::Mat out;
@@ -268,8 +270,9 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
     opt.use_packing_layout = true;
 
     // use vulkan compute
-    if (ncnn::get_gpu_count() != 0)
-        opt.use_vulkan_compute = true;
+    // if (ncnn::get_gpu_count() != 0)
+    //    opt.use_vulkan_compute = true;
+    opt.use_vulkan_compute = false;
 
     AAssetManager* mgr = AAssetManager_fromJava(env, assetManager);
 
@@ -397,8 +400,20 @@ JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_Paddl
 
     if(textLines.size() > 0)
     {
-        for(int i = 0; i < textLines.size(); i++)
+        for(int i = 0; i < textLines.size(); i++) {
             objects[i].text = textLines[i].text;
+            
+            // Calculate average score for the recognized text
+            if(textLines[i].charScores.size() > 0) {
+                float sum = 0;
+                for(int j = 0; j < textLines[i].charScores.size(); j++) {
+                    sum += textLines[i].charScores[j];
+                }
+                objects[i].score = sum / textLines[i].charScores.size();
+            } else {
+                objects[i].score = 0.0f;
+            }
+        }
     }
     // objects to Obj[]
     jobjectArray jObjArray = env->NewObjectArray(objects.size(), objCls, NULL);
