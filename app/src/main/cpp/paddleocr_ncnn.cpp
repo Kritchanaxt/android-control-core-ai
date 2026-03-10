@@ -182,10 +182,16 @@ TextLine scoreToTextLine(const std::vector<float>& outputData, int h, int w)
         maxValue = -1000.f;
 
         maxIndex = int(argmax(outputData.begin()+i*w, outputData.begin()+i*w+w));
-        maxValue = float(*std::max_element(outputData.begin()+i*w, outputData.begin()+i*w+w));// / partition;
-        if (maxIndex > 0 && maxIndex < keySize && (!(i > 0 && maxIndex == lastIndex))) {
+        maxValue = float(*std::max_element(outputData.begin()+i*w, outputData.begin()+i*w+w));
+        
+        // Fix for blank index. The last index (w-1) is the CTC blank.
+        if (maxIndex > 0 && maxIndex < w - 1 && (!(i > 0 && maxIndex == lastIndex))) {
             scores.emplace_back(maxValue);
-            strRes.append(keys[maxIndex - 1]);
+            if (maxIndex - 1 < keySize) {
+                strRes.append(keys[maxIndex - 1]);
+            } else {
+                strRes.append(" ");
+            }
         }
         lastIndex = maxIndex;
     }
@@ -206,13 +212,49 @@ TextLine getTextLine(const cv::Mat & src)
     input.substract_mean_normalize(mean_vals, norm_vals);
 
     ncnn::Extractor extractor = crnnNet.create_extractor();
-    extractor.input("input", input);
+    extractor.input("x", input);
 
     ncnn::Mat out;
-    extractor.extract("output", out);
+    extractor.extract("fetch_name_0", out);
+    if (out.empty()) {
+        extractor.extract("Add.227", out);
+    }
+    if (out.empty()) {
+        extractor.extract("output", out);
+    }
+    if (out.empty()) {
+        return { "", {} };
+    }
+
     float* floatArray = (float*)out.data;
-    std::vector<float> outputData(floatArray, floatArray + out.h * out.w);
-    TextLine res = scoreToTextLine(outputData, out.h, out.w);
+    // Fallback un-packing logic to guarantee safety:
+    int total_elements = 1;
+    if (out.dims == 1) total_elements = out.w;
+    else if (out.dims == 2) total_elements = out.h * out.w;
+    else if (out.dims == 3) total_elements = out.c * out.h * out.w;
+
+    int expected_class_num = keys.size() + 2;
+    int class_num = out.w; // usually out.w is class_num and out.h is seq_len
+    int seq_len = out.h;
+
+    // Handle 3D output if needed, though typically it's 2D
+    std::vector<float> outputData(total_elements);
+    if (out.dims == 1 || out.dims == 2) {
+        std::copy(floatArray, floatArray + total_elements, outputData.begin());
+    } else if (out.dims == 3) {
+        if (out.c == 1) {
+            std::copy(floatArray, floatArray + total_elements, outputData.begin());
+        } else {
+            for (int q = 0; q < out.c; q++) {
+                const float* ptr = out.channel(q);
+                std::copy(ptr, ptr + out.w * out.h, outputData.begin() + q * out.w * out.h);
+            }
+        }
+        class_num = expected_class_num;
+        seq_len = total_elements / class_num;
+    }
+
+    TextLine res = scoreToTextLine(outputData, seq_len, class_num);
     return res;
 }
 
