@@ -15,7 +15,7 @@ Android system-level control core featuring a persistent background service, **H
 * **PP-OCRv5 Support**: Native support for **PaddleOCR v5** models (Thai & English), capable of reading complex document layouts, Thai ID cards, and receipts with high accuracy.
 * **Zero-Copy Inference**: Direct memory mapping of `.onnx` models via AssetManager to C++ execution runtime, bypassing Java overhead entirely.
 * **Optimized Performance**: 
-  - **Detection**: NCNN (Vulkan disabled for stability/CPU threading force) with optimized `target_size=640` for balance between speed and small-text accuracy.
+  - **Detection**: NCNN (Vulkan disabled for stability/CPU threading force) with optimized `target_size=320` for balance between speed and small-text accuracy.
   - **Recognition**: ONNX Runtime 1.17.1 (Standard C++ API with Exceptions enabled).
   - **Reduced Footprint**: Legacy NCNN recognition models (`.param`/`.bin`) removed, relying solely on efficient `.onnx` models.
   - **Speed**: Full OCR pipeline runs in **~100-240ms** on mid-range Android devices.
