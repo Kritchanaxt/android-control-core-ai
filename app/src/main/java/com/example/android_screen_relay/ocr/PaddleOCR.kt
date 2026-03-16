@@ -27,7 +27,7 @@ class PaddleOCR {
         var prob: Float = 0f
     }
 
-    external fun init(assetManager: AssetManager): Boolean
+    external fun init(assetManager: AssetManager, coreCount: Int, useGpu: Boolean): Boolean
     private external fun detectNative(bitmap: Bitmap, use_gpu: Boolean): Array<Obj>
 
     fun detect(bitmap: Bitmap): String {
@@ -79,9 +79,9 @@ class PaddleOCR {
     }
 
 
-    fun initModel(context: Context): Boolean {
+    fun initModel(context: Context, coreCount: Int = 6, useGpu: Boolean = false): Boolean {
         return try {
-            init(context.assets)
+            init(context.assets, coreCount, useGpu)
         } catch (e: Exception) {
             Log.e("PaddleOCR", "Error initializing model", e)
             false

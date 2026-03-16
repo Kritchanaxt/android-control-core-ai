@@ -341,20 +341,24 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
     ncnn::destroy_gpu_instance();
 }
 
-// public native boolean init(AssetManager mgr);
-JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_init(JNIEnv* env, jobject thiz, jobject assetManager)
+// public native boolean init(AssetManager mgr, int coreCount, boolean useGpu);
+JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_init(JNIEnv* env, jobject thiz, jobject assetManager, jint coreCount, jboolean useGpu)
 {
+    __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Initializing OCR with %d cores, GPU (Vulkan): %s", coreCount, useGpu ? "true" : "false");
+
     ncnn::Option opt;
     opt.lightmode = true;
-    opt.num_threads = 6;
+    opt.num_threads = coreCount;
     opt.blob_allocator = &g_blob_pool_allocator;
     opt.workspace_allocator = &g_workspace_pool_allocator;
     opt.use_packing_layout = true;
 
     // use vulkan compute
-    // if (ncnn::get_gpu_count() != 0)
-    //    opt.use_vulkan_compute = true;
-    opt.use_vulkan_compute = false;
+    if (useGpu && ncnn::get_gpu_count() != 0) {
+        opt.use_vulkan_compute = true;
+    } else {
+        opt.use_vulkan_compute = false;
+    }
 
     AAssetManager* mgr = AAssetManager_fromJava(env, assetManager);
 
@@ -388,7 +392,7 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
     }
 
     // Load ONNX model into memory buffer
-    AAsset* asset_onnx = AAssetManager_open(mgr, "rec_th.onnx", AASSET_MODE_BUFFER); 
+    AAsset* asset_onnx = AAssetManager_open(mgr, "rec_th.onnx", AASSET_MODE_BUFFER);
     if (asset_onnx) {
         off_t len = AAsset_getLength(asset_onnx);
         rec_model_buffer.resize(len);
@@ -396,7 +400,7 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
         AAsset_close(asset_onnx);
 
         Ort::SessionOptions session_options;
-        session_options.SetIntraOpNumThreads(6);
+        session_options.SetIntraOpNumThreads(coreCount);
         session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
         try {
@@ -470,6 +474,8 @@ JNIEXPORT jstring JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_
 // public native Obj[] detectNative(Bitmap bitmap, boolean use_gpu);
 JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_detectNative(JNIEnv* env, jobject thiz, jobject bitmap, jboolean use_gpu)
 {
+    __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Running inference: DBNet threads=%d, Vulkan=%s", dbNet.opt.num_threads, dbNet.opt.use_vulkan_compute ? "true" : "false");
+
     if (use_gpu == JNI_TRUE && ncnn::get_gpu_count() == 0)
     {
         return NULL;

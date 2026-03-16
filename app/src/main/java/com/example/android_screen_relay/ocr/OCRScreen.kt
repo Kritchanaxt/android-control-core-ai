@@ -88,10 +88,11 @@ fun OCRScreen() {
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
+    var computeMode by remember { mutableStateOf(ComputeMode.CPU_6_CORE) }
 
     // Init OCR
-    LaunchedEffect(Unit) {
-        val success = ocr.initModel(context)
+    LaunchedEffect(computeMode) {
+        val success = ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
         isInitialized = success
         if (!success) {
             Toast.makeText(context, "OCR Init Failed.", Toast.LENGTH_LONG).show()
@@ -151,6 +152,8 @@ fun OCRScreen() {
             jsonResult = ocrResultJson,
             timeMs = ocrTimeMs,
             isProcessing = isProcessing,
+            computeMode = computeMode,
+            onComputeModeChange = { computeMode = it },
             onClear = { 
                 currentImage = null
                 ocrResultJson = "[]"
@@ -581,6 +584,8 @@ fun OCRResultScreen(
     jsonResult: String,
     timeMs: Long,
     isProcessing: Boolean,
+    computeMode: ComputeMode,
+    onComputeModeChange: (ComputeMode) -> Unit,
     onClear: () -> Unit,
     onRunModel: () -> Unit,
     onGalleryClick: () -> Unit // Add gallery option here too as per screenshot?
@@ -630,6 +635,24 @@ fun OCRResultScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Compute Mode Selector
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ComputeMode.values().forEach { mode ->
+                            FilterChip(
+                                selected = (computeMode == mode),
+                                onClick = { onComputeModeChange(mode) },
+                                label = { Text(mode.displayName, fontSize = 12.sp) },
+                                leadingIcon = if (computeMode == mode) {
+                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                } else null,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
