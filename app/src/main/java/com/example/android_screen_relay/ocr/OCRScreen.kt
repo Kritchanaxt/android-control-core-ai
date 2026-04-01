@@ -249,6 +249,7 @@ fun CameraPreviewScreen(
     DisposableEffect(Unit) {
         onDispose {
             cameraController?.close()
+            ocr.release()
         }
     }
 

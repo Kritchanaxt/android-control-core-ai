@@ -31,6 +31,17 @@ class PaddleOCR {
 
     external fun init(assetManager: AssetManager, coreCount: Int, useGpu: Boolean): Boolean
     private external fun detectNative(bitmap: Bitmap, use_gpu: Boolean): Array<Obj>
+    private external fun releaseNative()
+
+    fun release() {
+        synchronized(lock) {
+            try {
+                releaseNative()
+            } catch (e: Exception) {
+                Log.e("PaddleOCR", "Error releasing model", e)
+            }
+        }
+    }
 
     fun detect(bitmap: Bitmap): String {
         // Run detectNative on a thread with 8MB stack to prevent stack overflow

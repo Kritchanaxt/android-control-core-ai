@@ -564,4 +564,33 @@ JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_Paddl
     return jObjArray;
 }
 
+JNIEXPORT void JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_releaseNative(JNIEnv* env, jobject thiz)
+{
+    __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Releasing OCR native resources...");
+
+    dbNet.clear();
+
+    if (rec_session) {
+        rec_session.reset();
+    }
+    
+    if (ort_env) {
+        ort_env.reset();
+    }
+
+    rec_model_buffer.clear();
+    keys.clear();
+
+    if (objCls) {
+        env->DeleteGlobalRef(objCls);
+        objCls = NULL;
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "OCR native resources released.");
+}
+
+} // extern "C"
+
+
+
 }
