@@ -9,6 +9,8 @@ import org.json.JSONObject
 
 class PaddleOCR {
     companion object {
+        private val lock = Any()
+
         init {
             System.loadLibrary("paddleocrncnn")
         }
@@ -36,10 +38,12 @@ class PaddleOCR {
         var result: Array<Obj>? = null
         var error: Throwable? = null
         val thread = Thread(null, {
-            try {
-                result = detectNative(bitmap, false)
-            } catch (e: Throwable) {
-                error = e
+            synchronized(lock) {
+                try {
+                    result = detectNative(bitmap, false)
+                } catch (e: Throwable) {
+                    error = e
+                }
             }
         }, "OCR-Inference", 64L * 1024 * 1024)
         thread.start()
@@ -80,11 +84,13 @@ class PaddleOCR {
 
 
     fun initModel(context: Context, coreCount: Int = 6, useGpu: Boolean = false): Boolean {
-        return try {
-            init(context.assets, coreCount, useGpu)
-        } catch (e: Exception) {
-            Log.e("PaddleOCR", "Error initializing model", e)
-            false
+        return synchronized(lock) {
+            try {
+                init(context.assets, coreCount, useGpu)
+            } catch (e: Exception) {
+                Log.e("PaddleOCR", "Error initializing model", e)
+                false
+            }
         }
     }
 }

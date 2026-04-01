@@ -421,6 +421,7 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
         std::istringstream inStr(buffer);
         std::string line;
         int size = 0;
+        keys.clear();
         while (getline(inStr, line)) {
             keys.emplace_back(line);
             size++;
@@ -432,6 +433,9 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
     
     
     // init jni glue
+    if (objCls) {
+        env->DeleteGlobalRef(objCls);
+    }
     jclass localObjCls = env->FindClass("com/example/android_screen_relay/ocr/PaddleOCR$Obj");
     objCls = reinterpret_cast<jclass>(env->NewGlobalRef(localObjCls));
 
@@ -475,6 +479,11 @@ JNIEXPORT jstring JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_
 JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_detectNative(JNIEnv* env, jobject thiz, jobject bitmap, jboolean use_gpu)
 {
     __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Running inference: DBNet threads=%d, Vulkan=%s", dbNet.opt.num_threads, dbNet.opt.use_vulkan_compute ? "true" : "false");
+
+    if (!rec_session || !ort_env) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "OCR models are not initialized!");
+        return NULL;
+    }
 
     if (use_gpu == JNI_TRUE && ncnn::get_gpu_count() == 0)
     {
@@ -541,10 +550,15 @@ JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_Paddl
         env->SetFloatField(jObj, y2Id, y2);
         env->SetFloatField(jObj, x3Id, x3);
         env->SetFloatField(jObj, y3Id, y3);
-        env->SetObjectField(jObj, labelId, env->NewStringUTF(objects[i].text.c_str()));
+        
+        jstring jLabel = env->NewStringUTF(objects[i].text.c_str());
+        env->SetObjectField(jObj, labelId, jLabel);
         env->SetFloatField(jObj, probId, objects[i].score);
 
         env->SetObjectArrayElement(jObjArray, i, jObj);
+        
+        env->DeleteLocalRef(jLabel);
+        env->DeleteLocalRef(jObj);
     }
 
     return jObjArray;
