@@ -90,6 +90,12 @@ fun OCRScreen() {
     var isProcessing by remember { mutableStateOf(false) }
     var computeMode by remember { mutableStateOf(ComputeMode.CPU_6_CORE) }
 
+    DisposableEffect(ocr) {
+        onDispose {
+            ocr.release()
+        }
+    }
+
     // Init OCR
     LaunchedEffect(computeMode) {
         val success = ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
@@ -249,7 +255,6 @@ fun CameraPreviewScreen(
     DisposableEffect(Unit) {
         onDispose {
             cameraController?.close()
-            ocr.release()
         }
     }
 

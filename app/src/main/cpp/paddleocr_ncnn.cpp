@@ -590,7 +590,3 @@ JNIEXPORT void JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_rel
 }
 
 } // extern "C"
-
-
-
-}
