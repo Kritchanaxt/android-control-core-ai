@@ -292,15 +292,12 @@
         const frameCounter = document.getElementById('frameCounter');
 
         window.onload = () => {
-            const savedUrl = localStorage.getItem('ws_url');
-            if (savedUrl) urlInput.value = savedUrl;
-            else urlInput.value = "ws://192.168.1.XX:8887";
+            urlInput.value = "ws://192.168.1.XX:8887";
         };
 
         function connect() {
             const url = urlInput.value.trim();
             if (!url) return alert("Please enter Server Endpoint");
-            localStorage.setItem('ws_url', url);
             frameCount = 0;
             writeLog("INF", "Establishing network handshake...");
             
