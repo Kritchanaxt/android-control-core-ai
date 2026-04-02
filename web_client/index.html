@@ -34,42 +34,74 @@
         .status { padding: 5px 10px; border-radius: 4px; font-size: 14px; font-weight: bold; display: inline-block; margin-bottom: 15px; }
         .status.connected { background-color: #d4edda; color: #155724; }
         .status.disconnected { background-color: #f8d7da; color: #721c24; }
+
+        /* Monitor Styles */
+        .monitor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 15px; }
+        .monitor-item { background: #f8f9fa; padding: 10px; border-radius: 8px; border: 1px solid #eee; text-align: center; }
+        .monitor-label { font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 4px; display: block; }
+        .monitor-value { font-size: 18px; font-weight: bold; color: #007AFF; font-family: 'Consolas', monospace; }
+        .monitor-high { color: #FF3B30; }
+        .monitor-med { color: #FF9500; }
     </style>
 </head>
 <body>
 
     <div class="row">
-        <div class="card col">
-            <h2>📡 Connection</h2>
+        <div class="card col" style="flex: 2;">
+            <h2>📊 Android Resource Monitor</h2>
             <div id="statusBadge" class="status disconnected">Disconnected</div>
             
-            <label for="urlInput">WebSocket URL:</label>
-            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">*Check IP Address on your Android App screen</div>
-            <input type="text" id="urlInput" value="ws://192.168.1.X:8887" placeholder="ws://YOUR_ANDROID_IP:8887">
-            
-            <label for="passkeyInput">Passkey (Optional):</label>
-            <input type="text" id="passkeyInput" placeholder="Enter 6-digit passkey">
-            
-            <div style="margin-top: 10px;">
-                <button id="connectBtn" onclick="connect()" class="green">Connect</button>
-                <button id="disconnectBtn" onclick="disconnect()" class="red" disabled>Disconnect</button>
-                <span id="frameCounter" style="margin-left: 10px; font-size: 12px; color: #888; display: none;">Received Frames: 0</span>
+            <div class="monitor-grid">
+                <div class="monitor-item">
+                    <span class="monitor-label">CPU Usage</span>
+                    <span id="cpuVal" class="monitor-value">--%</span>
+                </div>
+                <div class="monitor-item">
+                    <span class="monitor-label">RAM Used</span>
+                    <span id="ramUsedVal" class="monitor-value">-- MB</span>
+                </div>
+                <div class="monitor-item">
+                    <span class="monitor-label">RAM Total</span>
+                    <span id="ramTotalVal" class="monitor-value">-- MB</span>
+                </div>
+                <div class="monitor-item">
+                    <span class="monitor-label">Battery / Temp</span>
+                    <span id="batteryVal" class="monitor-value">--% / --°C</span>
+                </div>
+                <div class="monitor-item" style="background: #eef2ff; border-color: #d1d9ff;">
+                    <span class="monitor-label">Current OCR Mode</span>
+                    <span id="ocrModeVal" class="monitor-value" style="font-size: 14px; color: #5856D6;">OFF</span>
+                </div>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <label for="urlInput">WebSocket URL:</label>
+                <input type="text" id="urlInput" value="ws://192.168.1.X:8887" placeholder="ws://YOUR_ANDROID_IP:8887">
+                
+                <label for="passkeyInput">Passkey:</label>
+                <input type="text" id="passkeyInput" placeholder="Enter 6-digit passkey">
+                
+                <div style="margin-top: 10px;">
+                    <button id="connectBtn" onclick="connect()" class="green">Connect</button>
+                    <button id="disconnectBtn" onclick="disconnect()" class="red" disabled>Disconnect</button>
+                    <span id="frameCounter" style="margin-left: 10px; font-size: 12px; color: #888; display: none;">Received Frames: 0</span>
+                </div>
             </div>
         </div>
 
         <div class="card col">
-            <h2>📩 Send Command</h2>
+            <h2>📩 Commands</h2>
             <label>Presets:</label>
             <div style="margin-bottom: 10px;">
                 <button onclick="setPayload('ping')">Ping</button>
-                <button onclick="setPayload('notification')">Test Notification</button>
                 <button onclick="setPayload('auth')">Auth</button>
+                <button onclick="setPayload('notification')">Notification</button>
             </div>
 
             <label for="payloadInput">JSON Payload:</label>
-            <textarea id="payloadInput" rows="5">{"type": "ping"}</textarea>
+            <textarea id="payloadInput" rows="3">{"type": "ping"}</textarea>
             
-            <button onclick="sendData()" id="sendBtn" disabled>Send Payload</button>
+            <button onclick="sendData()" id="sendBtn" style="width: 100%;" disabled>Send Command</button>
         </div>
     </div>
 
@@ -132,24 +164,25 @@
                         try {
                             const jsonData = JSON.parse(event.data);
                             if (jsonData.type === "heartbeat") {
-                                // Create a clean object for comparison by explicitly selecting stable fields
-                                // We ignore 'uptime_sec' and any top-level 'timestamp'
-                                const cleanData = {};
+                                updateMonitor(jsonData);
                                 
-                                // Handling both nested 'data' style and flat style
-                                const source = jsonData.data || jsonData;
-                                
-                                // Copy known stable keys that define state
-                                cleanData.foreground_service = source.foreground_service;
-                                cleanData.screen_capture_active = source.screen_capture_active;
-                                cleanData.is_background = source.is_background;
-                                // Add other stable status keys here if needed
-                                
+                                // Heartbeat Change Log logic
+                                const cleanData = {
+                                    f: jsonData.foreground_service,
+                                    s: jsonData.screen_capture_active,
+                                    b: jsonData.is_background
+                                };
                                 const currentHeartbeatStr = JSON.stringify(cleanData);
                                 if (currentHeartbeatStr !== lastHeartbeatJSON) {
-                                    log("💓 Heartbeat Status Changed: " + JSON.stringify(cleanData), "warning");
+                                    log("💓 State: " + JSON.stringify(cleanData), "warning");
                                     lastHeartbeatJSON = currentHeartbeatStr;
                                 }
+                            } else if (jsonData.type === "ocr_result") {
+                                // Extract Summary
+                                const summary = jsonData.summary || {};
+                                log(`🎯 OCR Result [${summary.total_latency_ms}ms]: Found ${summary.text_object_count} objects (Conf: ${(summary.average_confidence*100).toFixed(1)}%)`, "success");
+                                const engineData = jsonData.engine_info ? `\n⚙️ Engine: ${JSON.stringify(jsonData.engine_info)}` : '';
+                                log(`📥 Payload:${engineData}\n` + JSON.stringify(jsonData, null, 2), "rx");
                             } else {
                                 log("📥 Received: " + event.data, "rx");
                             }
@@ -161,6 +194,7 @@
 
                 ws.onclose = (event) => {
                     updateStatus(false);
+                    clearMonitor();
                     log("❌ Disconnected (Code: " + event.code + ")");
                 };
 
@@ -171,6 +205,46 @@
             } catch (e) {
                 log("❌ Connection failed: " + e.message);
             }
+        }
+
+        function updateMonitor(data) {
+            // Support both nested 'data' and flat structure
+            const src = data.data || data;
+            
+            const cpuEl = document.getElementById('cpuVal');
+            const ramUsedEl = document.getElementById('ramUsedVal');
+            const ramTotalEl = document.getElementById('ramTotalVal');
+            const batteryEl = document.getElementById('batteryVal');
+
+            if (src.cpu_usage) {
+                cpuEl.textContent = src.cpu_usage;
+                const cpuNum = parseFloat(src.cpu_usage);
+                cpuEl.className = 'monitor-value ' + (cpuNum > 80 ? 'monitor-high' : cpuNum > 50 ? 'monitor-med' : '');
+            }
+            
+            if (src.ram_used_mb) {
+                ramUsedEl.textContent = src.ram_used_mb + " MB";
+                const ramPct = (src.ram_used_mb / src.ram_total_mb) * 100;
+                ramUsedEl.className = 'monitor-value ' + (ramPct > 90 ? 'monitor-high' : ramPct > 70 ? 'monitor-med' : '');
+            }
+            
+            if (src.ram_total_mb) ramTotalEl.textContent = src.ram_total_mb + " MB";
+            
+            if (src.ocr_mode) {
+                document.getElementById('ocrModeVal').textContent = src.ocr_mode;
+            }
+
+            if (src.battery_level !== undefined) {
+                batteryEl.textContent = src.battery_level + "% / " + (src.battery_temp || "--") + "°C";
+                batteryEl.className = 'monitor-value ' + (src.battery_temp > 42 ? 'monitor-high' : src.battery_temp > 38 ? 'monitor-med' : '');
+            }
+        }
+
+        function clearMonitor() {
+            document.getElementById('cpuVal').textContent = "--%";
+            document.getElementById('ramUsedVal').textContent = "-- MB";
+            document.getElementById('ramTotalVal').textContent = "-- MB";
+            document.getElementById('batteryVal').textContent = "--% / --°C";
         }
 
         function disconnect() {
@@ -265,6 +339,19 @@
                 output.value = JSON.stringify({ type: "auth", key: pass }, null, 2);
             }
         }
+
+        function setOCRMode(cores, useGpu) {
+            const output = document.getElementById('payloadInput');
+            const data = {
+                type: "config_ocr",
+                cores: cores,
+                use_gpu: useGpu,
+                info: useGpu ? "Switching to GPU Mode" : `Switching to CPU ${cores} Cores`
+            };
+            output.value = JSON.stringify(data, null, 2);
+            log(`Config preset updated: ${data.info}`, "success");
+        }
+
         function updateFrameCounter(start = false) {
             if(start) {
                 frameCounter.style.display = 'inline-block';

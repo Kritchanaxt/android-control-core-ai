@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import android.content.pm.ServiceInfo
+import com.example.android_screen_relay.ocr.SystemMonitor
+import com.example.android_screen_relay.ocr.PaddleOCR
 import kotlinx.coroutines.*
 import kotlin.random.Random
 
@@ -92,10 +94,22 @@ class RelayService : Service() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        
+        // P'Bear: Automatic Release (Release Native/JNI memory)
+        try {
+            PaddleOCR().release() // Force release native engines
+            android.util.Log.d("RelayService", "Native PaddleOCR resources released.")
+        } catch (e: Exception) {
+            android.util.Log.e("RelayService", "Release failed: ${e.message}")
+        }
+
         discoveryJob?.cancel()
         screenCaptureManager.stopCapture()
         // overlayManager.hideOverlay() // Assuming this method exists or you might need to check OverlayManager content
         overlayManager.removeOverlay()
+        
+        // Final cleanup GC hint
+        System.gc()
     }
 
     // Public method to broadcast message to all connected clients
@@ -172,8 +186,8 @@ class RelayService : Service() {
     }
 
     private fun startHeartbeat() {
+        var consecutiveLowMemory = 0
         var lastStatusCheck: Map<String, Any>? = null
-        
         scope.launch {
             LogRepository.addLog(
                 component = "RelayService",
@@ -185,12 +199,42 @@ class RelayService : Service() {
                 while (isActive) {
                     delay(1000)
                     try {
-                        val statusMap = mapOf<String, Any>(
+                        val statusMap = mutableMapOf<String, Any>(
                             "uptime_sec" to (System.currentTimeMillis() - 0L) / 1000, 
                             "foreground_service" to true,
                             "screen_capture_active" to (screenCaptureManager != null),
                             "is_background" to true
                         )
+
+                        // Add Real-time Resource Metrics for Monitoring (Requested by P'Bear)
+                        try {
+                            val usage = SystemMonitor.getCurrentResourceUsage(this@RelayService)
+                            val availableRam = usage.ramTotalMb - usage.ramUsedMb
+                            val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
+                            
+                            statusMap["cpu_usage"] = usage.cpuUsage
+                            statusMap["ram_used_mb"] = usage.ramUsedMb
+                            statusMap["ram_total_mb"] = usage.ramTotalMb
+                            statusMap["battery_level"] = usage.batteryLevel
+                            statusMap["battery_temp"] = usage.batteryTemp
+                            statusMap["ocr_mode"] = ocrModeLabel
+
+                            // P'Bear Constraint: If RAM < 300MB, log warning. If < 150MB, stop service.
+                            if (availableRam < 300) {
+                                android.util.Log.w("RelayService", "CRITICAL MEMORY: ${availableRam}MB available")
+                                consecutiveLowMemory++
+                            } else {
+                                consecutiveLowMemory = 0
+                            }
+
+                            if (consecutiveLowMemory > 5 || availableRam < 150) {
+                                android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
+                                showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). Application closed to protect system stability.")
+                                stopSelf()
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("RelayService", "Monitor failed: ${e.message}")
+                        }
                         
                         val statusJson = org.json.JSONObject()
                         statusJson.put("type", "heartbeat")

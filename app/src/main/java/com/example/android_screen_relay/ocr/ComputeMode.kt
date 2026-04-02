@@ -5,3 +5,13 @@ enum class ComputeMode(val coreCount: Int, val useGpu: Boolean, val displayName:
     CPU_6_CORE(6, false, "CPU 6 Core"),
     GPU(4, true, "GPU")
 }
+
+object ComputeModeManager {
+    private var currentMode = ComputeMode.CPU_6_CORE
+
+    fun setMode(mode: ComputeMode) {
+        currentMode = mode
+    }
+
+    fun getMode(): ComputeMode = currentMode
+}

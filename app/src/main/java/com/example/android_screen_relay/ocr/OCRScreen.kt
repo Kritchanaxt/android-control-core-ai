@@ -88,7 +88,7 @@ fun OCRScreen() {
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
-    var computeMode by remember { mutableStateOf(ComputeMode.CPU_6_CORE) }
+    var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
 
     DisposableEffect(ocr) {
         onDispose {
@@ -101,7 +101,13 @@ fun OCRScreen() {
         val success = ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
         isInitialized = success
         if (!success) {
-            Toast.makeText(context, "OCR Init Failed.", Toast.LENGTH_LONG).show()
+            val usage = SystemMonitor.getCurrentResourceUsage(context)
+            val availableRamMb = usage.ramTotalMb - usage.ramUsedMb
+            if (availableRamMb < 300) {
+                Toast.makeText(context, "OCR Init Failed: Low RAM (${availableRamMb}MB). Please free some memory.", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "OCR Init Failed.", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -159,7 +165,10 @@ fun OCRScreen() {
             timeMs = ocrTimeMs,
             isProcessing = isProcessing,
             computeMode = computeMode,
-            onComputeModeChange = { computeMode = it },
+            onComputeModeChange = { 
+                computeMode = it
+                ComputeModeManager.setMode(it)
+            },
             onClear = { 
                 currentImage = null
                 ocrResultJson = "[]"
@@ -167,6 +176,12 @@ fun OCRScreen() {
             },
             onRunModel = {
                 if (!isProcessing && isInitialized) {
+                    val (canRun, errorMsg) = ocr.canRunInference(context)
+                    if (!canRun) {
+                        Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                        return@OCRResultScreen
+                    }
+
                     isProcessing = true
                     scope.launch(Dispatchers.IO) {
                         try {
@@ -987,6 +1002,7 @@ private fun generateOCRPayload(
     val resource = SystemMonitor.getCurrentResourceUsage(context)
     
     val payload = JSONObject()
+    payload.put("type", "ocr_result")
     payload.put("timestamp", System.currentTimeMillis())
     
     // engine_info (new format)
@@ -995,6 +1011,11 @@ private fun generateOCRPayload(
         put("version", "v5")
         put("runtime", "ncnn")
         put("model", "PP-OCRv5_mobile_rec")
+        
+        val mode = ComputeModeManager.getMode()
+        put("compute_mode", mode.displayName)
+        put("cores", mode.coreCount)
+        put("use_gpu", mode.useGpu)
     }
     payload.put("engine_info", engineInfo)
     payload.put("pipeline", "on-device")

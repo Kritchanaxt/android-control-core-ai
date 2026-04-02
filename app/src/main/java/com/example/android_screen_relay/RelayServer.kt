@@ -122,23 +122,24 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                 )
                 
                 if (currentPasskey != null && attemptKey == currentPasskey) {
-                    // NEW LOGIC: Move to Pending State instead of direct approval
-                    val requestId = java.util.UUID.randomUUID().toString()
-                    pendingConnections[requestId] = conn
+                    // Reverted NEW LOGIC: If passkey is correct, JUST APPROVE DIRECTLY to enable data transmission right away.
+                    // The user manually sets the passkey, so it works.
+                    authenticatedSessions.add(conn)
 
                     val response = org.json.JSONObject()
                     response.put("type", "auth_response")
-                    response.put("status", "pending")
+                    response.put("status", "ok")
                     conn.send(response.toString())
 
-                    // Notify Service to show UI
+                    // Notify Service to show UI (but no need to click Approve)
+                    val requestId = java.util.UUID.randomUUID().toString()
                     onConnectionRequest?.invoke(requestId, remoteAddr)
                     
-                    Log.d("RelayServer", "AUTH PENDING: Client $remoteAddr waiting for approval.")
+                    Log.d("RelayServer", "AUTH SUCCESS: Client $remoteAddr approved.")
                     LogRepository.addLog(
                         component = "RelayServer",
-                        event = "auth_pending",
-                        data = mapOf("ip" to remoteAddr, "requestId" to requestId),
+                        event = "auth_success",
+                        data = mapOf("ip" to remoteAddr),
                         level = "INFO",
                         type = LogRepository.LogType.INFO
                     )
@@ -234,6 +235,38 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                 "recent" -> RelayAccessibilityService.instance?.performGlobal(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
                 "stop_server" -> {
                     // Logic to stop server from client? might be dangerous, maybe just stop stream
+                }
+                "config_ocr" -> {
+                    val cores = json.optInt("cores", 4)
+                    val useGpu = json.optBoolean("use_gpu", false)
+                    
+                    // Update Global ComputeMode state
+                    val newMode = if (useGpu) com.example.android_screen_relay.ocr.ComputeMode.GPU 
+                                  else if (cores == 4) com.example.android_screen_relay.ocr.ComputeMode.CPU_4_CORE
+                                  else com.example.android_screen_relay.ocr.ComputeMode.CPU_6_CORE
+                    com.example.android_screen_relay.ocr.ComputeModeManager.setMode(newMode)
+
+                    // P'Bear: Force Release existing engine before re-config
+                    // This ensures memory and threads are cleared so you can see real impact of switching
+                    try {
+                        com.example.android_screen_relay.ocr.PaddleOCR().release()
+                        android.util.Log.d("RelayServer", "OCR Engine Released for Re-config to ${newMode.displayName}")
+                    } catch (e: Exception) {
+                        android.util.Log.e("RelayServer", "Release failed: ${e.message}")
+                    }
+
+                    // Broadcast a system notification or log for visibility
+                    onShowNotification?.invoke("OCR Config Updated", "${newMode.displayName} (Released Previous)")
+                    
+                    // Trigger System.gc() to see real RAM drop in Monitor immediately
+                    System.gc()
+
+                    LogRepository.addLog(
+                        component = "RelayServer",
+                        event = "config_ocr",
+                        data = mapOf("mode" to newMode.displayName, "action" to "release_and_reconfig"),
+                        type = LogRepository.LogType.INFO
+                    )
                 }
             }
         } catch (e: Exception) {

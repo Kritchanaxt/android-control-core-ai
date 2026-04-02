@@ -19,7 +19,58 @@ object SystemMonitor {
     private var lastAppUptime: Long = 0
 
     private fun getCpuUsage(): String {
-        // Attempt 1: Try System-wide CPU (Works on older Android or rooted)
+        // Attempt 1: Try System-wide CPU using "top" command (Works on Android 8+)
+        try {
+            val process = Runtime.getRuntime().exec("top -n 1")
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            var line = reader.readLine()
+            var cpuParsed = ""
+            
+            while (line != null) {
+                val l = line.lowercase(java.util.Locale.US)
+                if (l.contains("user") && l.contains("sys")) {
+                    // Typical output: "%cpu 12%user 1%sys 87%idle" or "User 12.5%, System 5.1%"
+                    val userRegex = Regex("(\\d+\\.?\\d*)[%\\s]+user|user\\s+(\\d+\\.?\\d*)[%\\s]")
+                    val sysRegex = Regex("(\\d+\\.?\\d*)[%\\s]+sys|system\\s+(\\d+\\.?\\d*)[%\\s]")
+                    
+                    val uMatch = userRegex.find(l)
+                    val sMatch = sysRegex.find(l)
+                    
+                    if (uMatch != null && sMatch != null) {
+                        val uStr = uMatch.groupValues[1].takeIf { it.isNotEmpty() } ?: uMatch.groupValues[2]
+                        val sStr = sMatch.groupValues[1].takeIf { it.isNotEmpty() } ?: sMatch.groupValues[2]
+                        val uVal = uStr.toFloatOrNull() ?: 0f
+                        val sVal = sStr.toFloatOrNull() ?: 0f
+                        cpuParsed = String.format("%.1f%%", uVal + sVal)
+                        break
+                    } else if (l.contains("idle")) {
+                         // Parse idle instead
+                         val idleRegex = Regex("(\\d+\\.?\\d*)[%\\s]+idle")
+                         val iMatch = idleRegex.find(l)
+                         if (iMatch != null) {
+                             val idleStr = iMatch.groupValues[1]
+                             val idleVal = idleStr.toFloatOrNull() ?: 100f
+                             // If it's overall CPU percentage over 100%, we normalize it by getting cores count or just assume 100% is max.
+                             cpuParsed = String.format("%.1f%%", 100f - idleVal.coerceAtMost(100f))
+                             break
+                         }
+                    }
+                    
+                    // Fallback to raw line excerpt if regex parsing didn't catch expected forms
+                    cpuParsed = line.trim().take(15)
+                    break
+                }
+                line = reader.readLine()
+            }
+            process.destroy()
+            if (cpuParsed.isNotEmpty()) {
+                return cpuParsed
+            }
+        } catch(e: Exception) {
+            // Ignored
+        }
+
+        // Attempt 2: Try System-wide CPU from /proc/stat (Works on older Android or rooted)
         try {
             val reader = java.io.BufferedReader(java.io.FileReader("/proc/stat"))
             val line = reader.readLine()

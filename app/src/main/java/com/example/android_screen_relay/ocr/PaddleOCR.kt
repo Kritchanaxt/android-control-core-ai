@@ -95,6 +95,14 @@ class PaddleOCR {
 
 
     fun initModel(context: Context, coreCount: Int = 6, useGpu: Boolean = false): Boolean {
+        // Resource Guard: Check available memory before init (Requested by P'Bear)
+        val usage = SystemMonitor.getCurrentResourceUsage(context)
+        val availableRamMb = usage.ramTotalMb - usage.ramUsedMb
+        if (availableRamMb < 300) {
+            Log.e("PaddleOCR", "Cannot init model: Low Memory ($availableRamMb MB available)")
+            return false
+        }
+
         return synchronized(lock) {
             try {
                 init(context.assets, coreCount, useGpu)
@@ -102,6 +110,16 @@ class PaddleOCR {
                 Log.e("PaddleOCR", "Error initializing model", e)
                 false
             }
+        }
+    }
+
+    fun canRunInference(context: Context): Pair<Boolean, String> {
+        val usage = SystemMonitor.getCurrentResourceUsage(context)
+        val availableRamMb = usage.ramTotalMb - usage.ramUsedMb
+        return if (availableRamMb < 200) {
+            Pair(false, "Critical Low Memory: ${availableRamMb}MB. Please close other apps.")
+        } else {
+            Pair(true, "")
         }
     }
 }
