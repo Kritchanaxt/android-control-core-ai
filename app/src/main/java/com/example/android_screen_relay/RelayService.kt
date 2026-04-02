@@ -314,8 +314,13 @@ class RelayService : Service() {
         val intent = Intent(this, ConnectionRequestActivity::class.java).apply {
             putExtra("REQUEST_ID", requestId)
             putExtra("CLIENT_IP", ip)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
         }
+        
+        // Launch Activity immediately
+        startActivity(intent)
         
         val pendingIntent = PendingIntent.getActivity(
             this, 
@@ -324,16 +329,14 @@ class RelayService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Add a "Deny" action directly to notification?
-        // For simplicity, just make the notification tap open the activity.
-        
+        // Still show a high priority notification as backup and for fullScreenIntent requirement
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Connection Request")
             .setContentText("Web Client ($ip) wants to connect.")
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setFullScreenIntent(pendingIntent, true) // Try to float or open
+            .setFullScreenIntent(pendingIntent, true) 
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()

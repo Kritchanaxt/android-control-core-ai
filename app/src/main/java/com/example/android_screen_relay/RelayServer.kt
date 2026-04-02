@@ -122,24 +122,24 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                 )
                 
                 if (currentPasskey != null && attemptKey == currentPasskey) {
-                    // Reverted NEW LOGIC: If passkey is correct, JUST APPROVE DIRECTLY to enable data transmission right away.
-                    // The user manually sets the passkey, so it works.
-                    authenticatedSessions.add(conn)
-
+                    // NEW LOGIC: Use pending connections and wait for manual approval
+                    val requestId = java.util.UUID.randomUUID().toString()
+                    pendingConnections[requestId] = conn
+                    
                     val response = org.json.JSONObject()
                     response.put("type", "auth_response")
-                    response.put("status", "ok")
+                    response.put("status", "pending")
+                    response.put("request_id", requestId)
                     conn.send(response.toString())
 
-                    // Notify Service to show UI (but no need to click Approve)
-                    val requestId = java.util.UUID.randomUUID().toString()
+                    // Notify Service to show UI for manual approval
                     onConnectionRequest?.invoke(requestId, remoteAddr)
                     
-                    Log.d("RelayServer", "AUTH SUCCESS: Client $remoteAddr approved.")
+                    Log.d("RelayServer", "AUTH PENDING: Request $requestId from $remoteAddr")
                     LogRepository.addLog(
                         component = "RelayServer",
-                        event = "auth_success",
-                        data = mapOf("ip" to remoteAddr),
+                        event = "auth_pending",
+                        data = mapOf("ip" to remoteAddr, "requestId" to requestId),
                         level = "INFO",
                         type = LogRepository.LogType.INFO
                     )

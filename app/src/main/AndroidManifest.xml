@@ -70,7 +70,9 @@
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:taskAffinity=""
-            android:theme="@style/Theme.AppCompat.Dialog"
+            android:theme="@style/Theme.TransparentDialog"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:exported="false" />
     </application>
 
