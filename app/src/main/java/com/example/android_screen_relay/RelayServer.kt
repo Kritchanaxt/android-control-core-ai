@@ -336,6 +336,9 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                 }
             }
             message.contains("\"engine_info\":") && message.contains("\"result\":") -> {
+                // Direct post to Google Sheets to satisfy User's requirement
+                GoogleSheetsLogger.log(message)
+                
                 // This is an OCR result, log a summary instead of the giant JSON
                 try {
                     val json = org.json.JSONObject(message)

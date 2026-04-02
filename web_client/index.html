@@ -329,13 +329,6 @@
                                 if (jsonData.battery_level !== undefined) {
                                     document.getElementById('batteryVal').textContent = jsonData.battery_level + "% / " + (jsonData.battery_temp || "--") + "°C";
                                 }
-                                // Throttling: ส่ง Heartbeat ไป Google Sheets แค่ทุกๆ 5 วินาที
-                                const now = Date.now();
-                                if (now - lastHeartbeatTime >= 5000) {
-                                    writeLog("INF", "Dispatching telemetry heartbeat...");
-                                    logToSheets(event.data);
-                                    lastHeartbeatTime = now;
-                                }
                             } else if (jsonData.type === "auth_response") {
                                 if (jsonData.status === "pending") {
                                     writeLog("INF", "Auth Key Valid. Waiting for manual approval on Android...");
@@ -351,7 +344,6 @@
                                 const summary = jsonData.summary || {};
                                 writeLog("RX", "OCR Success | " + (summary.text_object_count || 0) + " items found | " + (summary.total_latency_ms || 0) + "ms");
                                 writeLog("RX", JSON.stringify(jsonData, null, 2));
-                                logToSheets(event.data); 
                             } else {
                                 // ถ้าไม่ใช่ heartbeat ให้แสดง raw data ปกติ
                                 if (jsonData && jsonData.type !== "heartbeat") {

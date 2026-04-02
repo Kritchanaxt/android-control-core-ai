@@ -187,6 +187,7 @@ class RelayService : Service() {
 
     private fun startHeartbeat() {
         var consecutiveLowMemory = 0
+        var loopCount = 0
         var lastStatusCheck: Map<String, Any>? = null
         scope.launch {
             LogRepository.addLog(
@@ -198,12 +199,16 @@ class RelayService : Service() {
             try {
                 while (isActive) {
                     delay(1000)
+                    loopCount++
                     try {
                         val statusMap = mutableMapOf<String, Any>(
                             "uptime_sec" to (System.currentTimeMillis() - 0L) / 1000, 
                             "foreground_service" to true,
                             "screen_capture_active" to (screenCaptureManager != null),
-                            "is_background" to true
+                            "is_background" to true,
+                            "device_model" to Build.MODEL,
+                            "device_manufacturer" to Build.MANUFACTURER,
+                            "android_version" to Build.VERSION.RELEASE
                         )
 
                         // Add Real-time Resource Metrics for Monitoring (Requested by P'Bear)
@@ -242,6 +247,11 @@ class RelayService : Service() {
                         statusMap.forEach { (k, v) -> statusJson.put(k, v) }
                         
                         relayServer?.broadcastToAuthenticated(statusJson.toString())
+                        
+                        // Push Direct Android Telemetry to Google Sheets every 5 seconds
+                        if (loopCount % 5 == 0) {
+                            GoogleSheetsLogger.log(statusJson.toString())
+                        }
                         
                         // Check if status changed (ignoring uptime)
                         val statusCheck = statusMap.minus("uptime_sec")
