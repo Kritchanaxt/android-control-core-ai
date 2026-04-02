@@ -302,11 +302,16 @@
             writeLog("INF", "Establishing network handshake...");
             
             try {
+                if (ws && ws.readyState !== WebSocket.CLOSED) {
+                    ws.close();
+                }
                 ws = new WebSocket(url);
                 ws.onopen = () => {
                     writeLog("INF", "Network Sync Active. Sending Auth...");
                     const passkey = document.getElementById('passkeyInput').value;
-                    if(passkey) ws.send(JSON.stringify({ type: "auth", key: passkey }));
+                    if(passkey && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "auth", key: passkey }));
+                    }
                 };
                 ws.onmessage = (event) => {
                     if (event.data instanceof Blob) {
@@ -323,6 +328,13 @@
                                 if (jsonData.battery_level !== undefined) {
                                     document.getElementById('batteryVal').textContent = jsonData.battery_level + "% / " + (jsonData.battery_temp || "--") + "°C";
                                 }
+                                // Throttling: ส่ง Heartbeat ไป Google Sheets แค่ทุกๆ 5 วินาที
+                                const now = Date.now();
+                                if (now - lastHeartbeatTime >= 5000) {
+                                    writeLog("INF", "Dispatching telemetry heartbeat...");
+                                    logToSheets(event.data);
+                                    lastHeartbeatTime = now;
+                                }
                             } else if (jsonData.type === "auth_response") {
                                 if (jsonData.status === "pending") {
                                     writeLog("INF", "Auth Key Valid. Waiting for manual approval on Android...");
@@ -335,13 +347,22 @@
                                     writeLog("ERR", "Auth Failed: " + (jsonData.reason || "Invalid Key"));
                                 }
                             } else if (jsonData.type === "ocr_result") {
-                                const summary = jsonData.status === "ok" ? (jsonData.summary || {}) : {};
+                                const summary = jsonData.summary || {};
                                 writeLog("RX", "OCR Success | " + (summary.text_object_count || 0) + " items found | " + (summary.total_latency_ms || 0) + "ms");
                                 writeLog("RX", JSON.stringify(jsonData, null, 2));
+                                logToSheets(event.data); 
                             } else {
-                                writeLog("RX", event.data);
+                                // ถ้าไม่ใช่ heartbeat ให้แสดง raw data ปกติ
+                                if (jsonData && jsonData.type !== "heartbeat") {
+                                    writeLog("RX", event.data);
+                                }
                             }
-                        } catch (e) { writeLog("RX", event.data); }
+                        } catch (e) { 
+                            console.error("JSON Parse or Handling error:", e);
+                            if (!event.data.includes('"type":"heartbeat"')) {
+                                writeLog("RX", event.data); 
+                            }
+                        }
                     }
                 };
                 ws.onclose = () => {
@@ -350,6 +371,20 @@
                 };
                 ws.onerror = () => writeLog("ERR", "Network Exception Fault");
             } catch (e) { writeLog("ERR", "System Fault: " + e.message); }
+        }
+
+        function logToSheets(dataString) {
+            const scriptUrl = "https://script.google.com/macros/s/AKfycbxCwzLppgTDjSRRGA_cXbSpnKxp1pPD0YvdxREqmjd8RlP3qLAl8TH0c7GnfAhkadCW/exec";
+            try {
+                fetch(scriptUrl, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: dataString
+                }).catch(e => console.error("Sheets Logic Error", e));
+            } catch (e) {
+                console.error("Fetch Exception", e);
+            }
         }
 
         function disconnect() { if (ws) ws.close(); }
