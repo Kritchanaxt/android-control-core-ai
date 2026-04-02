@@ -208,7 +208,9 @@ class RelayService : Service() {
                             "is_background" to true,
                             "device_model" to Build.MODEL,
                             "device_manufacturer" to Build.MANUFACTURER,
-                            "android_version" to Build.VERSION.RELEASE
+                            "android_version" to Build.VERSION.RELEASE,
+                            "api_level" to Build.VERSION.SDK_INT,
+                            "cpu_abi" to Build.SUPPORTED_ABIS[0]
                         )
 
                         // Add Real-time Resource Metrics for Monitoring (Requested by P'Bear)
@@ -223,6 +225,15 @@ class RelayService : Service() {
                             statusMap["battery_level"] = usage.batteryLevel
                             statusMap["battery_temp"] = usage.batteryTemp
                             statusMap["ocr_mode"] = ocrModeLabel
+                            
+                            // Thermal Throttling / Power Check
+                            val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                            statusMap["power_save_mode"] = powerManager?.isPowerSaveMode == true
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                statusMap["thermal_status"] = powerManager?.currentThermalStatus ?: 0
+                            } else {
+                                statusMap["thermal_status"] = -1
+                            }
 
                             // P'Bear Constraint: If RAM < 300MB, log warning. If < 150MB, stop service.
                             if (availableRam < 300) {
@@ -234,6 +245,13 @@ class RelayService : Service() {
 
                             if (consecutiveLowMemory > 5 || availableRam < 150) {
                                 android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
+                                statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB_REMAINING"
+                                
+                                val fatalJson = org.json.JSONObject()
+                                fatalJson.put("type", "heartbeat")
+                                fatalJson.put("data", org.json.JSONObject(statusMap)) 
+                                GoogleSheetsLogger.log(fatalJson.toString())
+                                
                                 showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). Application closed to protect system stability.")
                                 stopSelf()
                             }

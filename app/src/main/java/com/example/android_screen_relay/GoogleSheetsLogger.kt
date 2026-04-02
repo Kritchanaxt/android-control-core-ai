@@ -36,4 +36,20 @@ object GoogleSheetsLogger {
             }
         })
     }
+
+    fun logSync(jsonPayload: String) {
+        val body = jsonPayload.toRequestBody("text/plain;charset=utf-8".toMediaType())
+        val request = Request.Builder()
+            .url(SCRIPT_URL)
+            .post(body)
+            .build()
+            
+        try {
+            client.newCall(request).execute().use { response -> 
+                // Just wait for it to successfully post
+            }
+        } catch (e: Exception) {
+            // Silently fail if no network
+        }
+    }
 }
