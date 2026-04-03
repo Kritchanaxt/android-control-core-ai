@@ -45,7 +45,7 @@ class Camera2Controller(
     private var backgroundHandler: Handler? = null
 
     // For TextureView
-    private var textureView: TextureView? = null
+    var textureView: TextureView? = null
     private var previewSize: Size? = null
 
     // Camera State

@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import android.content.pm.ServiceInfo
 import com.example.android_screen_relay.ocr.SystemMonitor
 import com.example.android_screen_relay.ocr.PaddleOCR
+import com.example.android_screen_relay.ocr.AIManager
 import kotlinx.coroutines.*
 import kotlin.random.Random
 
@@ -185,7 +186,7 @@ class RelayService : Service() {
         return null
     }
 
-    private fun startHeartbeat() {
+        private fun startHeartbeat() {
         var consecutiveLowMemory = 0
         var loopCount = 0
         var lastStatusCheck: Map<String, Any>? = null
@@ -198,9 +199,10 @@ class RelayService : Service() {
             )
             try {
                 while (isActive) {
-                    delay(1000)
+                    delay(5000)
                     loopCount++
                     try {
+                        val usage = SystemMonitor.getCurrentResourceUsage(this@RelayService)
                         val statusMap = mutableMapOf<String, Any>(
                             "uptime_sec" to (System.currentTimeMillis() - 0L) / 1000, 
                             "foreground_service" to true,
@@ -213,65 +215,65 @@ class RelayService : Service() {
                             "cpu_abi" to Build.SUPPORTED_ABIS[0]
                         )
 
-                        // Add Real-time Resource Metrics for Monitoring (Requested by P'Bear)
-                        try {
-                            val usage = SystemMonitor.getCurrentResourceUsage(this@RelayService)
-                            val availableRam = usage.ramTotalMb - usage.ramUsedMb
-                            val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
-                            
-                            statusMap["cpu_usage"] = usage.cpuUsage
-                            statusMap["ram_used_mb"] = usage.ramUsedMb
-                            statusMap["ram_total_mb"] = usage.ramTotalMb
-                            statusMap["battery_level"] = usage.batteryLevel
-                            statusMap["battery_temp"] = usage.batteryTemp
-                            statusMap["ocr_mode"] = ocrModeLabel
-                            
-                            // Thermal Throttling / Power Check
-                            val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-                            statusMap["power_save_mode"] = powerManager?.isPowerSaveMode == true
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                statusMap["thermal_status"] = powerManager?.currentThermalStatus ?: 0
-                            } else {
-                                statusMap["thermal_status"] = -1
-                            }
+                        val availableRam = usage.ramTotalMb - usage.ramUsedMb
+                        val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
+                        
+                        statusMap["cpu_usage"] = usage.cpuUsage
+                        statusMap["ram_used_mb"] = usage.ramUsedMb
+                        statusMap["ram_total_mb"] = usage.ramTotalMb
+                        statusMap["battery_level"] = usage.batteryLevel
+                        statusMap["battery_temp"] = usage.batteryTemp
+                        statusMap["ocr_mode"] = ocrModeLabel
+                        
+                        // Add AI monitoring info
+                        val activeAI = AIManager.getActiveProcessor()
+                        statusMap["ai_active"] = activeAI?.name ?: "none"
+                        statusMap["ai_memory_state"] = "ok"
 
-                            // P'Bear Constraint: If RAM < 300MB, log warning. If < 150MB, stop service.
-                            if (availableRam < 300) {
-                                android.util.Log.w("RelayService", "CRITICAL MEMORY: ${availableRam}MB available")
-                                consecutiveLowMemory++
-                            } else {
-                                consecutiveLowMemory = 0
-                            }
+                        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                        statusMap["power_save_mode"] = powerManager?.isPowerSaveMode == true
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            statusMap["thermal_status"] = powerManager?.currentThermalStatus ?: 0
+                        } else {
+                            statusMap["thermal_status"] = -1
+                        }
 
-                            if (consecutiveLowMemory > 5 || availableRam < 150) {
-                                android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
-                                statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB_REMAINING"
-                                
-                                val fatalJson = org.json.JSONObject()
-                                fatalJson.put("type", "heartbeat")
-                                fatalJson.put("data", org.json.JSONObject(statusMap)) 
-                                GoogleSheetsLogger.log(fatalJson.toString())
-                                
-                                showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). Application closed to protect system stability.")
-                                stopSelf()
+                        if (availableRam < 300) {
+                            android.util.Log.w("RelayService", "CRITICAL MEMORY: ${availableRam}MB available")
+                            consecutiveLowMemory++
+                            
+                            if (availableRam < 200) {
+                                statusMap["ai_memory_state"] = "releasing_models"
+                                AIManager.release()
                             }
-                        } catch (e: Exception) {
-                            android.util.Log.e("RelayService", "Monitor failed: ${e.message}")
+                        } else {
+                            consecutiveLowMemory = 0
+                        }
+
+                        if (consecutiveLowMemory > 5 || availableRam < 150) {
+                            android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
+                            statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB"
+                            
+                            val fatalJson = org.json.JSONObject()
+                            fatalJson.put("type", "heartbeat")
+                            fatalJson.put("data", org.json.JSONObject(statusMap as Map<*, *>)) 
+                            GoogleSheetsLogger.log(fatalJson.toString())
+                            
+                            showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). App closed.")
+                            stopSelf()
                         }
                         
                         val statusJson = org.json.JSONObject()
                         statusJson.put("type", "heartbeat")
-                        statusJson.put("data", org.json.JSONObject(statusMap)) 
+                        statusJson.put("data", org.json.JSONObject(statusMap as Map<*, *>)) 
                         statusMap.forEach { (k, v) -> statusJson.put(k, v) }
                         
                         relayServer?.broadcastToAuthenticated(statusJson.toString())
                         
-                        // Push Direct Android Telemetry to Google Sheets every 5 seconds
                         if (loopCount % 5 == 0) {
                             GoogleSheetsLogger.log(statusJson.toString())
                         }
                         
-                        // Check if status changed (ignoring uptime)
                         val statusCheck = statusMap.minus("uptime_sec")
                         if (lastStatusCheck != statusCheck) {
                             LogRepository.addLog(
@@ -286,6 +288,8 @@ class RelayService : Service() {
                         e.printStackTrace()
                     }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             } finally {
                 LogRepository.addLog(
                     component = "RelayService",
@@ -309,7 +313,7 @@ class RelayService : Service() {
         }
     }
 
-    private fun createNotification(): Notification {
+        private fun createNotification(): Notification {
         val stopIntent = Intent(this, RelayService::class.java).apply {
             action = ACTION_STOP
         }

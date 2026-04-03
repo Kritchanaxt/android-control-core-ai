@@ -195,8 +195,8 @@ fun AppNavigation(
                         colors = NavigationBarItemDefaults.colors(indicatorColor = Color(0xFFE3F2FD))
                     )
                     NavigationBarItem(
-                        icon = { Icon(Icons.Filled.CameraAlt, contentDescription = "OCR") },
-                        label = { Text("OCR") },
+                        icon = { Icon(Icons.Filled.CameraAlt, contentDescription = "Camera") },
+                        label = { Text("Camera") },
                         selected = currentTab == 2,
                         onClick = { currentTab = 2 },
                         colors = NavigationBarItemDefaults.colors(indicatorColor = Color(0xFFE3F2FD))

@@ -6,6 +6,7 @@ import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
 import android.util.Log
 import kotlinx.coroutines.launch
+import com.example.android_screen_relay.ocr.*
 
 class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
 
@@ -143,6 +144,13 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                         level = "INFO",
                         type = LogRepository.LogType.INFO
                     )
+                    
+                    // Respond to client that we are pending
+                    val statusUpdate = org.json.JSONObject().apply {
+                        put("type", "status_report")
+                        put("status", "connected_unauthenticated")
+                    }
+                    conn.send(statusUpdate.toString())
                 } else {
                     val response = org.json.JSONObject()
                     response.put("type", "auth_response")
@@ -189,6 +197,43 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
             // ... (Rest of logic remains same, just logging above)
             
             when (type) {
+                "switch_ai" -> {
+                    val modelName = json.optString("model")
+                    val useGpu = json.optBoolean("use_gpu", false)
+                    val processor = when (modelName) {
+                        "palm" -> PalmprintProcessor()
+                        "face" -> FaceDetector()
+                        "ocr" -> OCRProcessor()
+                        else -> null
+                    }
+                    
+                    if (processor != null) {
+                         // This is on a generic thread, might need context from service
+                         // RelayService.getInstance() will provide context
+                         val service = RelayService.getInstance()
+                         if (service != null) {
+                             val success = AIManager.switchProcessor(processor, service, AIConfig(useGpu = useGpu))
+                             val resp = org.json.JSONObject().apply {
+                                 put("type", "ai_status")
+                                 put("active", modelName)
+                                 put("success", success)
+                             }
+                             conn.send(resp.toString())
+                         }
+                    }
+                }
+                "snapshot" -> {
+                    // This is triggered from the web client to start automatic AI testing
+                    val active = AIManager.getActiveProcessor()
+                    if (active != null) {
+                         // Use ScreenCaptureManager or Camera2Controller depending on mode
+                         // For testing "Camera" mode as requested:
+                         // We will implement an Auto-Snapshot loop triggered here
+                    }
+                }
+                "switch_camera" -> {
+                     // Trigger camera switch if managed by service
+                }
                 "click" -> {
                     // Check for normalized coordinates first
                     if (json.has("x_percent") && json.has("y_percent")) {
