@@ -18,6 +18,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import kotlinx.coroutines.isActive
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -73,6 +74,8 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
+enum class AiMode { OCR, PALMPRINT }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OCRScreen() {
@@ -89,17 +92,22 @@ fun OCRScreen() {
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
+    var currentAiMode by remember { mutableStateOf(AiMode.OCR) }
+    var targetHand by remember { mutableStateOf("Left") }
+    val palmprint = remember { PalmprintProcessor() }
 
-    DisposableEffect(ocr) {
+    DisposableEffect(ocr, palmprint) {
         onDispose {
             ocr.release()
+            palmprint.release()
         }
     }
 
     // Init OCR
     LaunchedEffect(computeMode) {
         val success = ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-        isInitialized = success
+        val palmSuccess = palmprint.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+        isInitialized = success // Still keep original OCR logic for isInitialized
         if (!success) {
             val usage = SystemMonitor.getCurrentResourceUsage(context)
             val availableRamMb = usage.ramTotalMb - usage.ramUsedMb
@@ -160,6 +168,7 @@ fun OCRScreen() {
     } else if (currentImage != null) {
         // Image Analysis Mode (Screenshot 2 style)
         OCRResultScreen(
+            aiMode = currentAiMode,
             image = currentImage!!,
             jsonResult = ocrResultJson,
             timeMs = ocrTimeMs,
@@ -205,14 +214,101 @@ fun OCRScreen() {
                     }
                 }
             },
+            onSendWs = {
+                if (ocrResultJson != "[]" && ocrResultJson.isNotEmpty()) {
+                    scope.launch(Dispatchers.IO) {
+                        val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs)
+                        val jsonString = payload.toString()
+                        val service = RelayService.getInstance()
+                        if (service != null) {
+                            service.broadcastMessage(jsonString)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Sent to WebSocket!", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "WebSocket Service not running", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            },
             onGalleryClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
         )
     } else {
         // Camera Preview Mode (Screenshot 1 style)
-        if (hasPermission && isInitialized) {
+        if (hasPermission) {
             CameraPreviewScreen(
+                aiMode = currentAiMode,
+                onAiModeChange = { currentAiMode = it },
+                targetHand = targetHand,
+                onTargetHandChange = { targetHand = it },
+                onStableDetection = { bitmap ->
+                    if (currentAiMode == AiMode.PALMPRINT) {
+                        try {
+                            val result = palmprint.process(bitmap)
+                            val item = result.items.firstOrNull()
+                            result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
+                        } catch (e: Exception) { false }
+                    } else {
+                        // For OCR, detect card text before snap to prevent infinite snapping
+                        try {
+                            val scale = 320f / maxOf(bitmap.width, bitmap.height)
+                            if (scale >= 1f) {
+                                val res = ocr.detect(bitmap)
+                                org.json.JSONArray(res).length() >= 4
+                            } else {
+                                val w = (bitmap.width * scale).toInt()
+                                val h = (bitmap.height * scale).toInt()
+                                val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
+                                val res = ocr.detect(scaled)
+                                org.json.JSONArray(res).length() >= 4
+                            }
+                        } catch (e: Exception) { false }
+                    }
+                },
                 onImageCaptured = { bitmap ->
-                    cropImage = bitmap
+                    if (currentAiMode == AiMode.PALMPRINT) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            try {
+                                val result = palmprint.process(bitmap)
+                                val item = result.items.firstOrNull()
+                                val cropped = if (result.success && item != null) {
+                                    val left = item.boundingBox.left.toInt().coerceAtLeast(0)
+                                    val top = item.boundingBox.top.toInt().coerceAtLeast(0)
+                                    val right = item.boundingBox.right.toInt().coerceAtMost(bitmap.width)
+                                    val bottom = item.boundingBox.bottom.toInt().coerceAtMost(bitmap.height)
+                                    val width = right - left
+                                    val height = bottom - top
+                                    if (width > 0 && height > 0) {
+                                        Bitmap.createBitmap(bitmap, left, top, width, height)
+                                    } else bitmap
+                                } else bitmap
+                                
+                                val jsonStr = if (result.success && item != null) {
+                                    "[\n  {\n    \"area_type\": \"${item.extra["area_type"] ?: "unknown"}\",\n    \"hand\": \"${item.extra["hand"] ?: "unknown"}\"\n  }\n]"
+                                } else {
+                                    "[]"
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    currentImage = cropped
+                                    ocrResultJson = jsonStr
+                                    cropImage = null
+                                    isProcessing = false
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "Palmprint Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    isProcessing = false
+                                }
+                            }
+                        }
+                    } else {
+                        // OCR mode: manual crop
+                        cropImage = bitmap
+                    }
                 },
                 onGalleryClick = {
                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -229,6 +325,11 @@ fun OCRScreen() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraPreviewScreen(
+    aiMode: AiMode,
+    onAiModeChange: (AiMode) -> Unit,
+    targetHand: String,
+    onTargetHandChange: (String) -> Unit,
+    onStableDetection: suspend (Bitmap) -> Boolean,
     onImageCaptured: (Bitmap) -> Unit,
     onGalleryClick: () -> Unit
 ) {
@@ -267,89 +368,57 @@ fun CameraPreviewScreen(
     
     val cameraKey = "$selectedCameraId-${selectedResolution?.width}x${selectedResolution?.height}-${selectedAspectRatio.name}"
 
+    // Auto-Snap polling
+    LaunchedEffect(aiMode, targetHand) {
+        withContext(Dispatchers.Default) {
+            var stableTime = 0L
+            while (isActive) {
+                kotlinx.coroutines.delay(500)
+                if (!isCapturing && cameraController?.textureView != null) {
+                    val bitmap = cameraController?.textureView?.bitmap
+                    if (bitmap != null) {
+                        val criteriaMet = try { onStableDetection(bitmap) } catch(e: Exception) { false }
+                        if (criteriaMet) {
+                            stableTime += 500
+                            if (stableTime >= 1500) { // 1.5 seconds stable
+                                isCapturing = true
+                                withContext(Dispatchers.Main) {
+                                    cameraController!!.takePhoto()
+                                }
+                                stableTime = 0
+                                kotlinx.coroutines.delay(2000) // Wait before resuming
+                                isCapturing = false
+                            }
+                        } else {
+                            stableTime = 0
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             cameraController?.close()
         }
     }
 
+    var aiDropdownExpanded by remember { mutableStateOf(false) }
+
     Scaffold(
-        containerColor = Color.Black,
-        topBar = {
-            TopAppBar(
-                title = { Text("OCR Scanner (Camera2)", color = Color.White, fontWeight = FontWeight.Bold) },
-                actions = {
-                     IconButton(onClick = { showSettingsDialog = true }) {
-                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
-                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Black.copy(alpha = 0.3f),
-                    titleContentColor = Color.White
-                )
-            )
-        },
-        bottomBar = {
-            // Camera Controls
-            Box(
-                modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.8f)).padding(vertical = 32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Gallery
-                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Color.White.copy(alpha = 0.2f),
-                            modifier = Modifier.size(50.dp).clickable(onClick = onGalleryClick)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.PhotoLibrary, contentDescription = "Gallery", tint = Color.White)
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text("Import", color = Color.White, fontSize = 12.sp)
-                    }
-                    
-                    // Shutter
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(80.dp)
-                            .border(4.dp, Color.White, CircleShape)
-                            .clickable(enabled = !isCapturing) {
-                                if (!isCapturing && cameraController != null) {
-                                    isCapturing = true
-                                    cameraController!!.takePhoto()
-                                    // For now, simulate delay
-                                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor().schedule({
-                                        isCapturing = false
-                                    }, 1, java.util.concurrent.TimeUnit.SECONDS)
-                                }
-                            }
-                    ) {
-                        if (isCapturing) CircularProgressIndicator(color = Color.White)
-                        else Box(modifier = Modifier.size(64.dp).background(Color.White, CircleShape))
-                    }
-                    
-                    // Filler
-                    Box(modifier = Modifier.size(50.dp))
-                }
-            }
-        }
+        containerColor = Color.Black
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             
+            // We removed the static AI Mod selector. Wait to add overlays at the bottom.
+
             // Container for Preview + Overlay that respects Aspect Ratio
             val ratioVal = selectedAspectRatio.value
             
             Box(
                  // If FULL (null), use fillMaxSize, else use aspectRatio
-                modifier = if (ratioVal != null) Modifier.aspectRatio(ratioVal) else Modifier.fillMaxSize()
+                modifier = (if (ratioVal != null) Modifier.aspectRatio(ratioVal) else Modifier.fillMaxSize()).align(Alignment.Center)
             ) {
                 // TextureView for Camera2
                 AndroidView(
@@ -374,40 +443,196 @@ fun CameraPreviewScreen(
 
                 // Overlay - Drawn inside the aspect ratio box
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Draw Frame (Same logic as before)
+                    // Draw Frame (Dynamic by AI Mode)
                     val frameColor = android.graphics.Color.WHITE
                     val maskColor = android.graphics.Color.parseColor("#99000000") // Semi-transparent black
-                    val cornerSize = 60f
                     val strokeW = 8f
-                    val frameW = size.width * 0.85f
-                    val frameH = size.height * 0.85f  // Adjusted for crop focus inside ratio
+                    val cw = size.width
+                    val ch = size.height
+
+                    // OCR matches bounds, PALMPRINT uses a smaller centered box
+                    val frameW = if (aiMode == AiMode.OCR) {
+                        val maxW = cw * 0.9f
+                        val idealH = ch * 0.6f
+                        if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
+                    } else min(cw, ch) * 0.6f
+                    val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
                     
-                    // If square, maybe frame is square? 
-                    // Let's keep existing logic but fit within this box.
-                    
-                    val left = (size.width - frameW) / 2
-                    val top = (size.height - frameH) / 2
+                    val left = (cw - frameW) / 2
+                    val top = (ch - frameH) / 2
                     val right = left + frameW
                     val bottom = top + frameH
 
                     // Draw Mask (Darken outside frame)
-                    drawRect(Color(maskColor), size = androidx.compose.ui.geometry.Size(size.width, top))
-                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, bottom), size = androidx.compose.ui.geometry.Size(size.width, size.height - bottom))
+                    drawRect(Color(maskColor), size = androidx.compose.ui.geometry.Size(cw, top))
+                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, bottom), size = androidx.compose.ui.geometry.Size(cw, ch - bottom))
                     drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, top), size = androidx.compose.ui.geometry.Size(left, frameH))
-                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(right, top), size = androidx.compose.ui.geometry.Size(size.width - right, frameH))
+                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(right, top), size = androidx.compose.ui.geometry.Size(cw - right, frameH))
 
-                   val path = Path()
-                   path.moveTo(left, top + cornerSize); path.lineTo(left, top); path.lineTo(left + cornerSize, top)
-                   path.moveTo(right - cornerSize, top); path.lineTo(right, top); path.lineTo(right, top + cornerSize)
-                   path.moveTo(right, bottom - cornerSize); path.lineTo(right, bottom); path.lineTo(right - cornerSize, bottom)
-                   path.moveTo(left + cornerSize, bottom); path.lineTo(left, bottom); path.lineTo(left, bottom - cornerSize)
-                   
-                   val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
-                       style = Paint.Style.STROKE; strokeWidth = strokeW; color = frameColor; strokeCap = Paint.Cap.ROUND
-                   }
-                   drawContext.canvas.nativeCanvas.drawPath(path, paint)
+                    val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
+                        style = android.graphics.Paint.Style.STROKE; strokeWidth = strokeW; color = frameColor; strokeCap = android.graphics.Paint.Cap.ROUND
+                    }
+                    val textPaint = android.graphics.Paint().apply {
+                        color = frameColor
+                        textSize = 36f
+                        isAntiAlias = true
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    }
+
+                    if (aiMode == AiMode.OCR) {
+                        // Main ID card border (Landscape)
+                        val rect = android.graphics.RectF(left, top, right, bottom)
+                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
+                        
+                        // Left vertical line (Simulating card header in Landscape)
+                        val headerX = left + frameW * 0.2f
+                        drawContext.canvas.nativeCanvas.drawLine(headerX, top, headerX, bottom, paint)
+                        
+                        // Bottom Right square (Simulating face photo placeholder in Landscape)
+                        val squareSize = frameH * 0.40f
+                        val sqRight = right - frameW * 0.05f
+                        val sqLeft = sqRight - squareSize
+                        val sqBottom = bottom - frameH * 0.1f
+                        val sqTop = sqBottom - squareSize
+                        val sqRect = android.graphics.RectF(sqLeft, sqTop, sqRight, sqBottom)
+                        drawContext.canvas.nativeCanvas.drawRoundRect(sqRect, 24f, 24f, paint)
+                        
+                        // Top Text
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                        val topText = "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
+                        val topTextWidth = textPaint.measureText(topText)
+                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+                        
+                        // Bottom Text
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, bottom + 80f)
+                        val bottomText = "สแกนบัตรประชาชนด้านหน้า"
+                        val bottomTextWidth = textPaint.measureText(bottomText)
+                        drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+                        
+                    } else {
+                        // PALMPRINT uses corners
+                        val path = android.graphics.Path()
+                        val cornerSize = 80f
+                        path.moveTo(left, top + cornerSize); path.lineTo(left, top); path.lineTo(left + cornerSize, top)
+                        path.moveTo(right - cornerSize, top); path.lineTo(right, top); path.lineTo(right, top + cornerSize)
+                        path.moveTo(right, bottom - cornerSize); path.lineTo(right, bottom); path.lineTo(right - cornerSize, bottom)
+                        path.moveTo(left + cornerSize, bottom); path.lineTo(left, bottom); path.lineTo(left, bottom - cornerSize)
+                        drawContext.canvas.nativeCanvas.drawPath(path, paint)
+                    }
                  }
             }
+
+            // Bottom Bar Overlay
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .background(Color.Black.copy(alpha = 0.7f)) 
+                    .padding(horizontal = 16.dp, vertical = 16.dp)
+            ) {
+                // Auto-Snap Indicator (Left side)
+                Box(modifier = Modifier.align(Alignment.CenterStart), contentAlignment = Alignment.Center) {
+                    if (isCapturing) {
+                        CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(32.dp))
+                    } else {
+                        Text(
+                            "Auto-Snap\nEnabled", 
+                            color = Color.White, 
+                            fontSize = 12.sp, 
+                            fontWeight = FontWeight.Medium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                }
+
+                // Tools Group (Right side)
+                Row(
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (aiMode == AiMode.PALMPRINT) {
+                        var handExpanded by remember { mutableStateOf(false) }
+                        Box {
+                            Button(
+                                onClick = { handExpanded = true },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White),
+                                shape = RoundedCornerShape(24.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(text = targetHand, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            }
+                            
+                            DropdownMenu(
+                                expanded = handExpanded,
+                                onDismissRequest = { handExpanded = false },
+                                modifier = Modifier.background(Color(0xFF333333))
+                            ) {
+                                listOf("Left", "Right").forEach { hand ->
+                                    DropdownMenuItem(
+                                        text = { Text(hand, color = Color.White, fontWeight = FontWeight.Bold) },
+                                        onClick = { 
+                                            onTargetHandChange(hand)
+                                            handExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // AI Dropdown
+                    Box {
+                        Button(
+                            onClick = { aiDropdownExpanded = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White),
+                            shape = RoundedCornerShape(24.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            Text(text = aiMode.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        }
+                        
+                        DropdownMenu(
+                            expanded = aiDropdownExpanded,
+                            onDismissRequest = { aiDropdownExpanded = false },
+                            modifier = Modifier.background(Color(0xFF333333))
+                        ) {
+                            AiMode.values().forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode.name, color = Color.White, fontWeight = FontWeight.Bold) },
+                                    onClick = { 
+                                        onAiModeChange(mode)
+                                        aiDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Import Button (Icon only)
+                    IconButton(
+                        onClick = onGalleryClick,
+                        modifier = Modifier.size(48.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = "Import", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
+
+                    // Settings Button
+                    IconButton(
+                        onClick = { showSettingsDialog = true },
+                        modifier = Modifier.size(48.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
+                }
+            }
+
         }
     }
     
@@ -601,6 +826,7 @@ fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OCRResultScreen(
+    aiMode: AiMode,
     image: Bitmap,
     jsonResult: String,
     timeMs: Long,
@@ -609,6 +835,7 @@ fun OCRResultScreen(
     onComputeModeChange: (ComputeMode) -> Unit,
     onClear: () -> Unit,
     onRunModel: () -> Unit,
+    onSendWs: () -> Unit,
     onGalleryClick: () -> Unit // Add gallery option here too as per screenshot?
 ) {
     var showJsonDialog by remember { mutableStateOf(false) }
@@ -656,21 +883,23 @@ fun OCRResultScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Compute Mode Selector
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ComputeMode.values().forEach { mode ->
-                            FilterChip(
-                                selected = (computeMode == mode),
-                                onClick = { onComputeModeChange(mode) },
-                                label = { Text(mode.displayName, fontSize = 12.sp) },
-                                leadingIcon = if (computeMode == mode) {
-                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                } else null,
-                                modifier = Modifier.weight(1f)
-                            )
+                    if (aiMode == AiMode.OCR) {
+                        // Compute Mode Selector only for OCR
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ComputeMode.values().forEach { mode ->
+                                FilterChip(
+                                    selected = (computeMode == mode),
+                                    onClick = { onComputeModeChange(mode) },
+                                    label = { Text(mode.displayName, fontSize = 12.sp) },
+                                    leadingIcon = if (computeMode == mode) {
+                                        { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                    } else null,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                     }
 
@@ -679,40 +908,43 @@ fun OCRResultScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Start OCR Button
-                        FilledTonalButton(
-                            onClick = onRunModel,
-                            enabled = !isProcessing,
-                            modifier = Modifier.weight(1f).height(48.dp),
-                             colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        ) {
-                            if (isProcessing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    strokeWidth = 2.dp
+                        if (aiMode == AiMode.OCR) {
+                            // Start OCR Button
+                            FilledTonalButton(
+                                onClick = onRunModel,
+                                enabled = !isProcessing,
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                 colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
-                                Spacer(Modifier.width(8.dp))
-                            } else {
-                                Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
+                            ) {
+                                if (isProcessing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                } else {
+                                    Icon(Icons.Default.Scanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Text("Scan", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                             }
-                            Text("Scan", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
 
                         // Preview JSON Button
                         OutlinedButton(
                             onClick = {
                                 if (jsonResult == "[]" || jsonResult.isEmpty()) {
-                                    Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, if (aiMode == AiMode.OCR) "Please run OCR first" else "No Palmprint result", Toast.LENGTH_SHORT).show()
                                     return@OutlinedButton
                                 }
 
                                 scope.launch(Dispatchers.IO) {
                                     val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                    // Add AiMode to payload if needed, or keeping it the same
                                     val jsonString = payload.toString(2)
                                     withContext(Dispatchers.Main) {
                                         fullJsonOutput = jsonString
