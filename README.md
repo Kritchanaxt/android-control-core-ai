@@ -1,5 +1,5 @@
 
-# android-control-ocr
+# android-control-core-ai
 
 **(Layer 1: Core System / Infrastructure + Layer 2: Hybrid AI & OCR Capabilities)**
 
