@@ -55,8 +55,8 @@ class Camera2Controller(
 
     // Configurable Settings
     var targetResolution: Size? = null
-    var aspectRatio: UiAspectRatio = UiAspectRatio.FULL
-    
+    var aspectRatio: UiAspectRatio = UiAspectRatio.RATIO_1_1
+
     // Logic from OutputSettingsDialogFragment
     private var maxSensorProcessingSize: Size = Size(1920, 1080)
     private var isFrontCamera: Boolean = false
@@ -140,7 +140,7 @@ class Camera2Controller(
             val finalCaptureSize = if (targetResolution != null) {
                  targetResolution!!
             } else {
-                 validResolutions.firstOrNull()?.size ?: availableJpegSizes.first()
+                 validResolutions.mapNotNull { it.size }.minByOrNull { it.width * it.height } ?: availableJpegSizes.last()
             }
             
             Log.d(TAG, "Selected capture size: $finalCaptureSize")
