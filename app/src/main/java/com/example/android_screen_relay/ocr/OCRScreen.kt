@@ -82,10 +82,9 @@ fun OCRScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val ocr = remember { PaddleOCR() }
     
     // States
-    var isInitialized by remember { mutableStateOf(false) }
+    var isInitialized by remember { mutableStateOf(true) } // true by default since we init on demand
     var currentImage by remember { mutableStateOf<Bitmap?>(null) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var ocrResultJson by remember { mutableStateOf("[]") }
@@ -94,29 +93,16 @@ fun OCRScreen() {
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
     var currentAiMode by remember { mutableStateOf(AiMode.OCR) }
     var targetHand by remember { mutableStateOf("Left") }
-    val palmprint = remember { PalmprintProcessor() }
 
-    DisposableEffect(ocr, palmprint) {
+    // Models will be lazy-loaded on demand now
+    DisposableEffect(Unit) {
         onDispose {
-            ocr.release()
-            palmprint.release()
+            // Nothing to globally release, instances are local
         }
     }
 
-    // Init OCR
     LaunchedEffect(computeMode) {
-        val success = ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-        val palmSuccess = palmprint.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-        isInitialized = success // Still keep original OCR logic for isInitialized
-        if (!success) {
-            val usage = SystemMonitor.getCurrentResourceUsage(context)
-            val availableRamMb = usage.ramTotalMb - usage.ramUsedMb
-            if (availableRamMb < 300) {
-                Toast.makeText(context, "OCR Init Failed: Low RAM (${availableRamMb}MB). Please free some memory.", Toast.LENGTH_LONG).show()
-            } else {
-                Toast.makeText(context, "OCR Init Failed.", Toast.LENGTH_LONG).show()
-            }
-        }
+        // Initialization is deferred to the processing phase to save RAM (2GB optimization)
     }
 
     // Permission
@@ -184,21 +170,29 @@ fun OCRScreen() {
                 ocrTimeMs = 0
             },
             onRunModel = {
-                if (!isProcessing && isInitialized) {
-                    val (canRun, errorMsg) = ocr.canRunInference(context)
-                    if (!canRun) {
-                        Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
-                        return@OCRResultScreen
-                    }
-
+                if (!isProcessing) {
                     isProcessing = true
                     scope.launch(Dispatchers.IO) {
+                        var lazyOcr: PaddleOCR? = null
                         try {
+                            lazyOcr = PaddleOCR()
+                            val success = lazyOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
+                            if (!success) {
+                                withContext(Dispatchers.Main) { Toast.makeText(context, "OCR Init Failed.", Toast.LENGTH_LONG).show() }
+                                return@launch
+                            }
+                            
+                            val (canRun, errorMsg) = lazyOcr.canRunInference(context)
+                            if (!canRun) {
+                                withContext(Dispatchers.Main) { Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show() }
+                                return@launch
+                            }
+
                             val start = System.currentTimeMillis()
                             val mutableBitmap = currentImage!!.copy(Bitmap.Config.ARGB_8888, true)
-                            // Run the comprehensive benchmark suite automatically upon scan
-                            val benchmarkResults = OCRBenchmarkRunner.runFullBenchmarkSuite(context, ocr, mutableBitmap)
+                            val benchmarkResults = OCRBenchmarkRunner.runFullBenchmarkSuite(context, lazyOcr, mutableBitmap)
                             val end = System.currentTimeMillis()
+                            
                             withContext(Dispatchers.Main) {
                                 ocrResultJson = benchmarkResults.toString()
                                 ocrTimeMs = end - start
@@ -207,9 +201,11 @@ fun OCRScreen() {
                         } catch (e: Exception) {
                             Log.e("OCR", "Scan/Benchmark error", e)
                             withContext(Dispatchers.Main) {
-                                isProcessing = false
                                 Toast.makeText(context, "OCR Error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
+                        } finally {
+                            lazyOcr?.release()
+                            withContext(Dispatchers.Main) { isProcessing = false }
                         }
                     }
                 }
@@ -246,23 +242,40 @@ fun OCRScreen() {
                 onStableDetection = { bitmap ->
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
-                            val result = palmprint.process(bitmap)
-                            val item = result.items.firstOrNull()
-                            result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
+                            val tempPalm = PalmprintProcessor()
+                            val success = tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                            if (success) {
+                                val result = tempPalm.process(bitmap)
+                                val item = result.items.firstOrNull()
+                                tempPalm.release()
+                                result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
+                            } else {
+                                tempPalm.release()
+                                false
+                            }
                         } catch (e: Exception) { false }
                     } else {
                         // For OCR, detect card text before snap to prevent infinite snapping
                         try {
                             val scale = 320f / maxOf(bitmap.width, bitmap.height)
-                            if (scale >= 1f) {
-                                val res = ocr.detect(bitmap)
-                                org.json.JSONArray(res).length() >= 4
+                            val tempOcr = PaddleOCR()
+                            val s = tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
+                            if (s) {
+                                if (scale >= 1f) {
+                                    val res = tempOcr.detect(bitmap)
+                                    tempOcr.release()
+                                    org.json.JSONArray(res).length() >= 4
+                                } else {
+                                    val w = (bitmap.width * scale).toInt()
+                                    val h = (bitmap.height * scale).toInt()
+                                    val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
+                                    val res = tempOcr.detect(scaled)
+                                    tempOcr.release()
+                                    org.json.JSONArray(res).length() >= 4
+                                }
                             } else {
-                                val w = (bitmap.width * scale).toInt()
-                                val h = (bitmap.height * scale).toInt()
-                                val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
-                                val res = ocr.detect(scaled)
-                                org.json.JSONArray(res).length() >= 4
+                                tempOcr.release()
+                                false
                             }
                         } catch (e: Exception) { false }
                     }
@@ -271,8 +284,11 @@ fun OCRScreen() {
                     if (currentAiMode == AiMode.PALMPRINT) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
+                            var tempPalm: PalmprintProcessor? = null
                             try {
-                                val result = palmprint.process(bitmap)
+                                tempPalm = PalmprintProcessor()
+                                tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                val result = tempPalm.process(bitmap)
                                 val item = result.items.firstOrNull()
                                 val cropped = if (result.success && item != null) {
                                     val left = item.boundingBox.left.toInt().coerceAtLeast(0)
@@ -303,6 +319,8 @@ fun OCRScreen() {
                                     Toast.makeText(context, "Palmprint Error: ${e.message}", Toast.LENGTH_SHORT).show()
                                     isProcessing = false
                                 }
+                            } finally {
+                                tempPalm?.release()
                             }
                         }
                     } else {

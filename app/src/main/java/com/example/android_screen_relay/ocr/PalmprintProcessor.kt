@@ -13,17 +13,26 @@ import kotlin.math.sqrt
 
 class PalmprintProcessor : AIProcessor {
     override val name: String = "PalmprintDetection"
-    private var handLandmarker: HandLandmarker? = null
+    private var appContext: Context? = null
+    private var appConfig: AIConfig? = null
 
     override fun init(context: Context, config: AIConfig): Boolean {
+        // Defer media_pipe task load until process() is called
+        this.appContext = context.applicationContext
+        this.appConfig = config
+        return true
+    }
+
+    override fun process(bitmap: Bitmap): AIResult {
+        if (appContext == null || appConfig == null) return AIResult(false, emptyList(), 0, "Not initialized")
+        val startTime = System.currentTimeMillis()
+        
+        var handLandmarker: HandLandmarker? = null
         return try {
-            val baseOptionsBuilder = BaseOptions.builder()
-                .setModelAssetPath("hand_landmarker.task")
-            
-            if (config.useGpu) {
+            val baseOptionsBuilder = BaseOptions.builder().setModelAssetPath("hand_landmarker.task")
+            if (appConfig!!.useGpu) {
                 baseOptionsBuilder.setDelegate(com.google.mediapipe.tasks.core.Delegate.GPU)
             }
-
             val optionsBuilder = HandLandmarker.HandLandmarkerOptions.builder()
                 .setBaseOptions(baseOptionsBuilder.build())
                 .setMinHandDetectionConfidence(0.5f)
@@ -31,22 +40,10 @@ class PalmprintProcessor : AIProcessor {
                 .setMinTrackingConfidence(0.5f)
                 .setNumHands(1)
                 .setRunningMode(RunningMode.IMAGE)
-
-            handLandmarker = HandLandmarker.createFromOptions(context, optionsBuilder.build())
-            true
-        } catch (e: Exception) {
-            android.util.Log.e("Palmprint", "Failed to init MediaPipe: \${e.message}")
-            false
-        }
-    }
-
-    override fun process(bitmap: Bitmap): AIResult {
-        val landmarker = handLandmarker ?: return AIResult(false, emptyList(), 0, "Not initialized")
-        val startTime = System.currentTimeMillis()
-        
-        return try {
+            handLandmarker = HandLandmarker.createFromOptions(appContext, optionsBuilder.build())
+            
             val mpImage = BitmapImageBuilder(bitmap).build()
-            val result = landmarker.detect(mpImage)
+            val result = handLandmarker.detect(mpImage)
             val duration = System.currentTimeMillis() - startTime
             
             if (result.landmarks().isEmpty()) {
@@ -98,11 +95,15 @@ class PalmprintProcessor : AIProcessor {
             AIResult(true, items, duration)
         } catch (e: Exception) {
             AIResult(false, emptyList(), 0, e.message)
+        } finally {
+            // Nullify/Destroy immediately after getting the result to return RAM 2GB to system
+            handLandmarker?.close()
         }
     }
 
     override fun release() {
-        handLandmarker?.close()
-        handLandmarker = null
+        // Nothing kept in memory persistently
+        appContext = null
+        appConfig = null
     }
 }

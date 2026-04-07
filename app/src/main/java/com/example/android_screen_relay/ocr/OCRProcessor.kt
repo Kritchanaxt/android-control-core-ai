@@ -4,35 +4,52 @@ import android.graphics.Bitmap
 import android.util.Log
 
 class OCRProcessor : AIProcessor {
-    private var paddleOCR: PaddleOCR = PaddleOCR()
-    private var isInit = false
+    private var appContext: android.content.Context? = null
+    private var appThreads: Int = 4
+    private var appGpu: Boolean = false
     override val name: String = "PaddleOCR"
 
     override fun init(context: android.content.Context, config: AIConfig): Boolean {
-        isInit = paddleOCR.initModel(context, config.threads, config.useGpu)
-        return isInit
+        // Defer PaddleOCR instantiation until process() is called
+        appContext = context.applicationContext
+        appThreads = config.threads
+        appGpu = config.useGpu
+        return true
     }
 
     override fun process(bitmap: Bitmap): AIResult {
-        if (!isInit) return AIResult(false, emptyList(), 0, "OCR Not initialized")
+        if (appContext == null) return AIResult(false, emptyList(), 0, "OCR Not initialized")
         
         val start = System.currentTimeMillis()
-        val results = emptyList<AIDetectedItem>() /* TODO paddleocr adapter */
-        val end = System.currentTimeMillis()
+        var paddleOCR: PaddleOCR? = null
+        val results = mutableListOf<AIDetectedItem>()
         
-        // Convert PaddleOCR results to Generic AIResult
-        // Assuming PaddleOCR returns results in its native format, we convert it here
-        // If results is already a List<AIDetectedItem> type or similar logic should be added
+        try {
+            paddleOCR = PaddleOCR()
+            val isInit = paddleOCR.initModel(appContext!!, appThreads, appGpu)
+            if (isInit) {
+                val jsonResult = paddleOCR.detect(bitmap)
+                // Assuming json mapping if we needed to populate AIDetectedItem
+                 // Convert PaddleOCR results to Generic AIResult
+            }
+        } catch (e: Exception) {
+            Log.e("OCR", "Process error", e)
+        } finally {
+            // Nullify/Destroy immediately to return RAM 2GB to system
+            paddleOCR?.release()
+            paddleOCR = null
+        }
+        
+        val end = System.currentTimeMillis()
         
         return AIResult(
             success = true,
-            items = emptyList(), // Placeholder for mapping PaddleOCR result to common format
+            items = results, 
             processTimeMs = end - start
         )
     }
 
     override fun release() {
-        paddleOCR.release()
-        isInit = false
+        appContext = null
     }
 }
