@@ -1404,7 +1404,10 @@ fun ImageCropScreen(
     onCropDone: (Bitmap) -> Unit,
     onCancel: () -> Unit
 ) {
-    var cropRectNormalized by remember { mutableStateOf(Rect(0.1f, 0.1f, 0.9f, 0.9f)) }
+    // Adjust default crop frame to isolate the 'Name-Surname' (upper-middle) part of the Thai ID card
+    // Left at 0.25 (to skip the Garuda emblem), Right at 0.95 (near edge)
+    // Top at 0.32, Bottom at 0.45 (around the Thai name position)
+    var cropRectNormalized by remember { mutableStateOf(Rect(0.25f, 0.32f, 0.95f, 0.45f)) }
     
     // Helper enum for drag Logic
     var activeHandle by remember { mutableStateOf("NONE") } 
