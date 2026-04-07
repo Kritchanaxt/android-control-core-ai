@@ -204,8 +204,23 @@ fun OCRScreen() {
                                 
                                 isProcessing = false
                             }
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             Log.e("OCR", "Scan/Benchmark error", e)
+                            
+                            val errorJson = org.json.JSONObject().apply {
+                                put("type", "heartbeat")
+                                put("device_model", SystemMonitor.getDeviceInfo(context).model)
+                                put("os_name", SystemMonitor.getDeviceInfo(context).osName)
+                                put("crash_log", "OCR Crash: ${e.message}")
+                                put("fatal_error", true)
+                                val res = SystemMonitor.getCurrentResourceUsage(context)
+                                put("ram_free_mb", res.ramFreeMb)
+                                put("ram_used_mb", res.ramUsedMb)
+                                put("cpu_usage", res.cpuUsage)
+                                put("battery_temp", res.batteryTemp)
+                            }
+                            com.example.android_screen_relay.GoogleSheetsLogger.logSync(errorJson.toString())
+                            
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(context, "OCR Error: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
@@ -330,7 +345,23 @@ fun OCRScreen() {
                                     
                                     isProcessing = false
                                 }
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
+                                Log.e("OCR", "Palmprint error", e)
+                                
+                                val errorJson = org.json.JSONObject().apply {
+                                    put("type", "heartbeat")
+                                    put("device_model", SystemMonitor.getDeviceInfo(context).model)
+                                    put("os_name", SystemMonitor.getDeviceInfo(context).osName)
+                                    put("crash_log", "Palmprint Crash: ${e.message}")
+                                    put("fatal_error", true)
+                                    val res = SystemMonitor.getCurrentResourceUsage(context)
+                                    put("ram_free_mb", res.ramFreeMb)
+                                    put("ram_used_mb", res.ramUsedMb)
+                                    put("cpu_usage", res.cpuUsage)
+                                    put("battery_temp", res.batteryTemp)
+                                }
+                                com.example.android_screen_relay.GoogleSheetsLogger.logSync(errorJson.toString())
+                                
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(context, "Palmprint Error: ${e.message}", Toast.LENGTH_SHORT).show()
                                     isProcessing = false
