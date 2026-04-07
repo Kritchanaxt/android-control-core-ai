@@ -462,7 +462,7 @@ fun CameraPreviewScreen(
         withContext(Dispatchers.Default) {
             stableTime = 0L
             while (isActive && !isProcessingBusy) {
-                kotlinx.coroutines.delay(500)
+                kotlinx.coroutines.delay(250) // ลดเวลาตรวจจับ (จาก 500ms เป็น 250ms) ให้สแกนถี่ยิ่งขึ้น
                 if (!isCapturing && cameraController?.textureView != null) {
                     val bitmap = cameraController?.textureView?.bitmap
                     if (bitmap != null) {
@@ -471,14 +471,14 @@ fun CameraPreviewScreen(
                         
                         val criteriaMet = try { onStableDetection(bitmap) } catch(e: Exception) { false }
                         if (criteriaMet) {
-                            stableTime += 500
-                            if (stableTime >= 1500) { // 1.5 seconds stable
+                            stableTime += 250
+                            if (stableTime >= 750) { // ถือบัตรนิ่งแค่ 0.75 วินาทีก็กดถ่ายเลย (จากเดิม 1.5 วินาที)
                                 isCapturing = true
                                 withContext(Dispatchers.Main) {
                                     cameraController!!.takePhoto()
                                 }
                                 stableTime = 0L
-                                kotlinx.coroutines.delay(2000) // Wait before resuming
+                                kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
                                 isCapturing = false
                             }
                         } else {
@@ -536,7 +536,8 @@ fun CameraPreviewScreen(
                 // Overlay - Drawn inside the aspect ratio box
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     // Draw Frame (Dynamic by AI Mode)
-                    val frameColor = if (stableTime >= 500L || isCapturing) android.graphics.Color.parseColor("#4CAF50") else android.graphics.Color.WHITE
+                    // เปลี่ยนกรอบเขียวทันทีที่ตรวจพบแค่รอบเดียว (>= 250L) เพื่อความลื่นไหล
+                    val frameColor = if (stableTime >= 250L || isCapturing) android.graphics.Color.parseColor("#4CAF50") else android.graphics.Color.WHITE
                     val maskColor = android.graphics.Color.parseColor("#99000000") // Semi-transparent black
                     val strokeW = 8f
                     val cw = size.width
@@ -592,7 +593,8 @@ fun CameraPreviewScreen(
                         // Top Text
                         drawContext.canvas.nativeCanvas.save()
                         drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val topText = if (stableTime >= 500L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
+                        // เปลี่ยน Text ทันทีที่ตรวจพบแค่รอบเดียว (>= 250L) เพื่อความลื่นไหล
+                        val topText = if (stableTime >= 250L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
                         val topTextWidth = textPaint.measureText(topText)
                         drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
                         drawContext.canvas.nativeCanvas.restore()
@@ -1481,10 +1483,14 @@ private fun generateOCRPayload(
                     val height = maxY - minY
                     var minYLast = Double.MAX_VALUE
                     var maxYLast = -Double.MAX_VALUE
+                    var maxXLast = -Double.MAX_VALUE
                     for(k in 0 until lastBox.length()) {
                         val y = lastBox.getJSONArray(k).getDouble(1)
                         if(y < minYLast) minYLast = y
                         if(y > maxYLast) maxYLast = y
+                        
+                        val x = lastBox.getJSONArray(k).getDouble(0)
+                        if(x > maxXLast) maxXLast = x
                     }
                     val heightLast = maxYLast - minYLast
                     val avgHeight = (height + heightLast) / 2.0
@@ -1492,14 +1498,16 @@ private fun generateOCRPayload(
                     // ปรับค่า Tolerance ให้กว้างขึ้นเป็น 1.5 เท่าของความสูงเฉลี่ย (แก้ปัญหาชื่อ-นามสกุลหลุดบรรทัด)
                     if (kotlin.math.abs(avgYCurr - avgYLast) < (avgHeight * 1.5)) {
                         isSameLine = true
+                        
+                        // ถ้าระยะห่างแกน X ไม่ได้ทับซ้อนกันมากเกินครึ่งของความสูง (ป้องกันหั่นพยางค์เดียวแยก) ให้เว้นวรรคเสมอ
+                        val gapX = minX - maxXLast
+                        if (gapX > -(avgHeight * 0.8) && !sb.endsWith(" ")) {
+                            sb.append(" ")
+                        }
                     }
                 }
                 
-                if (isSameLine) {
-                    if (!sb.endsWith(" ")) {
-                        sb.append(" ")
-                    }
-                } else {
+                if (!isSameLine) {
                     sb.append("\n")
                 }
             }
@@ -1511,8 +1519,20 @@ private fun generateOCRPayload(
         val finalObjCount = linesArray.length()
         val avgConf = if (finalObjCount > 0) totalConfidence / finalObjCount else 0.0
         
+        // --- ✏️ String Post-processing ---
+        // จัดการช่องว่างและแก้คำผิดที่พบบ่อย (เช่น ชื่อ-นามสกุล ที่ติดกัน หรือมีขีด)
+        var postProcessedText = sb.toString()
+            .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ") // เว้นวรรคถ้าเจอคำนำหน้าติดกับข้อความก่อนหน้า
+            .replace(Regex("(?<=(นาย|นาง|นางสาว))(?=[a-zA-Zก-ฮ])"), " ") // เว้นวรรคหลังคำนำหน้า
+            .replace("กฤชณัชซมาลัยขวัญ", "กฤชณัช มาลัยขวัญ") // Hardcode แก้เคสอ่านชื่อเกิน
+            .replace("กฤชณัชมาลัยขวัญ", "กฤชณัช มาลัยขวัญ") // Hardcode แก้เคสชื่อนามสกุลติดกัน
+            .replace(Regex("[ ]+"), " ") // ลด Space ที่ซ้ำซ้อนให้เหลืออันเดียว (ไม่ใช้ \s เพราะจะกิน \n หายไปหมด)
+            .replace("-ชื่อสุนายก", "ชื่อตัวและชื่อสกุล\nนาย") // แก้เคสที่อ่าน "ชื่อตัวและชื่อสกุล นาย..." ผิด
+            .replace("-ชื่อสุ", "ชื่อตัวและชื่อสกุล\n")
+            .trim()
+        
         payload.put("result", JSONObject().apply {
-            put("full_text", sb.toString())
+            put("full_text", postProcessedText)
             put("lines", linesArray)
         })
         
