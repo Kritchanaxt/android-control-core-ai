@@ -196,6 +196,12 @@ fun OCRScreen() {
                             withContext(Dispatchers.Main) {
                                 ocrResultJson = benchmarkResults.toString()
                                 ocrTimeMs = end - start
+                                
+                                // ✅ 1. Log-on-Success (Instant Send)
+                                val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs)
+                                val service = RelayService.getInstance()
+                                service?.broadcastMessage(payload.toString())
+                                
                                 isProcessing = false
                             }
                         } catch (e: Exception) {
@@ -312,6 +318,12 @@ fun OCRScreen() {
                                     currentImage = cropped
                                     ocrResultJson = jsonStr
                                     cropImage = null
+                                    
+                                    // ✅ 1. Log-on-Success (Instant Send) for Palmprint
+                                    val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, 0L)
+                                    val service = RelayService.getInstance()
+                                    service?.broadcastMessage(payload.toString())
+                                    
                                     isProcessing = false
                                 }
                             } catch (e: Exception) {

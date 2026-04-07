@@ -10,6 +10,12 @@ import android.os.Build
 import android.system.Os
 import android.system.OsConstants
 import android.os.SystemClock
+import android.os.Environment
+import android.os.StatFs
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraCharacteristics
+import kotlin.math.roundToInt
+import android.util.Log
 
 object SystemMonitor {
     private var lastAppCpuTime: Long = 0
@@ -67,11 +73,64 @@ object SystemMonitor {
     }
 
     fun getDeviceInfo(context: Context): DeviceInfo {
+        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        actManager.getMemoryInfo(memInfo)
+        val actRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+
+        val statFs = StatFs(Environment.getDataDirectory().path)
+        val totalRomBytes = statFs.blockCountLong * statFs.blockSizeLong
+        val totalRomGb = totalRomBytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+
+        // Battery Capacity (Approximate via Power Profile mostly, but battery manager capacity sometimes works)
+        val mBatteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        var cap = 0
+        try {
+            val mPowerProfileClass = Class.forName("com.android.internal.os.PowerProfile")
+            val mPowerProfile = mPowerProfileClass.getConstructor(Context::class.java).newInstance(context)
+            val batteryCapacity = mPowerProfileClass.getMethod("getBatteryCapacity").invoke(mPowerProfile) as Double
+            cap = batteryCapacity.toInt()
+        } catch (e: Exception) {
+             // Fallback
+            cap = 3400 // Placeholder if reflection fails
+        }
+
+        // Cameras
+        var backMp = 0f
+        var frontMp = 0f
+        try {
+            val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            for (cameraId in cameraManager.cameraIdList) {
+                val chars = cameraManager.getCameraCharacteristics(cameraId)
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                val sizes = map?.getOutputSizes(android.graphics.ImageFormat.JPEG)
+                if (sizes != null && sizes.isNotEmpty()) {
+                    val maxSize = sizes.maxByOrNull { it.width * it.height }
+                    if (maxSize != null) {
+                        val mp = (maxSize.width * maxSize.height) / 1000000f
+                        if (facing == CameraCharacteristics.LENS_FACING_BACK) {
+                            if (mp > backMp) backMp = mp
+                        } else if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                            if (mp > frontMp) frontMp = mp
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SystemMonitor", "Error getting camera specs", e)
+        }
+
         return DeviceInfo(
             model = Build.MODEL,
             manufacturer = Build.MANUFACTURER,
             androidVersion = Build.VERSION.RELEASE,
-            apiLevel = Build.VERSION.SDK_INT
+            apiLevel = Build.VERSION.SDK_INT,
+            totalRamGb = ((actRamGb * 10.0).roundToInt() / 10.0),
+            totalRomGb = ((totalRomGb * 10.0).roundToInt() / 10.0),
+            batteryCapacityMAh = cap,
+            backCameraMp = ((backMp * 10f).roundToInt() / 10f),
+            frontCameraMp = ((frontMp * 10f).roundToInt() / 10f)
         )
     }
 
@@ -93,6 +152,7 @@ object SystemMonitor {
             cpuUsage = getCpuUsage(), 
             ramUsedMb = ramUsed,
             ramTotalMb = ramTotal,
+            ramFreeMb = ramTotal - ramUsed,
             batteryLevel = batteryPct,
             batteryTemp = temp / 10.0f
         )

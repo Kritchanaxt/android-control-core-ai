@@ -218,12 +218,22 @@ class RelayService : Service() {
                         val availableRam = usage.ramTotalMb - usage.ramUsedMb
                         val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
                         
+                        val deviceInfo = SystemMonitor.getDeviceInfo(this@RelayService)
+
                         statusMap["cpu_usage"] = usage.cpuUsage
                         statusMap["ram_used_mb"] = usage.ramUsedMb
+                        statusMap["ram_free_mb"] = usage.ramFreeMb
                         statusMap["ram_total_mb"] = usage.ramTotalMb
                         statusMap["battery_level"] = usage.batteryLevel
                         statusMap["battery_temp"] = usage.batteryTemp
                         statusMap["ocr_mode"] = ocrModeLabel
+
+                        // Hardware Specs
+                        statusMap["total_ram_gb"] = deviceInfo.totalRamGb
+                        statusMap["total_rom_gb"] = deviceInfo.totalRomGb
+                        statusMap["battery_capacity_mah"] = deviceInfo.batteryCapacityMAh
+                        statusMap["back_camera_mp"] = deviceInfo.backCameraMp
+                        statusMap["front_camera_mp"] = deviceInfo.frontCameraMp
                         
                         // Add AI monitoring info
                         val activeAI = AIManager.getActiveProcessor()
