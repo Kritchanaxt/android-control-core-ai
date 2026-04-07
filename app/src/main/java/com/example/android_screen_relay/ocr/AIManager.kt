@@ -51,6 +51,10 @@ object AIManager {
     
     fun getActiveProcessor(): AIProcessor? = activeProcessor
     
+    fun paddleOCRLoaded(): Boolean {
+        return activeProcessor?.name?.contains("PaddleOCR", ignoreCase = true) == true
+    }
+    
     fun process(bitmap: Bitmap): AIResult? {
         return activeProcessor?.process(bitmap)
     }

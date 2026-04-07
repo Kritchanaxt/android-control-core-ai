@@ -230,13 +230,21 @@ class RelayService : Service() {
                         // Hardware Specs
                         statusMap["total_rom_gb"] = deviceInfo.totalRomGb
                         statusMap["battery_capacity_mah"] = deviceInfo.batteryCapacityMAh
-                        statusMap["back_camera_mp"] = deviceInfo.backCameraMp
-                        statusMap["front_camera_mp"] = deviceInfo.frontCameraMp
+                        statusMap["back_camera_label"] = deviceInfo.backCameraLabel
+                        statusMap["front_camera_label"] = deviceInfo.frontCameraLabel
+                        statusMap["has_front_camera"] = deviceInfo.hasFrontCamera
+                        statusMap["has_back_camera"] = deviceInfo.hasBackCamera
+                        statusMap["total_cameras"] = deviceInfo.totalCameras
+                        statusMap["supported_resolutions"] = deviceInfo.supportedResolutions
+                        statusMap["camera_permission"] = deviceInfo.cameraPermissionGranted
+                        statusMap["os_name"] = deviceInfo.osName
                         
                         // Add AI monitoring info
                         val activeAI = AIManager.getActiveProcessor()
                         statusMap["ai_active"] = activeAI?.name ?: "none"
                         statusMap["ai_memory_state"] = "ok"
+                        statusMap["paddle_ocr_loaded"] = AIManager.paddleOCRLoaded() // Need to implement this function or check
+                        statusMap["status"] = "Active"
 
                         val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
                         statusMap["power_save_mode"] = powerManager?.isPowerSaveMode == true

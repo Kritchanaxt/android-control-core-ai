@@ -10,8 +10,14 @@ data class DeviceInfo(
     // Spaces / Specs Additions
     val totalRomGb: Double = 0.0,
     val batteryCapacityMAh: Int = 0,
-    val backCameraMp: Float = 0f,
-    val frontCameraMp: Float = 0f
+    val backCameraLabel: String = "",
+    val frontCameraLabel: String = "",
+    val hasFrontCamera: Boolean = false,
+    val hasBackCamera: Boolean = false,
+    val totalCameras: Int = 0,
+    val supportedResolutions: String = "",
+    val cameraPermissionGranted: Boolean = false,
+    val osName: String = "Android"
 ) {
     fun toJson(): JSONObject {
         return JSONObject().apply {
@@ -21,8 +27,14 @@ data class DeviceInfo(
             put("api_level", apiLevel)
             put("total_rom_gb", totalRomGb)
             put("battery_capacity_mah", batteryCapacityMAh)
-            put("back_camera_mp", backCameraMp)
-            put("front_camera_mp", frontCameraMp)
+            put("back_camera_label", backCameraLabel)
+            put("front_camera_label", frontCameraLabel)
+            put("has_front_camera", hasFrontCamera)
+            put("has_back_camera", hasBackCamera)
+            put("total_cameras", totalCameras)
+            put("os_name", osName)
+            put("supported_resolutions", supportedResolutions)
+            put("camera_permission", cameraPermissionGranted)
         }
     }
 }

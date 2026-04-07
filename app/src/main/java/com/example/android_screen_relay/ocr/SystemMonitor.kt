@@ -91,29 +91,50 @@ object SystemMonitor {
         }
 
         // Cameras
-        var backMp = 0f
-        var frontMp = 0f
+        var backLabel = ""
+        var frontLabel = ""
+        var hasFront = false
+        var hasBack = false
+        var totalCams = 0
+        val resolutionsSet = mutableSetOf<String>()
+        var camPermission = false
         try {
-            val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            for (cameraId in cameraManager.cameraIdList) {
+            camPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                context, 
+                android.Manifest.permission.CAMERA
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            
+            val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            val camIds = cameraManager.cameraIdList
+            totalCams = camIds.size
+            for (cameraId in camIds) {
                 val chars = cameraManager.getCameraCharacteristics(cameraId)
-                val facing = chars.get(CameraCharacteristics.LENS_FACING)
-                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                val facing = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
+                val map = chars.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 val sizes = map?.getOutputSizes(android.graphics.ImageFormat.JPEG)
                 if (sizes != null && sizes.isNotEmpty()) {
+                    // Add resolutions
+                    sizes.forEach { size ->
+                        resolutionsSet.add("${size.width}x${size.height}")
+                    }
                     val maxSize = sizes.maxByOrNull { it.width * it.height }
                     if (maxSize != null) {
-                        val mp = (maxSize.width * maxSize.height) / 1000000f
-                        if (facing == CameraCharacteristics.LENS_FACING_BACK) {
-                            if (mp > backMp) backMp = mp
-                        } else if (facing == CameraCharacteristics.LENS_FACING_FRONT) {
-                            if (mp > frontMp) frontMp = mp
+                        val mpValue = (maxSize.width * maxSize.height) / 100000f
+                        val mpFormatted = (mpValue.roundToInt() / 10.0f).toString()
+                        val labelText = "Cam $cameraId (${mpFormatted}MP)"
+                        
+                        if (facing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK) {
+                            backLabel = if (backLabel.isEmpty()) labelText else "$backLabel, $labelText"
+                            hasBack = true
+                        } else if (facing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT) {
+                            frontLabel = if (frontLabel.isEmpty()) labelText else "$frontLabel, $labelText"
+                            hasFront = true
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("SystemMonitor", "Error getting camera specs", e)
+            android.util.Log.e("SystemMonitor", "Error getting camera specs", e)
         }
 
         return DeviceInfo(
@@ -123,8 +144,14 @@ object SystemMonitor {
             apiLevel = Build.VERSION.SDK_INT,
             totalRomGb = ((totalRomGb * 10.0).roundToInt() / 10.0),
             batteryCapacityMAh = cap,
-            backCameraMp = ((backMp * 10f).roundToInt() / 10f),
-            frontCameraMp = ((frontMp * 10f).roundToInt() / 10f)
+            backCameraLabel = backLabel.ifEmpty { "N/A" },
+            frontCameraLabel = frontLabel.ifEmpty { "N/A" },
+            hasFrontCamera = hasFront,
+            hasBackCamera = hasBack,
+            totalCameras = totalCams,
+            supportedResolutions = resolutionsSet.take(5).joinToString(", "), // take first 5 to not bloat json
+            cameraPermissionGranted = camPermission,
+            osName = "Android" // OS Name requested
         )
     }
 
