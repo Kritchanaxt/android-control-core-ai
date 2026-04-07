@@ -207,7 +207,6 @@ class RelayService : Service() {
                             "uptime_sec" to (System.currentTimeMillis() - 0L) / 1000, 
                             "foreground_service" to true,
                             "screen_capture_active" to (screenCaptureManager != null),
-                            "is_background" to true,
                             "device_model" to Build.MODEL,
                             "device_manufacturer" to Build.MANUFACTURER,
                             "android_version" to Build.VERSION.RELEASE,
@@ -215,7 +214,7 @@ class RelayService : Service() {
                             "cpu_abi" to Build.SUPPORTED_ABIS[0]
                         )
 
-                        val availableRam = usage.ramTotalMb - usage.ramUsedMb
+                        val availableRam = usage.ramFreeMb
                         val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
                         
                         val deviceInfo = SystemMonitor.getDeviceInfo(this@RelayService)
@@ -229,7 +228,6 @@ class RelayService : Service() {
                         statusMap["ocr_mode"] = ocrModeLabel
 
                         // Hardware Specs
-                        statusMap["total_ram_gb"] = deviceInfo.totalRamGb
                         statusMap["total_rom_gb"] = deviceInfo.totalRomGb
                         statusMap["battery_capacity_mah"] = deviceInfo.batteryCapacityMAh
                         statusMap["back_camera_mp"] = deviceInfo.backCameraMp
@@ -266,7 +264,7 @@ class RelayService : Service() {
                             
                             val fatalJson = org.json.JSONObject()
                             fatalJson.put("type", "heartbeat")
-                            fatalJson.put("data", org.json.JSONObject(statusMap as Map<*, *>)) 
+                            statusMap.forEach { (k, v) -> fatalJson.put(k, v) }
                             GoogleSheetsLogger.log(fatalJson.toString())
                             
                             showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). App closed.")
@@ -275,7 +273,6 @@ class RelayService : Service() {
                         
                         val statusJson = org.json.JSONObject()
                         statusJson.put("type", "heartbeat")
-                        statusJson.put("data", org.json.JSONObject(statusMap as Map<*, *>)) 
                         statusMap.forEach { (k, v) -> statusJson.put(k, v) }
                         
                         relayServer?.broadcastToAuthenticated(statusJson.toString())

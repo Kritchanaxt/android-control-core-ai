@@ -8,7 +8,6 @@ data class DeviceInfo(
     val androidVersion: String,
     val apiLevel: Int,
     // Spaces / Specs Additions
-    val totalRamGb: Double = 0.0,
     val totalRomGb: Double = 0.0,
     val batteryCapacityMAh: Int = 0,
     val backCameraMp: Float = 0f,
@@ -20,7 +19,6 @@ data class DeviceInfo(
             put("manufacturer", manufacturer)
             put("android_version", androidVersion)
             put("api_level", apiLevel)
-            put("total_ram_gb", totalRamGb)
             put("total_rom_gb", totalRomGb)
             put("battery_capacity_mah", batteryCapacityMAh)
             put("back_camera_mp", backCameraMp)

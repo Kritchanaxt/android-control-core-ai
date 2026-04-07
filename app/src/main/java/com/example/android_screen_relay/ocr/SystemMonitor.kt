@@ -73,11 +73,6 @@ object SystemMonitor {
     }
 
     fun getDeviceInfo(context: Context): DeviceInfo {
-        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val memInfo = ActivityManager.MemoryInfo()
-        actManager.getMemoryInfo(memInfo)
-        val actRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
-
         val statFs = StatFs(Environment.getDataDirectory().path)
         val totalRomBytes = statFs.blockCountLong * statFs.blockSizeLong
         val totalRomGb = totalRomBytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
@@ -126,7 +121,6 @@ object SystemMonitor {
             manufacturer = Build.MANUFACTURER,
             androidVersion = Build.VERSION.RELEASE,
             apiLevel = Build.VERSION.SDK_INT,
-            totalRamGb = ((actRamGb * 10.0).roundToInt() / 10.0),
             totalRomGb = ((totalRomGb * 10.0).roundToInt() / 10.0),
             batteryCapacityMAh = cap,
             backCameraMp = ((backMp * 10f).roundToInt() / 10f),
