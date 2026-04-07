@@ -246,6 +246,8 @@ fun OCRScreen() {
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
                 onStableDetection = { bitmap ->
+                    if (isProcessing) return@CameraPreviewScreen false // Return false if CPU is locked 
+
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
                             val tempPalm = PalmprintProcessor()
@@ -287,6 +289,8 @@ fun OCRScreen() {
                     }
                 },
                 onImageCaptured = { bitmap ->
+                    if (isProcessing) return@CameraPreviewScreen // Double check Busy State Lock
+                    
                     if (currentAiMode == AiMode.PALMPRINT) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
@@ -338,11 +342,14 @@ fun OCRScreen() {
                     } else {
                         // OCR mode: manual crop
                         cropImage = bitmap
+                        // Unlock processing state because manual crop pauses AI until user taps OK
+                        isProcessing = false
                     }
                 },
                 onGalleryClick = {
                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }
+                },
+                isProcessingBusy = isProcessing
             )
         } else {
              Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -361,7 +368,8 @@ fun CameraPreviewScreen(
     onTargetHandChange: (String) -> Unit,
     onStableDetection: suspend (Bitmap) -> Boolean,
     onImageCaptured: (Bitmap) -> Unit,
-    onGalleryClick: () -> Unit
+    onGalleryClick: () -> Unit,
+    isProcessingBusy: Boolean = false
 ) {
     val context = LocalContext.current
     var cameraController by remember { mutableStateOf<Camera2Controller?>(null) }
@@ -399,14 +407,20 @@ fun CameraPreviewScreen(
     val cameraKey = "$selectedCameraId-${selectedResolution?.width}x${selectedResolution?.height}-${selectedAspectRatio.name}"
 
     // Auto-Snap polling
-    LaunchedEffect(aiMode, targetHand) {
+    // ⚠️ Busy State Lock check: Stop loop if 'isProcessingBusy' is true
+    LaunchedEffect(aiMode, targetHand, isProcessingBusy) {
+        if (isProcessingBusy) return@LaunchedEffect
+        
         withContext(Dispatchers.Default) {
             var stableTime = 0L
-            while (isActive) {
+            while (isActive && !isProcessingBusy) {
                 kotlinx.coroutines.delay(500)
                 if (!isCapturing && cameraController?.textureView != null) {
                     val bitmap = cameraController?.textureView?.bitmap
                     if (bitmap != null) {
+                        // Extra lock safety before intensive computation
+                        if (isProcessingBusy) break
+                        
                         val criteriaMet = try { onStableDetection(bitmap) } catch(e: Exception) { false }
                         if (criteriaMet) {
                             stableTime += 500
