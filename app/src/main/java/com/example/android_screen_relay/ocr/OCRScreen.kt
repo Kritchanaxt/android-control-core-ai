@@ -411,8 +411,8 @@ fun CameraPreviewScreen(
     }
     var selectedCameraId by remember { mutableStateOf(availableCameras.firstOrNull() ?: "0") }
     
-    // Aspect Ratio State
-    var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_3_4) } // Default to Portrait 3:4
+    // Aspect Ratio State (Default 1:1 for RAM 2GB Device)
+    var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_1_1) }
     
     var availableResolutions by remember { mutableStateOf<List<Size>>(emptyList()) }
     var selectedResolution by remember { mutableStateOf<Size?>(null) }
@@ -425,11 +425,27 @@ fun CameraPreviewScreen(
         if (cameraController == null) {
              cameraController = Camera2Controller(context, onImageCaptured)
         }
-        val items = cameraController!!.getResolutionsForAspectRatio(selectedAspectRatio)
-        availableResolutions = items.mapNotNull { it.size }
-        // Default to highest resolution in the list
+        
+        // Fetch raw sizes directly mapping orientation manually to prevent waiting for preview initialization
+        val allSizes = cameraController!!.getCameraResolutions(selectedCameraId)
+        val targetRatio = selectedAspectRatio.value
+        val tolerance = 0.05f
+        
+        val filtered = if (targetRatio != null) {
+            allSizes.filter { size ->
+                val ratio = size.width.toFloat() / size.height.toFloat()
+                val invRatio = size.height.toFloat() / size.width.toFloat()
+                kotlin.math.abs(ratio - targetRatio) < tolerance || kotlin.math.abs(invRatio - targetRatio) < tolerance
+            }
+        } else {
+            allSizes
+        }
+        
+        availableResolutions = filtered.sortedByDescending { it.width * it.height }
+        
+        // Default to lowest resolution (e.g. 720x720) to save RAM on A10
         if (selectedResolution == null || !availableResolutions.contains(selectedResolution)) {
-            selectedResolution = availableResolutions.maxByOrNull { it.width * it.height }
+            selectedResolution = availableResolutions.minByOrNull { it.width * it.height }
         }
         
         cameraController?.aspectRatio = selectedAspectRatio
@@ -795,11 +811,25 @@ fun CameraPreviewScreen(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // Aspect Ratio Selection
-                Text(
-                    "Aspect Ratio",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Aspect Ratio",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            "Default: 1:1",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 
                 val supportedRatios = listOf(UiAspectRatio.RATIO_3_4, UiAspectRatio.RATIO_9_16, UiAspectRatio.RATIO_1_1)
@@ -834,11 +864,25 @@ fun CameraPreviewScreen(
                 Spacer(modifier = Modifier.height(24.dp))
 
                 // Resolution Selection
-                Text(
-                    "Resolution (JPEG)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Resolution (JPEG)",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            "Default: 720x720",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 
                 Card(
@@ -862,7 +906,7 @@ fun CameraPreviewScreen(
                                     onClick = { selectedResolution = size }
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
-                                Column {
+                                Column(modifier = Modifier.weight(1f)) {
                                      Text(
                                         "${size.width} x ${size.height}",
                                         style = MaterialTheme.typography.bodyLarge,
@@ -874,6 +918,19 @@ fun CameraPreviewScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+                                }
+                                if (size == availableResolutions.minByOrNull { it.width * it.height } && selectedAspectRatio == UiAspectRatio.RATIO_1_1) {
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                                        shape = RoundedCornerShape(16.dp)
+                                    ) {
+                                        Text(
+                                            "Recommended",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
                                 }
                             }
                             HorizontalDivider(
