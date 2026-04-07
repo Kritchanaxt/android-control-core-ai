@@ -419,6 +419,7 @@ fun CameraPreviewScreen(
     
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
+    var stableTime by remember { mutableStateOf(0L) }
 
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio) {
@@ -459,7 +460,7 @@ fun CameraPreviewScreen(
         if (isProcessingBusy) return@LaunchedEffect
         
         withContext(Dispatchers.Default) {
-            var stableTime = 0L
+            stableTime = 0L
             while (isActive && !isProcessingBusy) {
                 kotlinx.coroutines.delay(500)
                 if (!isCapturing && cameraController?.textureView != null) {
@@ -476,12 +477,12 @@ fun CameraPreviewScreen(
                                 withContext(Dispatchers.Main) {
                                     cameraController!!.takePhoto()
                                 }
-                                stableTime = 0
+                                stableTime = 0L
                                 kotlinx.coroutines.delay(2000) // Wait before resuming
                                 isCapturing = false
                             }
                         } else {
-                            stableTime = 0
+                            stableTime = 0L
                         }
                     }
                 }
@@ -535,7 +536,7 @@ fun CameraPreviewScreen(
                 // Overlay - Drawn inside the aspect ratio box
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     // Draw Frame (Dynamic by AI Mode)
-                    val frameColor = android.graphics.Color.WHITE
+                    val frameColor = if (stableTime >= 500L || isCapturing) android.graphics.Color.parseColor("#4CAF50") else android.graphics.Color.WHITE
                     val maskColor = android.graphics.Color.parseColor("#99000000") // Semi-transparent black
                     val strokeW = 8f
                     val cw = size.width
@@ -591,7 +592,7 @@ fun CameraPreviewScreen(
                         // Top Text
                         drawContext.canvas.nativeCanvas.save()
                         drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val topText = "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
+                        val topText = if (stableTime >= 500L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
                         val topTextWidth = textPaint.measureText(topText)
                         drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
                         drawContext.canvas.nativeCanvas.restore()
@@ -1461,7 +1462,48 @@ private fun generateOCRPayload(
             
             linesArray.put(resultObj)
             
-            if (sb.isNotEmpty()) sb.append("\n")
+            // ✅ เพิ่มการจัดการช่องว่าง (Space Management)
+            // หากความสูงของบรรทัดใกล้เคียงกัน (Y-diff น้อย) ให้ใช้ช่องว่าง (Space) แทนการขึ้นบรรทัดใหม่
+            if (sb.isNotEmpty()) {
+                val lastItem = if (i > 0) primaryResultBox.getJSONObject(i - 1) else null
+                val lastBox = lastItem?.optJSONArray("box")
+                var isSameLine = false
+                
+                if (lastBox != null) {
+                    var sumYLast = 0.0
+                    for(k in 0 until lastBox.length()) sumYLast += lastBox.getJSONArray(k).getDouble(1)
+                    val avgYLast = sumYLast / lastBox.length()
+
+                    var sumYCurr = 0.0
+                    for(k in 0 until box.length()) sumYCurr += box.getJSONArray(k).getDouble(1)
+                    val avgYCurr = sumYCurr / box.length()
+
+                    val height = maxY - minY
+                    var minYLast = Double.MAX_VALUE
+                    var maxYLast = -Double.MAX_VALUE
+                    for(k in 0 until lastBox.length()) {
+                        val y = lastBox.getJSONArray(k).getDouble(1)
+                        if(y < minYLast) minYLast = y
+                        if(y > maxYLast) maxYLast = y
+                    }
+                    val heightLast = maxYLast - minYLast
+                    val avgHeight = (height + heightLast) / 2.0
+
+                    // ปรับค่า Tolerance ให้กว้างขึ้นเป็น 1.5 เท่าของความสูงเฉลี่ย (แก้ปัญหาชื่อ-นามสกุลหลุดบรรทัด)
+                    if (kotlin.math.abs(avgYCurr - avgYLast) < (avgHeight * 1.5)) {
+                        isSameLine = true
+                    }
+                }
+                
+                if (isSameLine) {
+                    if (!sb.endsWith(" ")) {
+                        sb.append(" ")
+                    }
+                } else {
+                    sb.append("\n")
+                }
+            }
+            
             sb.append(text)
             totalConfidence += conf
         }
