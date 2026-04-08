@@ -703,22 +703,24 @@ fun CameraPreviewScreen(
             }
 
             // Bottom Bar Overlay
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
                     .background(Color.Black.copy(alpha = 0.7f)) 
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 // Auto-Snap Indicator (Left side)
-                Box(modifier = Modifier.align(Alignment.CenterStart), contentAlignment = Alignment.Center) {
+                Box(contentAlignment = Alignment.Center) {
                     if (isCapturing) {
-                        CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(32.dp))
+                        CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(24.dp))
                     } else {
                         Text(
-                            "Auto-Snap\nEnabled", 
+                            "Auto-Snap\n" + if (aiMode == AiMode.PALMPRINT) targetHand else "Enabled", 
                             color = Color.White, 
-                            fontSize = 12.sp, 
+                            fontSize = 11.sp, 
                             fontWeight = FontWeight.Medium,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
@@ -727,40 +729,9 @@ fun CameraPreviewScreen(
 
                 // Tools Group (Right side)
                 Row(
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (aiMode == AiMode.PALMPRINT) {
-                        var handExpanded by remember { mutableStateOf(false) }
-                        Box {
-                            Button(
-                                onClick = { handExpanded = true },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White),
-                                shape = RoundedCornerShape(24.dp),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text(text = targetHand, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                            }
-                            
-                            DropdownMenu(
-                                expanded = handExpanded,
-                                onDismissRequest = { handExpanded = false },
-                                modifier = Modifier.background(Color(0xFF333333))
-                            ) {
-                                listOf("Left", "Right").forEach { hand ->
-                                    DropdownMenuItem(
-                                        text = { Text(hand, color = Color.White, fontWeight = FontWeight.Bold) },
-                                        onClick = { 
-                                            onTargetHandChange(hand)
-                                            handExpanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
 
                     // AI Dropdown
                     Box {
@@ -768,10 +739,10 @@ fun CameraPreviewScreen(
                             onClick = { aiDropdownExpanded = true },
                             colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.2f), contentColor = Color.White),
                             shape = RoundedCornerShape(24.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                            modifier = Modifier.height(48.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(40.dp)
                         ) {
-                            Text(text = aiMode.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(text = aiMode.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                         
                         DropdownMenu(
@@ -781,7 +752,7 @@ fun CameraPreviewScreen(
                         ) {
                             AiMode.values().forEach { mode ->
                                 DropdownMenuItem(
-                                    text = { Text(mode.name, color = Color.White, fontWeight = FontWeight.Bold) },
+                                    text = { Text(mode.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp) },
                                     onClick = { 
                                         onAiModeChange(mode)
                                         aiDropdownExpanded = false
@@ -794,17 +765,17 @@ fun CameraPreviewScreen(
                     // Import Button (Icon only)
                     IconButton(
                         onClick = onGalleryClick,
-                        modifier = Modifier.size(48.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
+                        modifier = Modifier.size(40.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
                     ) {
-                        Icon(Icons.Default.PhotoLibrary, contentDescription = "Import", tint = Color.White, modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = "Import", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
 
                     // Settings Button
                     IconButton(
                         onClick = { showSettingsDialog = true },
-                        modifier = Modifier.size(48.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
+                        modifier = Modifier.size(40.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White, modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                 }
             }
