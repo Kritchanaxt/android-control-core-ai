@@ -1568,10 +1568,21 @@ private fun generateOCRPayload(
             payload.put("result", JSONObject().apply {
                 put("palms", benchmarkArr)
             })
+
+            // add resource info directly to palmprint summary so the google script logs it properly
+            val resourceStats = resource.toJson()
             payload.put("summary", JSONObject().apply {
                 put("palms_detected", benchmarkArr.length())
                 put("total_latency_ms", timeMs)
             })
+
+            // Append memory usage manually at ROOT level so Google Sheet script can use `data.cpu_usage` fallback block
+            payload.put("cpu_usage", resourceStats.optString("cpu_usage"))
+            payload.put("ram_used_mb", resourceStats.optLong("ram_used_mb"))
+            payload.put("ram_total_mb", resourceStats.optLong("ram_total_mb"))
+            payload.put("battery_level", resourceStats.optInt("battery_level"))
+            payload.put("battery_temp", resourceStats.optDouble("battery_temp_c"))
+            
             return payload
         }
         
