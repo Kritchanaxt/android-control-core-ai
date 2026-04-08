@@ -267,14 +267,12 @@ fun AIScreen() {
                 onAiModeChange = { currentAiMode = it },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
-                onStableDetection = { bitmap ->
+                onStableDetection = { bitmap, previewOcr, previewPalm ->
                     if (isProcessing) return@CameraPreviewScreen false // Return false if CPU is locked 
 
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
-                            val tempPalm = PalmprintProcessor()
-                            val success = tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                            if (success) {
+                            if (previewPalm != null) {
                                 // Scale down bitmap for faster/lower-memory auto-snap detection
                                 val scale = 480f / maxOf(bitmap.width, bitmap.height)
                                 val processBitmap = if (scale < 1f) {
@@ -282,36 +280,24 @@ fun AIScreen() {
                                 } else {
                                     bitmap
                                 }
-                                val result = tempPalm.process(processBitmap)
+                                val result = previewPalm.process(processBitmap)
                                 val item = result.items.firstOrNull()
-                                tempPalm.release()
                                 result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
                             } else {
-                                tempPalm.release()
                                 false
                             }
                         } catch (e: Exception) { false }
                     } else {
                         // For OCR, detect card text before snap to prevent infinite snapping
                         try {
-                            val scale = 320f / maxOf(bitmap.width, bitmap.height)
-                            val tempOcr = PaddleOCR()
-                            val s = tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-                            if (s) {
-                                if (scale >= 1f) {
-                                    val res = tempOcr.detect(bitmap)
-                                    tempOcr.release()
-                                    org.json.JSONArray(res).length() >= 4
-                                } else {
-                                    val w = (bitmap.width * scale).toInt()
-                                    val h = (bitmap.height * scale).toInt()
-                                    val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
-                                    val res = tempOcr.detect(scaled)
-                                    tempOcr.release()
-                                    org.json.JSONArray(res).length() >= 4
-                                }
+                            if (previewOcr != null) {
+                                val scale = 480f / maxOf(bitmap.width, bitmap.height)
+                                val w = (bitmap.width * scale).toInt()
+                                val h = (bitmap.height * scale).toInt()
+                                val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
+                                val res = previewOcr.detect(scaled)
+                                org.json.JSONArray(res).length() >= 2
                             } else {
-                                tempOcr.release()
                                 false
                             }
                         } catch (e: Exception) { false }
@@ -472,7 +458,7 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
-    onStableDetection: suspend (Bitmap) -> Boolean,
+    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?) -> Boolean,
     onImageCaptured: (Bitmap) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false
@@ -495,6 +481,33 @@ fun CameraPreviewScreen(
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     var stableTime by remember { mutableStateOf(0L) }
+
+    // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
+    var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
+    var previewPalm by remember { mutableStateOf<PalmprintProcessor?>(null) }
+    val computeMode = ComputeModeManager.getMode()
+
+    // Initialize or release preview models when the mode changes
+    LaunchedEffect(aiMode) {
+        withContext(Dispatchers.IO) {
+            // First release both
+            previewOcr?.release()
+            previewPalm?.release()
+            previewOcr = null
+            previewPalm = null
+            
+            // Then initialize the active one (Limit cores to 1 or 2 for preview stability)
+            if (aiMode == AiMode.OCR) {
+                val ocr = PaddleOCR()
+                val success = ocr.initModel(context, maxOf(1, computeMode.coreCount - 2), computeMode.useGpu)
+                if (success) previewOcr = ocr
+            } else if (aiMode == AiMode.PALMPRINT) {
+                val palm = PalmprintProcessor()
+                val success = palm.init(context, AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2)))
+                if (success) previewPalm = palm
+            }
+        }
+    }
 
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
@@ -549,10 +562,10 @@ fun CameraPreviewScreen(
                         // Extra lock safety before intensive computation
                         if (isProcessingBusy) break
                         
-                        val criteriaMet = try { onStableDetection(bitmap) } catch(e: Exception) { false }
+                        val criteriaMet = try { onStableDetection(bitmap, previewOcr, previewPalm) } catch(e: Exception) { false }
                         if (criteriaMet) {
                             stableTime += 250
-                            if (stableTime >= 750) { // ถือบัตรนิ่งแค่ 0.75 วินาทีก็กดถ่ายเลย (จากเดิม 1.5 วินาที)
+                            if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
                                 withContext(Dispatchers.Main) {
                                     cameraController!!.takePhoto()

@@ -255,23 +255,31 @@ class RelayService : Service() {
                         }
 
                         val totalRam = usage.ramTotalMb
-                        val warningThreshold = if (totalRam < 2048) 180 else 300
-                        val criticalThreshold = if (totalRam < 2048) 120 else 200
-                        val fatalThreshold = if (totalRam < 2048) 80 else 150
+                        
+                        // % based thresholds. For a phone with 1742MB:
+                        // warning: 209MB | critical: 139MB | fatal: 69MB
+                        val warningThreshold = (totalRam * 0.12).toLong().coerceAtMost(400)
+                        val criticalThreshold = (totalRam * 0.08).toLong().coerceAtMost(250)
+                        val fatalThreshold = (totalRam * 0.04).toLong().coerceAtMost(120)
 
                         if (availableRam < warningThreshold) {
-                            android.util.Log.w("RelayService", "CRITICAL MEMORY: ${availableRam}MB available")
-                            consecutiveLowMemory++
+                            android.util.Log.w("RelayService", "LOW MEMORY: ${availableRam}MB available")
                             
+                            // Only accumulate crash timer if memory is dangerously low (Critical) 
+                            // Merely staying in the 'Warning' zone is normal for Android OS caching on 2GB devices.
                             if (availableRam < criticalThreshold) {
+                                consecutiveLowMemory++
                                 statusMap["ai_memory_state"] = "releasing_models"
                                 AIManager.release()
+                            } else {
+                                consecutiveLowMemory = 0
                             }
                         } else {
                             consecutiveLowMemory = 0
                         }
 
-                        if (consecutiveLowMemory > 5 || availableRam < fatalThreshold) {
+                        // Crash ONLY if memory drops below fatal immediately, OR stays under critical for ~60 seconds (12 loops)
+                        if (availableRam < fatalThreshold || consecutiveLowMemory > 12) {
                             android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
                             statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB"
                             
