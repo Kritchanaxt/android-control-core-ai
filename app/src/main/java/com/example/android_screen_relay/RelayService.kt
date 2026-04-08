@@ -254,11 +254,16 @@ class RelayService : Service() {
                             statusMap["thermal_status"] = -1
                         }
 
-                        if (availableRam < 300) {
+                        val totalRam = usage.ramTotalMb
+                        val warningThreshold = if (totalRam < 2048) 180 else 300
+                        val criticalThreshold = if (totalRam < 2048) 120 else 200
+                        val fatalThreshold = if (totalRam < 2048) 80 else 150
+
+                        if (availableRam < warningThreshold) {
                             android.util.Log.w("RelayService", "CRITICAL MEMORY: ${availableRam}MB available")
                             consecutiveLowMemory++
                             
-                            if (availableRam < 200) {
+                            if (availableRam < criticalThreshold) {
                                 statusMap["ai_memory_state"] = "releasing_models"
                                 AIManager.release()
                             }
@@ -266,7 +271,7 @@ class RelayService : Service() {
                             consecutiveLowMemory = 0
                         }
 
-                        if (consecutiveLowMemory > 5 || availableRam < 150) {
+                        if (consecutiveLowMemory > 5 || availableRam < fatalThreshold) {
                             android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
                             statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB"
                             

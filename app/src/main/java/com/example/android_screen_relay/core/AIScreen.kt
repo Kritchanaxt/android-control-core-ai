@@ -275,7 +275,14 @@ fun AIScreen() {
                             val tempPalm = PalmprintProcessor()
                             val success = tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
                             if (success) {
-                                val result = tempPalm.process(bitmap)
+                                // Scale down bitmap for faster/lower-memory auto-snap detection
+                                val scale = 480f / maxOf(bitmap.width, bitmap.height)
+                                val processBitmap = if (scale < 1f) {
+                                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                } else {
+                                    bitmap
+                                }
+                                val result = tempPalm.process(processBitmap)
                                 val item = result.items.firstOrNull()
                                 tempPalm.release()
                                 result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
