@@ -57,12 +57,10 @@ object FirebaseLogger {
         val currentSystemStatus = getSystemStatus(context)
 
         // 1. หมวดหมู่พื้นฐาน (Identity & Time)
-        logData["timestamp"] = FieldValue.serverTimestamp() // Time on server
-        
         // เวลาไทย (UTC+7)
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
         sdf.timeZone = TimeZone.getTimeZone("Asia/Bangkok")
-        logData["datetime_th"] = sdf.format(Date())
+        logData["timestamp"] = sdf.format(Date())
 
         logData["step_name"] = stepName
         logData["status"] = status
@@ -108,7 +106,7 @@ object FirebaseLogger {
 
         // 5. หมวดหมู่ AI & ประมวลผล (AI Mode, Snap, Confidence, Text Extracted)
         if (result != null || stepName.contains("AI") || stepName.contains("SNAP")) {
-            val extractedText = result?.resultJson?.take(500) ?: ""
+            val extractedText = result?.resultJson?.take(500) ?: (extraData?.get("extracted_text") as? String)?.take(500) ?: ""
             // นำผลลัพธ์การ Snap ออกมาที่ Root เพื่อให้แสดงผลในตาราง Firestore ได้ชัดเจน
             if (extractedText.isNotEmpty()) {
                 logData["snap_extracted_text"] = extractedText
@@ -121,7 +119,7 @@ object FirebaseLogger {
                 "type" to (result?.title ?: extraData?.get("type") ?: "N/A"),
                 "compute_mode" to (extraData?.get("compute_mode") ?: "N/A"),
                 "use_gpu" to (extraData?.get("use_gpu") ?: false),
-                "latency_ms" to (result?.latencyMs ?: 0L),
+                "latency_ms" to (result?.latencyMs ?: extraData?.get("latency_ms") ?: 0L),
                 "cropped_ms" to (extraData?.get("cropped_ms") ?: 0L),
                 "avg_confidence" to (extraData?.get("avg_confidence") ?: 0.0),
                 "ai_mode" to (extraData?.get("ai_mode") ?: "OCR"),

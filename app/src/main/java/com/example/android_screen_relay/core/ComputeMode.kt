@@ -4,7 +4,7 @@ import android.content.Context
 
 enum class ComputeMode(val coreCount: Int, val useGpu: Boolean, val displayName: String, val maxResolution: Int) {
     // โหมดตั้งต้นสำหรับสเปคต่ำมาก (RAM 2GB) จะลด Resolution อัตโนมัติเพื่อไม่ให้ OOM
-    LOW_END(4, false, "Low-End (4 Cores, Safe RAM)", 480),
+    LOW_END(4, false, "Safe Mode (Low Res)", 480),
     CPU_4_CORE(4, false, "CPU 4 Core", 720),
     CPU_6_CORE(6, false, "CPU 6 Core", 1080),
     GPU(4, true, "GPU", 1080)

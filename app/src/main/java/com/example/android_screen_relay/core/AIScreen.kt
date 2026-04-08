@@ -54,6 +54,7 @@ import android.graphics.Path
 import android.view.TextureView
 import android.hardware.camera2.CameraManager
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import com.example.android_screen_relay.RelayService
 import kotlinx.coroutines.Dispatchers
@@ -346,11 +347,14 @@ fun AIScreen() {
                     if (currentAiMode == AiMode.PALMPRINT) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempPalm: PalmprintProcessor? = null
+                            var tempPalm: com.example.android_screen_relay.core.PalmprintProcessor? = null
                             try {
-                                tempPalm = PalmprintProcessor()
+                                val pbStartMs = System.currentTimeMillis()
+                                tempPalm = com.example.android_screen_relay.core.PalmprintProcessor()
                                 tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
                                 val result = tempPalm.process(bitmap)
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+                                
                                 val item = result.items.firstOrNull()
                                 val cropped = if (result.success && item != null) {
                                     val palmRoiMap = item.extra["palm_roi"] as? Map<*, *>
@@ -414,6 +418,7 @@ fun AIScreen() {
 
                                 withContext(Dispatchers.Main) {
                                     if (targetHand.equals("Left", ignoreCase = true)) {
+                                        ocrTimeMs = pbElapsedMs
                                         leftPalmImage = cropped
                                         // Now switch to right hand
                                         targetHand = "Right"
@@ -422,6 +427,7 @@ fun AIScreen() {
                                         kotlinx.coroutines.delay(1500)
                                         isProcessing = false
                                     } else if (targetHand.equals("Right", ignoreCase = true)) {
+                                        ocrTimeMs += pbElapsedMs
                                         rightPalmImage = cropped
                                         
                                         // Combine both results
@@ -435,7 +441,7 @@ fun AIScreen() {
                                         cropImage = null
                                         
                                         // ✅ Both hands captured, automatically logs
-                                        val payload = generateOCRPayload(context, rightPalmImage!!, ocrResultJson, 0L, currentAiMode)
+                                        val payload = generateOCRPayload(context, rightPalmImage!!, ocrResultJson, ocrTimeMs, currentAiMode)
                                         val service = RelayService.getInstance()
                                         service?.broadcastMessage(payload.toString())
                                         
@@ -447,7 +453,13 @@ fun AIScreen() {
                                                 "ai_mode" to currentAiMode.name,
                                                 "status" to "SUCCESS",
                                                 "extracted_text" to ocrResultJson,
+                                                "latency_ms" to ocrTimeMs,
+                                                "compute_mode" to computeMode.displayName,
+                                                "type" to "PalmPrint",
+                                                "use_gpu" to computeMode.useGpu,
+                                                "model_mediapipe_loaded" to true,
                                                 "snap_image_active" to true,
+                                                "camera_id" to "Unknown",
                                                 "bench_title" to "Palmprint Capture"
                                             )
                                         )
@@ -1165,18 +1177,19 @@ fun OCRResultScreen(
                     if (aiMode == AiMode.OCR) {
                         // Compute Mode Selector only for OCR
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             ComputeMode.values().forEach { mode ->
                                 FilterChip(
                                     selected = (computeMode == mode),
                                     onClick = { onComputeModeChange(mode) },
-                                    label = { Text(mode.displayName, fontSize = 12.sp) },
+                                    label = { Text(mode.displayName, fontSize = 12.sp, maxLines = 1) },
                                     leadingIcon = if (computeMode == mode) {
                                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                    } else null,
-                                    modifier = Modifier.weight(1f)
+                                    } else null
                                 )
                             }
                         }
@@ -1250,7 +1263,7 @@ fun OCRResultScreen(
                         Button(
                             onClick = {
                                 if (jsonResult == "[]" || jsonResult.isEmpty()) {
-                                    Toast.makeText(context, "Please run OCR first", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, if (aiMode == AiMode.OCR) "Please run OCR first" else "No Palmprint result", Toast.LENGTH_SHORT).show()
                                     return@Button
                                 }
                                 
@@ -1268,13 +1281,23 @@ fun OCRResultScreen(
                                             // 🌟 Add Firebase Logger directly here
                                             FirebaseLogger.logStep(
                                                 context = context,
-                                                stepName = "SEND_DATA_TO_WEBCLIENT",
+                                                stepName = "AI_SEND_DATA_TO_WEBCLIENT",
                                                 status = "SUCCESS",
                                                 extraData = mapOf(
                                                     "ai_mode" to aiMode.name,
                                                     "payload_size" to jsonString.length,
                                                     "items_found" to try { org.json.JSONArray(jsonResult).length() } catch(e:Exception){0},
-                                                    "extracted_text" to jsonResult
+                                                    "extracted_text" to jsonResult,
+                                                    "latency_ms" to timeMs,
+                                                    "camera_id" to "Unknown",
+                                                    "compute_mode" to computeMode.displayName,
+                                                    "type" to if (aiMode == AiMode.PALMPRINT) "PalmPrint" else "OCR",
+                                                    "use_gpu" to computeMode.useGpu,
+                                                    "model_paddle_loaded" to (aiMode == AiMode.OCR),
+                                                    "model_mediapipe_loaded" to (aiMode == AiMode.PALMPRINT),
+                                                    "snap_image_active" to true,
+                                                    "avg_confidence" to 1.0,
+                                                    "cropped_ms" to 0L
                                                 )
                                             )
                                             
