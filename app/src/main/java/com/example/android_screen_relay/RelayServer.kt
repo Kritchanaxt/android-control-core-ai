@@ -6,7 +6,7 @@ import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
 import android.util.Log
 import kotlinx.coroutines.launch
-import com.example.android_screen_relay.ocr.*
+import com.example.android_screen_relay.core.*
 
 class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
 
@@ -286,15 +286,15 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                     val useGpu = json.optBoolean("use_gpu", false)
                     
                     // Update Global ComputeMode state
-                    val newMode = if (useGpu) com.example.android_screen_relay.ocr.ComputeMode.GPU 
-                                  else if (cores == 4) com.example.android_screen_relay.ocr.ComputeMode.CPU_4_CORE
-                                  else com.example.android_screen_relay.ocr.ComputeMode.CPU_6_CORE
-                    com.example.android_screen_relay.ocr.ComputeModeManager.setMode(newMode)
+                    val newMode = if (useGpu) com.example.android_screen_relay.core.ComputeMode.GPU 
+                                  else if (cores == 4) com.example.android_screen_relay.core.ComputeMode.CPU_4_CORE
+                                  else com.example.android_screen_relay.core.ComputeMode.CPU_6_CORE
+                    com.example.android_screen_relay.core.ComputeModeManager.setMode(newMode)
 
                     // P'Bear: Force Release existing engine before re-config
                     // This ensures memory and threads are cleared so you can see real impact of switching
                     try {
-                        com.example.android_screen_relay.ocr.PaddleOCR().release()
+                        com.example.android_screen_relay.core.PaddleOCR().release()
                         android.util.Log.d("RelayServer", "OCR Engine Released for Re-config to ${newMode.displayName}")
                     } catch (e: Exception) {
                         android.util.Log.e("RelayServer", "Release failed: ${e.message}")

@@ -11,9 +11,9 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import android.content.pm.ServiceInfo
-import com.example.android_screen_relay.ocr.SystemMonitor
-import com.example.android_screen_relay.ocr.PaddleOCR
-import com.example.android_screen_relay.ocr.AIManager
+import com.example.android_screen_relay.core.SystemMonitor
+import com.example.android_screen_relay.core.PaddleOCR
+import com.example.android_screen_relay.core.AIManager
 import kotlinx.coroutines.*
 import kotlin.random.Random
 
@@ -215,7 +215,7 @@ class RelayService : Service() {
                         )
 
                         val availableRam = usage.ramFreeMb
-                        val ocrModeLabel = com.example.android_screen_relay.ocr.ComputeModeManager.getMode().displayName
+                        val ocrModeLabel = com.example.android_screen_relay.core.ComputeModeManager.getMode().displayName
                         
                         val deviceInfo = SystemMonitor.getDeviceInfo(this@RelayService)
 

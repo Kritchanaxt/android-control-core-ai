@@ -1,4 +1,4 @@
-package com.example.android_screen_relay.ocr
+package com.example.android_screen_relay.core
 
 import android.Manifest
 import android.content.Context
@@ -78,7 +78,7 @@ enum class AiMode { OCR, PALMPRINT }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OCRScreen() {
+fun AIScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -86,6 +86,8 @@ fun OCRScreen() {
     // States
     var isInitialized by remember { mutableStateOf(true) } // true by default since we init on demand
     var currentImage by remember { mutableStateOf<Bitmap?>(null) }
+    var leftPalmImage by remember { mutableStateOf<Bitmap?>(null) }
+    var rightPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
@@ -151,11 +153,13 @@ fun OCRScreen() {
                 // If it was captured, it goes back to camera. If gallery, it goes back.
             }
         )
-    } else if (currentImage != null) {
+    } else if (currentImage != null || (leftPalmImage != null && rightPalmImage != null)) {
         // Image Analysis Mode (Screenshot 2 style)
         OCRResultScreen(
             aiMode = currentAiMode,
-            image = currentImage!!,
+            image = currentImage ?: leftPalmImage!!, // If currentImage is null, it's Palm mode so fallback to leftPalmImage, UI will handle both
+            leftPalmImage = leftPalmImage,
+            rightPalmImage = rightPalmImage,
             jsonResult = ocrResultJson,
             timeMs = ocrTimeMs,
             isProcessing = isProcessing,
@@ -166,8 +170,11 @@ fun OCRScreen() {
             },
             onClear = { 
                 currentImage = null
+                leftPalmImage = null
+                rightPalmImage = null
                 ocrResultJson = "[]"
                 ocrTimeMs = 0
+                targetHand = "Left"
             },
             onRunModel = {
                 if (!isProcessing) {
@@ -234,7 +241,7 @@ fun OCRScreen() {
             onSendWs = {
                 if (ocrResultJson != "[]" && ocrResultJson.isNotEmpty()) {
                     scope.launch(Dispatchers.IO) {
-                        val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs)
+                        val payload = generateOCRPayload(context, currentImage ?: leftPalmImage!!, ocrResultJson, ocrTimeMs)
                         val jsonString = payload.toString()
                         val service = RelayService.getInstance()
                         if (service != null) {
@@ -316,15 +323,57 @@ fun OCRScreen() {
                                 val result = tempPalm.process(bitmap)
                                 val item = result.items.firstOrNull()
                                 val cropped = if (result.success && item != null) {
-                                    val left = item.boundingBox.left.toInt().coerceAtLeast(0)
-                                    val top = item.boundingBox.top.toInt().coerceAtLeast(0)
-                                    val right = item.boundingBox.right.toInt().coerceAtMost(bitmap.width)
-                                    val bottom = item.boundingBox.bottom.toInt().coerceAtMost(bitmap.height)
-                                    val width = right - left
-                                    val height = bottom - top
-                                    if (width > 0 && height > 0) {
-                                        Bitmap.createBitmap(bitmap, left, top, width, height)
-                                    } else bitmap
+                                    val palmRoiMap = item.extra["palm_roi"] as? Map<*, *>
+                                    val centerX = (palmRoiMap?.get("center_x") as? Float)
+                                    val centerY = (palmRoiMap?.get("center_y") as? Float)
+                                    val size = (palmRoiMap?.get("size") as? Float)
+                                    val rotation = (palmRoiMap?.get("rotation") as? Float) ?: 0f
+                                    
+                                    if (centerX != null && centerY != null && size != null) {
+                                        val matrix = android.graphics.Matrix()
+                                        matrix.postRotate(rotation)
+                                        val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                                        
+                                        // Map center point to new rotated bounding box
+                                        val corners = floatArrayOf(
+                                            0f, 0f, 
+                                            bitmap.width.toFloat(), 0f, 
+                                            bitmap.width.toFloat(), bitmap.height.toFloat(), 
+                                            0f, bitmap.height.toFloat()
+                                        )
+                                        matrix.mapPoints(corners)
+                                        val minX = minOf(corners[0], corners[2], corners[4], corners[6])
+                                        val minY = minOf(corners[1], corners[3], corners[5], corners[7])
+                                        
+                                        val cPts = floatArrayOf(centerX, centerY)
+                                        matrix.mapPoints(cPts)
+                                        val newCX = cPts[0] - minX
+                                        val newCY = cPts[1] - minY
+                                        
+                                        val halfSize = size / 2f
+                                        val left = (newCX - halfSize).toInt().coerceAtLeast(0)
+                                        val top = (newCY - halfSize).toInt().coerceAtLeast(0)
+                                        var w = size.toInt()
+                                        var h = size.toInt()
+                                        
+                                        // Bound checks
+                                        if (left + w > rotatedBitmap.width) w = rotatedBitmap.width - left
+                                        if (top + h > rotatedBitmap.height) h = rotatedBitmap.height - top
+                                        
+                                        if (w > 0 && h > 0) {
+                                            Bitmap.createBitmap(rotatedBitmap, left, top, w, h)
+                                        } else rotatedBitmap
+                                    } else {
+                                        val left = item.boundingBox.left.toInt().coerceAtLeast(0)
+                                        val top = item.boundingBox.top.toInt().coerceAtLeast(0)
+                                        val right = item.boundingBox.right.toInt().coerceAtMost(bitmap.width)
+                                        val bottom = item.boundingBox.bottom.toInt().coerceAtMost(bitmap.height)
+                                        val width = right - left
+                                        val height = bottom - top
+                                        if (width > 0 && height > 0) {
+                                            Bitmap.createBitmap(bitmap, left, top, width, height)
+                                        } else bitmap
+                                    }
                                 } else bitmap
                                 
                                 val jsonStr = if (result.success && item != null) {
@@ -334,19 +383,38 @@ fun OCRScreen() {
                                 }
 
                                 withContext(Dispatchers.Main) {
-                                    currentImage = cropped
-                                    ocrResultJson = jsonStr
-                                    cropImage = null
-                                    
-                                    // ✅ 1. Log-on-Success (Instant Send) for Palmprint
-                                    val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, 0L)
-                                    val service = RelayService.getInstance()
-                                    service?.broadcastMessage(payload.toString())
-                                    
-                                    isProcessing = false
+                                    if (targetHand.equals("Left", ignoreCase = true)) {
+                                        leftPalmImage = cropped
+                                        // Now switch to right hand
+                                        targetHand = "Right"
+                                        ocrResultJson = jsonStr // store intermediate
+                                        // Delay to let UI show "right hand" properly before unlocking camera
+                                        kotlinx.coroutines.delay(1500)
+                                        isProcessing = false
+                                    } else if (targetHand.equals("Right", ignoreCase = true)) {
+                                        rightPalmImage = cropped
+                                        
+                                        // Combine both results
+                                        val leftArr = org.json.JSONArray(if(ocrResultJson.isEmpty() || ocrResultJson == "[]") "[]" else ocrResultJson)
+                                        val rightArr = org.json.JSONArray(jsonStr)
+                                        val combined = org.json.JSONArray()
+                                        if (leftArr.length() > 0) combined.put(leftArr.getJSONObject(0))
+                                        if (rightArr.length() > 0) combined.put(rightArr.getJSONObject(0))
+                                        
+                                        ocrResultJson = combined.toString()
+                                        cropImage = null
+                                        
+                                        // ✅ Both hands captured, automatically logs
+                                        val payload = generateOCRPayload(context, rightPalmImage!!, ocrResultJson, 0L, currentAiMode)
+                                        val service = RelayService.getInstance()
+                                        service?.broadcastMessage(payload.toString())
+                                        
+                                        isProcessing = false
+                                    }
                                 }
                             } catch (e: Throwable) {
                                 Log.e("OCR", "Palmprint error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
                                 
                                 val errorJson = org.json.JSONObject().apply {
                                     put("type", "heartbeat")
@@ -422,10 +490,13 @@ fun CameraPreviewScreen(
     var stableTime by remember { mutableStateOf(0L) }
 
     // Update resolutions when camera or aspect ratio changes
-    LaunchedEffect(selectedCameraId, selectedAspectRatio) {
+    LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
         if (cameraController == null) {
              cameraController = Camera2Controller(context, onImageCaptured)
         }
+        
+        // Force Flash for PALMPRINT mode and normal for OCR
+        cameraController?.setFlashMode(aiMode == AiMode.PALMPRINT)
         
         // Fetch raw sizes directly mapping orientation manually to prevent waiting for preview initialization
         val allSizes = cameraController!!.getCameraResolutions(selectedCameraId)
@@ -457,10 +528,12 @@ fun CameraPreviewScreen(
     // Auto-Snap polling
     // ⚠️ Busy State Lock check: Stop loop if 'isProcessingBusy' is true
     LaunchedEffect(aiMode, targetHand, isProcessingBusy) {
+        isCapturing = false // ป้องกันบัคค้างหมุนตลอดกาล (Reset state every time)
+        stableTime = 0L
+
         if (isProcessingBusy) return@LaunchedEffect
         
         withContext(Dispatchers.Default) {
-            stableTime = 0L
             while (isActive && !isProcessingBusy) {
                 kotlinx.coroutines.delay(250) // ลดเวลาตรวจจับ (จาก 500ms เป็น 250ms) ให้สแกนถี่ยิ่งขึ้น
                 if (!isCapturing && cameraController?.textureView != null) {
@@ -527,7 +600,7 @@ fun CameraPreviewScreen(
                                cameraController?.aspectRatio = selectedAspectRatio
                                cameraController?.openCamera(tv, selectedCameraId, selectedResolution)
                             } catch (e: Exception) {
-                                Log.e("OCRScreen", "Error opening camera in update", e)
+                                Log.e("AIScreen", "Error opening camera in update", e)
                             }
                         }
                     }
@@ -616,6 +689,15 @@ fun CameraPreviewScreen(
                         path.moveTo(right, bottom - cornerSize); path.lineTo(right, bottom); path.lineTo(right - cornerSize, bottom)
                         path.moveTo(left + cornerSize, bottom); path.lineTo(left, bottom); path.lineTo(left, bottom - cornerSize)
                         drawContext.canvas.nativeCanvas.drawPath(path, paint)
+                        
+                        // Top Text
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                        val handName = if (targetHand.equals("Left", ignoreCase=true)) "ซ้าย" else "ขวา"
+                        val topText = if (stableTime >= 250L || isCapturing) "ตรวจสอบมือ${handName}เรียบร้อยแล้ว กำลังบันทึกภาพ..." else "กรุณาแบมือ${handName}ให้เต็มกรอบ"
+                        val topTextWidth = textPaint.measureText(topText)
+                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
                     }
                  }
             }
@@ -963,6 +1045,8 @@ fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
 fun OCRResultScreen(
     aiMode: AiMode,
     image: Bitmap,
+    leftPalmImage: Bitmap? = null,
+    rightPalmImage: Bitmap? = null,
     jsonResult: String,
     timeMs: Long,
     isProcessing: Boolean,
@@ -984,7 +1068,7 @@ fun OCRResultScreen(
             TopAppBar(
                 title = { 
                     Column {
-                        Text("OCR Result", style = MaterialTheme.typography.titleMedium)
+                        Text(if (aiMode == AiMode.PALMPRINT) "Palmprint Result" else "OCR Result", style = MaterialTheme.typography.titleMedium)
                         if (timeMs > 0) {
                             Text("Process time: ${timeMs}ms", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
@@ -1078,7 +1162,7 @@ fun OCRResultScreen(
                                 }
 
                                 scope.launch(Dispatchers.IO) {
-                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs, aiMode)
                                     // Add AiMode to payload if needed, or keeping it the same
                                     val jsonString = payload.toString(2)
                                     withContext(Dispatchers.Main) {
@@ -1111,7 +1195,7 @@ fun OCRResultScreen(
                                 }
                                 
                                 scope.launch(Dispatchers.IO) {
-                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs)
+                                    val payload = generateOCRPayload(context, image, jsonResult, timeMs, aiMode)
                                     val jsonString = payload.toString(2)
                                     
                                     withContext(Dispatchers.Main) {
@@ -1154,16 +1238,102 @@ fun OCRResultScreen(
                 .padding(padding)
                 .background(Color(0xFFF5F5F5))
         ) {
-            Image(
-                bitmap = image.asImageBitmap(),
-                contentDescription = "Target Image",
-                modifier = Modifier.fillMaxSize().padding(16.dp),
-                contentScale = ContentScale.Fit
-            )
-            
-            // Overlay
-            val density = LocalContext.current.resources.displayMetrics.density
-            Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            if (aiMode == AiMode.PALMPRINT && leftPalmImage != null && rightPalmImage != null) {
+                // Show both palms for PALMPRINT mode
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    val itemCount = try { JSONArray(jsonResult).length() } catch(e:Exception){0}
+                    
+                    // Model info
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "Model: MediaPipe Hand",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "$itemCount items found (Left & Right)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    // Left Palm
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).aspectRatio(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Image(
+                                bitmap = leftPalmImage.asImageBitmap(),
+                                contentDescription = "Left Palm",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            Text(
+                                text = "Hand Left",
+                                color = Color.White,
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp)
+                                    .background(Color.Black.copy(alpha=0.6f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal=12.dp, vertical=8.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    
+                    // Right Palm
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).aspectRatio(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Image(
+                                bitmap = rightPalmImage.asImageBitmap(),
+                                contentDescription = "Right Palm",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            Text(
+                                text = "Hand Right",
+                                color = Color.White,
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(8.dp)
+                                    .background(Color.Black.copy(alpha=0.6f), RoundedCornerShape(8.dp))
+                                    .padding(horizontal=12.dp, vertical=8.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Default OCR view
+                Image(
+                    bitmap = image.asImageBitmap(),
+                    contentDescription = "Target Image",
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    contentScale = ContentScale.Fit
+                )
+                
+                // Overlay
+                val density = LocalContext.current.resources.displayMetrics.density
+                Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                 val scaleX = size.width / image.width.toFloat()
                 val scaleY = size.height / image.height.toFloat()
                 
@@ -1231,25 +1401,28 @@ fun OCRResultScreen(
                     // Log.e("OCR", "Draw error", e)
                 }
             }
+            } // END else block for normal image Mode
 
             // Model Info Overlay (Subtle)
-            if (isProcessing || jsonResult != "[]") {
-                Surface(
-                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                    shape = RoundedCornerShape(8.dp),
-                    tonalElevation = 2.dp
-                ) {
-                    Column(Modifier.padding(8.dp)) {
-                         Text(
-                             text = "Model: PP-OCRv5",
-                             style = MaterialTheme.typography.labelSmall,
-                             fontWeight = FontWeight.Bold
-                         )
-                         if (jsonResult != "[]") {
-                             val count = try { JSONArray(jsonResult).length() } catch(e:Exception){0}
-                             Text(text = "$count items found", style = MaterialTheme.typography.labelSmall)
-                         }
+            if (aiMode != AiMode.PALMPRINT) {
+                if (isProcessing || jsonResult != "[]") {
+                    Surface(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                        shape = RoundedCornerShape(8.dp),
+                        tonalElevation = 2.dp
+                    ) {
+                        Column(Modifier.padding(8.dp)) {
+                             Text(
+                                 text = "Model: PP-OCRv5",
+                                 style = MaterialTheme.typography.labelSmall,
+                                 fontWeight = FontWeight.Bold
+                             )
+                             if (jsonResult != "[]") {
+                                 val count = try { JSONArray(jsonResult).length() } catch(e:Exception){0}
+                                 Text(text = "$count items found", style = MaterialTheme.typography.labelSmall)
+                             }
+                        }
                     }
                 }
             }
@@ -1363,21 +1536,29 @@ private fun generateOCRPayload(
     context: Context,
     image: Bitmap,
     jsonResult: String,
-    timeMs: Long
+    timeMs: Long,
+    aiMode: AiMode = AiMode.OCR
 ): JSONObject {
     val device = SystemMonitor.getDeviceInfo(context)
     val resource = SystemMonitor.getCurrentResourceUsage(context)
     
     val payload = JSONObject()
-    payload.put("type", "ocr_result")
+    payload.put("type", if (aiMode == AiMode.PALMPRINT) "palmprint_result" else "ocr_result")
     payload.put("timestamp", System.currentTimeMillis())
     
     // engine_info (new format)
     val engineInfo = JSONObject().apply {
-        put("engine", "paddleocr")
-        put("version", "v5")
-        put("runtime", "ncnn")
-        put("model", "PP-OCRv5_mobile_rec")
+        if (aiMode == AiMode.PALMPRINT) {
+            put("engine", "mediapipe")
+            put("version", "tasks-vision")
+            put("runtime", "tflite")
+            put("model", "hand_landmarker.task")
+        } else {
+            put("engine", "paddleocr")
+            put("version", "v5")
+            put("runtime", "ncnn")
+            put("model", "PP-OCRv5_mobile_rec")
+        }
         
         val mode = ComputeModeManager.getMode()
         put("compute_mode", mode.displayName)
@@ -1404,7 +1585,20 @@ private fun generateOCRPayload(
     try {
         val benchmarkArr = JSONArray(jsonResult)
         
-        // Handle empty array case cleanly
+        if (aiMode == AiMode.PALMPRINT) {
+            // Palmprint structure
+            payload.put("result", JSONObject().apply {
+                put("palms", benchmarkArr)
+            })
+            payload.put("summary", JSONObject().apply {
+                put("palms_detected", benchmarkArr.length())
+                put("total_latency_ms", timeMs)
+            })
+            return payload
+        }
+        
+        // Handle empty array case cleanly for OCR
+
         if (benchmarkArr.length() == 0) {
             payload.put("result", JSONObject().apply {
                 put("full_text", "")

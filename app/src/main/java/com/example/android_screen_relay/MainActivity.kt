@@ -40,7 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.android_screen_relay.ui.theme.AndroidscreenrelayTheme
-import com.example.android_screen_relay.ocr.OCRScreen
+import com.example.android_screen_relay.core.AIScreen
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import kotlinx.coroutines.launch
@@ -241,7 +241,7 @@ fun AppNavigation(
                             isViewerMode = true
                         }
                     )
-                    2 -> OCRScreen()
+                    2 -> AIScreen()
                     3 -> MeScreen(
                         onPermissionGuideClick = { isPermissionSettingsOpen = true },
                         onLogClick = { isLogViewerOpen = true }

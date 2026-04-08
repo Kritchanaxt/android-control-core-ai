@@ -1,4 +1,4 @@
-package com.example.android_screen_relay.ocr
+package com.example.android_screen_relay.core
 
 import org.json.JSONObject
 

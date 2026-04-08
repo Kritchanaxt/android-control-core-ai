@@ -1,4 +1,4 @@
-package com.example.android_screen_relay.ocr
+package com.example.android_screen_relay.core
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -71,23 +71,73 @@ class PalmprintProcessor : AIProcessor {
                 }
             }
 
-            val p5 = landmarks[5]
-            val p13 = landmarks[13]
-            val d = sqrt((p5.x() - p13.x()).pow(2) + (p5.y() - p13.y()).pow(2).toDouble()).toFloat()
+            val w = bitmap.width.toFloat()
+            val h = bitmap.height.toFloat()
+
+            // Reference points based on KBY-AI algorithm
+            // v1: Valley between Ring (13) and Pinky (17)
+            // v2: Valley between Index (5) and Middle (9)
+            val p5 = landmarks[5]; val p9 = landmarks[9]
+            val p13 = landmarks[13]; val p17 = landmarks[17]
+            val p0 = landmarks[0] // Wrist
+
+            val v1X = (p13.x() + p17.x()) / 2f * w
+            val v1Y = (p13.y() + p17.y()) / 2f * h
+
+            val v2X = (p5.x() + p9.x()) / 2f * w
+            val v2Y = (p5.y() + p9.y()) / 2f * h
+
+            val dx = v2X - v1X
+            val dy = v2Y - v1Y
+            val d = sqrt(dx * dx + dy * dy.toDouble()).toFloat()
+
+            val midX = (v1X + v2X) / 2f
+            val midY = (v1Y + v2Y) / 2f
+
+            // Normal vector
+            val ux = dx / d
+            val uy = dy / d
+            var nx = -uy
+            var ny = ux
+
+            // Ensure normal points towards wrist
+            val wristDx = p0.x() * w - midX
+            val wristDy = p0.y() * h - midY
+            if (nx * wristDx + ny * wristDy < 0) {
+                nx = -nx
+                ny = -ny
+            }
+
+            // ROI Center is 0.9d away from mid point along normal vector
+            // (0.2d from mid to top edge, then + 0.7d to center)
+            val cx = midX + nx * 0.9f * d
+            val cy = midY + ny * 0.9f * d
+            val roiSize = 1.4f * d
+
+            // Calculate rotation to make palm upright
+            val angleRad = kotlin.math.atan2(ny.toDouble(), nx.toDouble())
+            val angleDeg = Math.toDegrees(angleRad).toFloat()
+            val rotationToUpright = 90f - angleDeg
 
             items.add(AIDetectedItem(
                 label = "Palm (\$label)",
                 confidence = score,
-                boundingBox = RectF(minX, minY, maxX, maxY),
+                boundingBox = RectF(
+                    minX * w,
+                    minY * h,
+                    maxX * w,
+                    maxY * h
+                ),
                 extra = mapOf(
-                    "side" to label,
+                    "hand" to label,
                     "roi_dist_d" to d,
                     "area_type" to "concrete",
                     "landmarks_count" to landmarks.size,
                     "palm_roi" to mapOf(
-                         "center_x" to (p5.x() + p13.x()) / 2f,
-                         "center_y" to (p5.y() + p13.y()) / 2f,
-                         "size_multiplier" to 1.4f
+                         "center_x" to cx,
+                         "center_y" to cy,
+                         "size" to roiSize,
+                         "rotation" to rotationToUpright
                     )
                 )
             ))

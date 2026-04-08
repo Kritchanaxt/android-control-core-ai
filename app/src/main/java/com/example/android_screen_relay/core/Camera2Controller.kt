@@ -1,4 +1,4 @@
-package com.example.android_screen_relay.ocr
+package com.example.android_screen_relay.core
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -60,6 +60,37 @@ class Camera2Controller(
     // Logic from OutputSettingsDialogFragment
     private var maxSensorProcessingSize: Size = Size(1920, 1080)
     private var isFrontCamera: Boolean = false
+    private var isFlashEnabled: Boolean = false
+
+    fun setFlashMode(enable: Boolean) {
+        if (isFlashEnabled == enable) return
+        isFlashEnabled = enable
+        
+        try {
+            captureSession ?: return
+            val captureRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
+            captureRequestBuilder.addTarget(textureView!!.surfaceTexture!!.let { Surface(it) })
+            
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            
+            if (isFlashEnabled && !isFrontCamera) {
+                // If the camera supports flash
+                val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                if (flashAvailable) {
+                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+            } else {
+                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                // Use default AE mode
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+            
+            captureSession?.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to toggle flash", e)
+        }
+    }
 
     fun startBackgroundThread() {
         if (backgroundThread == null) {
@@ -314,6 +345,16 @@ class Camera2Controller(
                         try {
                             captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                             // Auto-exposure settings...
+                            if (isFlashEnabled && !isFrontCamera) {
+                                val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                                if (flashAvailable) {
+                                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                }
+                            } else {
+                                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                            }
                             
                             session.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
                         } catch (e: Exception) {
@@ -342,6 +383,17 @@ class Camera2Controller(
             val captureBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             captureBuilder.addTarget(imageReader!!.surface)
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            
+            if (isFlashEnabled && !isFrontCamera) {
+                val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                if (flashAvailable) {
+                    captureBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                    captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+            } else {
+                captureBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
             
             // Orientation
             val sensorOrientation = characteristics!!.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0

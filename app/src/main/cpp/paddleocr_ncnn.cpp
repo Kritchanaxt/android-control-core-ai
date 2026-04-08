@@ -342,7 +342,7 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
 }
 
 // public native boolean init(AssetManager mgr, int coreCount, boolean useGpu);
-JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_init(JNIEnv* env, jobject thiz, jobject assetManager, jint coreCount, jboolean useGpu)
+JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_init(JNIEnv* env, jobject thiz, jobject assetManager, jint coreCount, jboolean useGpu)
 {
     __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Initializing OCR with %d cores, GPU (Vulkan): %s", coreCount, useGpu ? "true" : "false");
 
@@ -436,10 +436,10 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
     if (objCls) {
         env->DeleteGlobalRef(objCls);
     }
-    jclass localObjCls = env->FindClass("com/example/android_screen_relay/ocr/PaddleOCR$Obj");
+    jclass localObjCls = env->FindClass("com/example/android_screen_relay/core/PaddleOCR$Obj");
     objCls = reinterpret_cast<jclass>(env->NewGlobalRef(localObjCls));
 
-    constructortorId = env->GetMethodID(objCls, "<init>", "(Lcom/example/android_screen_relay/ocr/PaddleOCR;)V");
+    constructortorId = env->GetMethodID(objCls, "<init>", "(Lcom/example/android_screen_relay/core/PaddleOCR;)V");
 
     x0Id = env->GetFieldID(objCls, "x0", "F");
     y0Id = env->GetFieldID(objCls, "y0", "F");
@@ -455,7 +455,7 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
     return JNI_TRUE;
 }
 
-JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_hasOpenCL(JNIEnv* env, jobject thiz)
+JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_hasOpenCL(JNIEnv* env, jobject thiz)
 {
 #if NCNN_VULKAN
     return ncnn::get_gpu_count() > 0 ? JNI_TRUE : JNI_FALSE;
@@ -464,19 +464,19 @@ JNIEXPORT jboolean JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR
 #endif
 }
 
-JNIEXPORT jint JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_getCpuThreadNum(JNIEnv* env, jobject thiz)
+JNIEXPORT jint JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_getCpuThreadNum(JNIEnv* env, jobject thiz)
 {
     return 6;
 }
 
-JNIEXPORT jstring JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_getCpuPowerMode(JNIEnv* env, jobject thiz)
+JNIEXPORT jstring JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_getCpuPowerMode(JNIEnv* env, jobject thiz)
 {
     // dbNet.opt.lightmode = true;
     return env->NewStringUTF("LITE_POWER_HIGH");
 }
 
 // public native Obj[] detectNative(Bitmap bitmap, boolean use_gpu);
-JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_detectNative(JNIEnv* env, jobject thiz, jobject bitmap, jboolean use_gpu)
+JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_detectNative(JNIEnv* env, jobject thiz, jobject bitmap, jboolean use_gpu)
 {
     __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Running inference: DBNet threads=%d, Vulkan=%s", dbNet.opt.num_threads, dbNet.opt.use_vulkan_compute ? "true" : "false");
 
@@ -564,7 +564,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_ocr_Paddl
     return jObjArray;
 }
 
-JNIEXPORT void JNICALL Java_com_example_android_1screen_1relay_ocr_PaddleOCR_releaseNative(JNIEnv* env, jobject thiz)
+JNIEXPORT void JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_releaseNative(JNIEnv* env, jobject thiz)
 {
     __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Releasing OCR native resources...");
 

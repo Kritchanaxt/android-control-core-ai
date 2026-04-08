@@ -1,4 +1,4 @@
-package com.example.android_screen_relay.ocr
+package com.example.android_screen_relay.core
 
 enum class ComputeMode(val coreCount: Int, val useGpu: Boolean, val displayName: String) {
     CPU_4_CORE(4, false, "CPU 4 Core"),
