@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "74479309144",
+    "project_id": "android-core-control",
+    "storage_bucket": "android-core-control.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:74479309144:android:96062cf110aa51c805952d",
+        "android_client_info": {
+          "package_name": "com.example.android_screen_relay"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbilhzmPP6A07dmY4BWJ81ULp6LJkNOZ8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

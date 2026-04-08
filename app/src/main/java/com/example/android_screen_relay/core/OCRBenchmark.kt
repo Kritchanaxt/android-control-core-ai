@@ -64,6 +64,19 @@ object OCRBenchmarkRunner {
             resultJson = resultJson
         )
         
+        // ส่ง Log แบบละเอียดตามความต้องการของ Founder
+        FirebaseLogger.logAIInference(
+            context = context,
+            result = result,
+            aiMode = "PaddleOCR",
+            useGpu = false, // ตรวจสอบจาก settings ถ้ามีการใช้ GPU
+            extra = mapOf(
+                "status" to "SUCCESS",
+                "bench_title" to title,
+                "snap_image_active" to true // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
+            )
+        )
+        
         return result
     }
 

@@ -74,7 +74,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { OCR, PALMPRINT }
+enum class AiMode { PREVIEW, OCR, PALMPRINT }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -93,7 +93,7 @@ fun AIScreen() {
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
-    var currentAiMode by remember { mutableStateOf(AiMode.OCR) }
+    var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
     var targetHand by remember { mutableStateOf("Left") }
 
     // Models will be lazy-loaded on demand now
@@ -103,8 +103,23 @@ fun AIScreen() {
         }
     }
 
+    LaunchedEffect(currentAiMode) {
+        FirebaseLogger.logStep(
+            context = context,
+            stepName = "SWITCH_AI_MODE",
+            status = "SUCCESS",
+            extraData = mapOf("new_mode" to currentAiMode.name)
+        )
+    }
+
     LaunchedEffect(computeMode) {
         // Initialization is deferred to the processing phase to save RAM (2GB optimization)
+        FirebaseLogger.logStep(
+            context = context,
+            stepName = "SWITCH_COMPUTE_MODE",
+            status = "SUCCESS",
+            extraData = mapOf("new_mode" to computeMode.name)
+        )
     }
 
     // Permission
@@ -115,6 +130,9 @@ fun AIScreen() {
     )
     LaunchedEffect(Unit) {
         launcher.launch(Manifest.permission.CAMERA)
+        // เตรียมระบบคำนวณตามสเปคเครื่องทันทีที่เปิดหน้า AI
+        ComputeModeManager.initByDeviceSpec(context)
+        computeMode = ComputeModeManager.getMode()
     }
 
     // Gallery Launcher
@@ -122,6 +140,12 @@ fun AIScreen() {
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
+            FirebaseLogger.logStep(
+                context = context,
+                stepName = "IMPORT_IMAGE",
+                status = "SUCCESS",
+                extraData = mapOf("source" to "GALLERY")
+            )
             scope.launch(Dispatchers.IO) {
                 try {
                     val stream: InputStream? = context.contentResolver.openInputStream(uri)
@@ -133,6 +157,7 @@ fun AIScreen() {
                         ocrTimeMs = 0
                     }
                 } catch (e: Exception) {
+                    FirebaseLogger.logStep(context, "IMPORT_IMAGE", "ERROR", error = e)
                     Log.e("OCR", "Load image failed", e)
                 }
             }
@@ -143,10 +168,22 @@ fun AIScreen() {
         ImageCropScreen(
             bitmap = cropImage!!,
             onCropDone = { cropped ->
-                currentImage = cropped
+                // Optimize สำหรับเครื่องสเปคต่ำ (RAM 2GB) ย่อภาพอัตโนมัติตามโหมด CPU 
+                // เพื่อไม่ให้ RAM ระเบิดตอนเอาเข้า PaddleOCR
+                val safeResolution = computeMode.maxResolution
+                val optimizedCropped = OCROptimizer.scaleDownToMaxDimension(cropped, safeResolution)
+                
+                // Visual Snap Confirmation: แสดงบน UI ให้รู้ว่าเกิด "การ Snapshot จริงๆ" และภาพนั้นคืออะไร
+                Toast.makeText(context, "📸 Snap รูปเสร็จ (Res: ${optimizedCropped.width}x${optimizedCropped.height}) กำลังวิเคราะห์...", Toast.LENGTH_SHORT).show()
+                FirebaseLogger.logStep(context, "SNAP_CONFIRMED", "SUCCESS", extraData = mapOf("original_width" to cropped.width, "optimized_width" to optimizedCropped.width))
+                
+                currentImage = optimizedCropped
                 cropImage = null
                 ocrResultJson = "[]"
                 ocrTimeMs = 0
+                
+                // ตรวจสอบ Memory และเคลียร์ภาพต้นฉบับทิ้งเพื่อคืน RAM ให้ระบบ
+                System.gc()
             },
             onCancel = {
                 cropImage = null
@@ -268,8 +305,8 @@ fun AIScreen() {
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm ->
-                    if (isProcessing) return@CameraPreviewScreen false // Return false if CPU is locked 
-
+                    if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen false // Return false if CPU is locked or in PREVIEW
+                    
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
                             if (previewPalm != null) {
@@ -401,6 +438,19 @@ fun AIScreen() {
                                         val payload = generateOCRPayload(context, rightPalmImage!!, ocrResultJson, 0L, currentAiMode)
                                         val service = RelayService.getInstance()
                                         service?.broadcastMessage(payload.toString())
+                                        
+                                        FirebaseLogger.logStep(
+                                            context = context,
+                                            stepName = "AI_INFERENCE",
+                                            status = "SUCCESS",
+                                            extraData = mapOf(
+                                                "ai_mode" to currentAiMode.name,
+                                                "status" to "SUCCESS",
+                                                "extracted_text" to ocrResultJson,
+                                                "snap_image_active" to true,
+                                                "bench_title" to "Palmprint Capture"
+                                            )
+                                        )
                                         
                                         isProcessing = false
                                     }
@@ -665,7 +715,18 @@ fun CameraPreviewScreen(
                         typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
 
-                    if (aiMode == AiMode.OCR) {
+                    if (aiMode == AiMode.PREVIEW) {
+                        // Just an empty clear preview or a slight border
+                        val rect = android.graphics.RectF(left, top, right, bottom)
+                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
+                        
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                        val topText = "เลือกโหมด AI จากเมนูด้านล่างสุด"
+                        val topTextWidth = textPaint.measureText(topText)
+                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+                    } else if (aiMode == AiMode.OCR) {
                         // Main ID card border (Landscape)
                         val rect = android.graphics.RectF(left, top, right, bottom)
                         drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
@@ -736,6 +797,14 @@ fun CameraPreviewScreen(
                 Box(contentAlignment = Alignment.Center) {
                     if (isCapturing) {
                         CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(24.dp))
+                    } else if (aiMode == AiMode.PREVIEW) {
+                        Text(
+                            "Preview", 
+                            color = Color.White, 
+                            fontSize = 11.sp, 
+                            fontWeight = FontWeight.Medium,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
                     } else {
                         Text(
                             "Auto-Snap\n" + if (aiMode == AiMode.PALMPRINT) targetHand else "Enabled", 
@@ -1196,10 +1265,23 @@ fun OCRResultScreen(
                                         if (service != null) {
                                             service.broadcastMessage(jsonString)
                                             
+                                            // 🌟 Add Firebase Logger directly here
+                                            FirebaseLogger.logStep(
+                                                context = context,
+                                                stepName = "SEND_DATA_TO_WEBCLIENT",
+                                                status = "SUCCESS",
+                                                extraData = mapOf(
+                                                    "ai_mode" to aiMode.name,
+                                                    "payload_size" to jsonString.length,
+                                                    "items_found" to try { org.json.JSONArray(jsonResult).length() } catch(e:Exception){0},
+                                                    "extracted_text" to jsonResult
+                                                )
+                                            )
+                                            
                                             com.example.android_screen_relay.LogRepository.addLog(
                                                 component = "OCR",
                                                 event = "send_json",
-                                                data = mapOf("payload_size" to jsonString.length, "blocks" to try { JSONArray(jsonResult).length() } catch(e:Exception){0}),
+                                                data = mapOf("payload_size" to jsonString.length, "blocks" to try { org.json.JSONArray(jsonResult).length() } catch(e:Exception){0}),
                                                 type = com.example.android_screen_relay.LogRepository.LogType.OUTGOING
                                             )
                                             

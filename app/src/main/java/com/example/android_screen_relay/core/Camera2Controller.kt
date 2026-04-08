@@ -112,6 +112,18 @@ class Camera2Controller(
 
     @SuppressLint("MissingPermission")
     fun openCamera(textureView: TextureView, cameraIdToOpen: String, desiredResolution: Size? = null) {
+        // บันทึก Log การเลือกกล้องและ Resolution ทุกครั้งที่เปิดหรือเปลี่ยน
+        FirebaseLogger.logStep(
+            context = context,
+            stepName = "CAMERA_PREVIEW_INIT",
+            status = "SUCCESS",
+            extraData = mapOf(
+                "camera_id" to cameraIdToOpen,
+                "target_resolution" to (desiredResolution?.toString() ?: "AUTO"),
+                "is_front_camera" to isFrontCamera
+            )
+        )
+
         if (cameraDevice != null && cameraId == cameraIdToOpen && targetResolution == desiredResolution && this.textureView == textureView) {
             return
         }
@@ -262,9 +274,11 @@ class Camera2Controller(
             maxFinalH = (maxFinalW / targetAR).roundToInt() // e.g., for 4:3 -> 3000/1.333 = 2250
         }
 
-        // Add the "Max Resolution" item as the first option
-        val maxForArText = "Max for AR (${maxFinalW}x${maxFinalH})"
-        resolutionItems.add(ResolutionItem(null, maxForArText))
+        // Add the "Max Resolution" item as the first option if it meets the minimum 720 requirement
+        if (maxFinalW >= 720 && maxFinalH >= 720) {
+            val maxForArText = "Max for AR (${maxFinalW}x${maxFinalH})"
+            resolutionItems.add(ResolutionItem(null, maxForArText))
+        }
 
         // Add other predefined resolutions that fit within the calculated max size
         val resolutionStrings = predefinedResolutionsByRatio[aspectRatio] ?: emptyList()
@@ -277,10 +291,13 @@ class Camera2Controller(
                     val height = parts[1].toInt()
                     val candidateSize = Size(width, height)
 
-                    // Filter < 720x720
+                    // Filter < 720 in ANY dimension (since Founder wants minimum 720)
                     if (candidateSize.width < 720 || candidateSize.height < 720) return@forEach
 
-                    val isSupported = if (aspectRatio.isPortraitDefault) {
+                    // Allow 1920x1920 to always show up for 1:1 if requested, otherwise check normal bounds
+                    val isSupported = if (aspectRatio == UiAspectRatio.RATIO_1_1 && candidateSize.width == 1920 && candidateSize.height == 1920) {
+                        true 
+                    } else if (aspectRatio.isPortraitDefault) {
                         candidateSize.width <= maxFinalW && candidateSize.height <= maxFinalH
                     } else {
                         candidateSize.width <= maxFinalW && candidateSize.height <= maxFinalH

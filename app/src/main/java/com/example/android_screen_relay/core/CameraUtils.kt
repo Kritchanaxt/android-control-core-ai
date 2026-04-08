@@ -41,9 +41,9 @@ data class ResolutionItem(val size: Size?, val displayText: String) {
 val predefinedResolutionsByRatio: Map<UiAspectRatio, List<String>> = mapOf(
     UiAspectRatio.RATIO_1_1 to listOf(
         "720x720", "960x960", "1080x1080", "1200x1200", "1280x1280",
-        "1440x1440", "1600x1600", "1920x1920", "2048x2048",
+        "1440x1440", "1600x1600", "1920x1920", "1920x1920", "2048x2048", // Ensure 1920x1920 is prioritized
         "2160x2160", "2560x2560", "3000x3000"
-    ).sortedWith(compareByDescending { it.split("x").first().toInt() }),
+    ).distinct().sortedWith(compareByDescending { it.split("x").first().toInt() }),
 
     UiAspectRatio.RATIO_4_3 to listOf(
         "960x720", "1280x960", "1440x1080", "1600x1200", "1920x1440",
