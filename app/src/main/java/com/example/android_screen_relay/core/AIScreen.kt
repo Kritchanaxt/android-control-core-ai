@@ -337,7 +337,7 @@ fun AIScreen() {
                         // For OCR, detect card text before snap to prevent infinite snapping
                         try {
                             if (previewOcr != null) {
-                                val scale = 480f / maxOf(bitmap.width, bitmap.height)
+                                val scale = 640f / maxOf(bitmap.width, bitmap.height)
                                 val w = (bitmap.width * scale).toInt()
                                 val h = (bitmap.height * scale).toInt()
                                 val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
@@ -347,10 +347,17 @@ fun AIScreen() {
                                 try {
                                     val jsonArray = org.json.JSONArray(res)
                                     val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
+                                    val anchorWords = listOf("นาย", "นาง", "นางสาว", "Number", "Identification Number", "เลขประจำตัวประชาชน", "ประชาชน")
+                                    
                                     for (i in 0 until jsonArray.length()) {
                                         val obj = jsonArray.optJSONObject(i)
                                         val lbl = obj?.optString("label", "") ?: ""
-                                        if (idRegex.containsMatchIn(lbl)) {
+                                        
+                                        val rawText = lbl.replace(" ", "").replace("-", "")
+                                        val isId = rawText.contains(Regex("""\d{13}""")) || idRegex.containsMatchIn(lbl)
+                                        val isAnchor = anchorWords.any { lbl.contains(it, ignoreCase = true) }
+                                        
+                                        if (isId || isAnchor) {
                                             foundId = true
                                             break
                                         }
@@ -545,17 +552,18 @@ fun AIScreen() {
                                 var maxY = 0f
                                 
                                 val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
-                                val namePrefixes = listOf("นาย", "นาง", "นางสาว", "ชื่อ")
+                                val anchorWords = listOf("นาย", "นาง", "นางสาว", "Number", "Identification", "เลขประจำตัวประชาชน")
                                 var validAreaFound = false
 
                                 for (i in 0 until jsonArr.length()) {
                                     val obj = jsonArr.optJSONObject(i) ?: continue
                                     val lbl = obj.optString("label", "")
                                     
-                                    val isId = idRegex.containsMatchIn(lbl)
-                                    val isName = namePrefixes.any { lbl.contains(it) }
+                                    val rawText = lbl.replace(" ", "").replace("-", "")
+                                    val isId = rawText.contains(Regex("""\d{13}""")) || idRegex.containsMatchIn(lbl)
+                                    val isAnchor = anchorWords.any { lbl.contains(it, ignoreCase = true) }
                                     
-                                    if (isId || isName) {
+                                    if (isId || isAnchor) {
                                         validAreaFound = true
                                         val box = obj.optJSONArray("box") ?: continue
                                         for (j in 0 until box.length()) {
@@ -575,7 +583,10 @@ fun AIScreen() {
                                     val padY = 40f
                                     val left = ((minX - padX) / bitmap.width).coerceIn(0f, 1f)
                                     val top = ((minY - padY) / bitmap.height).coerceIn(0f, 1f)
-                                    val right = ((maxX + padX) / bitmap.width).coerceIn(0f, 1f)
+                                    
+                                    // ขยายขอบขวาให้สุดขอบบัตร (ใช้ความกว้างเกือบสุดของภาพเพื่อครอบคลุมความยาวชื่อ)
+                                    val right = ((bitmap.width.toFloat() - 20f) / bitmap.width).coerceIn(0f, 1f).coerceAtLeast(((maxX + 40f) / bitmap.width))
+                                    
                                     val bottom = ((maxY + padY) / bitmap.height).coerceIn(0f, 1f)
                                     if (right > left && bottom > top) Rect(left, top, right, bottom) else null
                                 } else null
