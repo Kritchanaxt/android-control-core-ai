@@ -78,17 +78,6 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-fun Bitmap.toTinyBase64(maxDimension: Int = 100): String {
-    val ratio = Math.min(maxDimension.toFloat() / width, maxDimension.toFloat() / height)
-    val tgtWidth = Math.round(ratio * width).coerceAtLeast(1)
-    val tgtHeight = Math.round(ratio * height).coerceAtLeast(1)
-    
-    val scaled = Bitmap.createScaledBitmap(this, tgtWidth, tgtHeight, true)
-    val stream = ByteArrayOutputStream()
-    scaled.compress(Bitmap.CompressFormat.JPEG, 40, stream)
-    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-}
-
 enum class AiMode { PREVIEW, OCR, PALMPRINT }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -104,6 +93,7 @@ fun AIScreen() {
     var leftPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var rightPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
+    var suggestedCropRect by remember { mutableStateOf<Rect?>(null) }
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
@@ -182,7 +172,9 @@ fun AIScreen() {
     if (cropImage != null) {
         ImageCropScreen(
             bitmap = cropImage!!,
+            initialCropRect = suggestedCropRect,
             onCropDone = { cropped ->
+                suggestedCropRect = null
                 // Optimize สำหรับเครื่องสเปคต่ำ (RAM 2GB) ย่อภาพอัตโนมัติตามโหมด CPU 
                 // เพื่อไม่ให้ RAM ระเบิดตอนเอาเข้า PaddleOCR
                 val safeResolution = computeMode.maxResolution
@@ -202,6 +194,7 @@ fun AIScreen() {
             },
             onCancel = {
                 cropImage = null
+                suggestedCropRect = null
                 // If it was captured, it goes back to camera. If gallery, it goes back.
             }
         )
@@ -350,7 +343,20 @@ fun AIScreen() {
                                 val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
                                 val res = previewOcr.detect(scaled)
                                 if (scaled !== bitmap) scaled.recycle()
-                                org.json.JSONArray(res).length() >= 2
+                                var foundId = false
+                                try {
+                                    val jsonArray = org.json.JSONArray(res)
+                                    val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
+                                    for (i in 0 until jsonArray.length()) {
+                                        val obj = jsonArray.optJSONObject(i)
+                                        val lbl = obj?.optString("label", "") ?: ""
+                                        if (idRegex.containsMatchIn(lbl)) {
+                                            foundId = true
+                                            break
+                                        }
+                                    }
+                                } catch (e: Exception) {}
+                                foundId
                             } else {
                                 false
                             }
@@ -475,18 +481,18 @@ fun AIScreen() {
                                             context = context,
                                             stepName = "AI_INFERENCE",
                                             status = "SUCCESS",
-                                            extraData = mapOf(
+                                            extraData = mapOf<String, Any>(
                                                 "ai_mode" to currentAiMode.name,
                                                 "status" to "SUCCESS",
                                                 "extracted_text" to ocrResultJson,
                                                 "latency_ms" to ocrTimeMs,
                                                 "compute_mode" to computeMode.displayName,
+                                                "chosen_resolution" to "${bitmap.width}x${bitmap.height}",
+                                                "final_ai_resolution" to "${rightPalmImage!!.width}x${rightPalmImage!!.height}",
                                                 "type" to "PalmPrint",
                                                 "use_gpu" to computeMode.useGpu,
                                                 "model_mediapipe_loaded" to true,
                                                 "snap_image_active" to true,
-                                                "snap_image_base64" to rightPalmImage!!.toTinyBase64(100),
-                                                "camera_id" to "Unknown",
                                                 "bench_title" to "Palmprint Capture"
                                             )
                                         )
@@ -521,10 +527,75 @@ fun AIScreen() {
                             }
                         }
                     } else {
-                        // OCR mode: manual crop
-                        cropImage = bitmap
-                        // Unlock processing state because manual crop pauses AI until user taps OK
-                        isProcessing = false
+                        // OCR mode: Automatic extraction of ID and Name
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            var tempOcr: PaddleOCR? = null
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                tempOcr = PaddleOCR()
+                                tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
+                                val resultJsonStr = tempOcr.detect(bitmap)
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+                                
+                                val jsonArr = org.json.JSONArray(resultJsonStr)
+                                var minX = bitmap.width.toFloat()
+                                var minY = bitmap.height.toFloat()
+                                var maxX = 0f
+                                var maxY = 0f
+                                
+                                val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
+                                val namePrefixes = listOf("นาย", "นาง", "นางสาว", "ชื่อ")
+                                var validAreaFound = false
+
+                                for (i in 0 until jsonArr.length()) {
+                                    val obj = jsonArr.optJSONObject(i) ?: continue
+                                    val lbl = obj.optString("label", "")
+                                    
+                                    val isId = idRegex.containsMatchIn(lbl)
+                                    val isName = namePrefixes.any { lbl.contains(it) }
+                                    
+                                    if (isId || isName) {
+                                        validAreaFound = true
+                                        val box = obj.optJSONArray("box") ?: continue
+                                        for (j in 0 until box.length()) {
+                                            val pt = box.optJSONArray(j) ?: continue
+                                            val x = pt.optDouble(0, 0.0).toFloat()
+                                            val y = pt.optDouble(1, 0.0).toFloat()
+                                            if (x < minX) minX = x
+                                            if (y < minY) minY = y
+                                            if (x > maxX) maxX = x
+                                            if (y > maxY) maxY = y
+                                        }
+                                    }
+                                }
+                                
+                                val calculatedRect = if (validAreaFound && maxX > minX && maxY > minY) {
+                                    val padX = 40f
+                                    val padY = 40f
+                                    val left = ((minX - padX) / bitmap.width).coerceIn(0f, 1f)
+                                    val top = ((minY - padY) / bitmap.height).coerceIn(0f, 1f)
+                                    val right = ((maxX + padX) / bitmap.width).coerceIn(0f, 1f)
+                                    val bottom = ((maxY + padY) / bitmap.height).coerceIn(0f, 1f)
+                                    if (right > left && bottom > top) Rect(left, top, right, bottom) else null
+                                } else null
+
+                                withContext(Dispatchers.Main) {
+                                    suggestedCropRect = calculatedRect
+                                    cropImage = bitmap
+                                    isProcessing = false
+                                }
+                                
+                            } catch (e: Exception) {
+                                Log.e("OCR", "Auto crop error", e)
+                                withContext(Dispatchers.Main) { 
+                                    cropImage = bitmap // fallback to full crop screen
+                                    isProcessing = false 
+                                }
+                            } finally {
+                                tempOcr?.release()
+                            }
+                        }
                     }
                 },
                 onGalleryClick = {
@@ -671,12 +742,7 @@ fun CameraPreviewScreen(
                             if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
                                 withContext(Dispatchers.Main) {
-                                    if (computeMode == ComputeMode.LOW_END) {
-                                        passedToCapture = true
-                                        onImageCaptured(bitmap)
-                                    } else {
-                                        cameraController!!.takePhoto()
-                                    }
+                                    cameraController!!.takePhoto()
                                 }
                                 stableTime = 0L
                                 kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
@@ -1361,20 +1427,20 @@ fun OCRResultScreen(
                                                 context = context,
                                                 stepName = "AI_SEND_DATA_TO_WEBCLIENT",
                                                 status = "SUCCESS",
-                                                extraData = mapOf(
+                                                extraData = mapOf<String, Any>(
                                                     "ai_mode" to aiMode.name,
                                                     "payload_size" to jsonString.length,
                                                     "items_found" to try { org.json.JSONArray(jsonResult).length() } catch(e:Exception){0},
                                                     "extracted_text" to jsonResult,
                                                     "latency_ms" to timeMs,
-                                                    "camera_id" to "Unknown",
                                                     "compute_mode" to computeMode.displayName,
+                                                    "chosen_resolution" to "Pre-Crop/Selected",
+                                                    "final_ai_resolution" to "${image.width}x${image.height}",
                                                     "type" to if (aiMode == AiMode.PALMPRINT) "PalmPrint" else "OCR",
                                                     "use_gpu" to computeMode.useGpu,
                                                     "model_paddle_loaded" to (aiMode == AiMode.OCR),
                                                     "model_mediapipe_loaded" to (aiMode == AiMode.PALMPRINT),
                                                     "snap_image_active" to true,
-                                                    "snap_image_base64" to image.toTinyBase64(100),
                                                     "avg_confidence" to 1.0,
                                                     "cropped_ms" to 0L
                                                 )
@@ -1975,13 +2041,14 @@ private fun generateOCRPayload(
 @Composable
 fun ImageCropScreen(
     bitmap: Bitmap,
+    initialCropRect: Rect? = null,
     onCropDone: (Bitmap) -> Unit,
     onCancel: () -> Unit
 ) {
     // Adjust default crop frame to isolate the 'Name-Surname' (upper-middle) part of the Thai ID card
     // Left at 0.25 (to skip the Garuda emblem), Right at 0.95 (near edge)
     // Top at 0.32, Bottom at 0.45 (around the Thai name position)
-    var cropRectNormalized by remember { mutableStateOf(Rect(0.25f, 0.32f, 0.95f, 0.45f)) }
+    var cropRectNormalized by remember { mutableStateOf(initialCropRect ?: Rect(0.25f, 0.32f, 0.95f, 0.45f)) }
     
     // Helper enum for drag Logic
     var activeHandle by remember { mutableStateOf("NONE") } 

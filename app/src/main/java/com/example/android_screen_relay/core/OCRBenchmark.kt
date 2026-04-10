@@ -73,8 +73,7 @@ object OCRBenchmarkRunner {
             extra = mapOf(
                 "status" to "SUCCESS",
                 "bench_title" to title,
-                "snap_image_active" to true, // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
-                "snap_image_base64" to bitmapToProcess.toTinyBase64(100)
+                "snap_image_active" to true // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
             )
         )
         

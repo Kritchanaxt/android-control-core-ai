@@ -242,6 +242,7 @@ class RelayService : Service() {
                         // Add AI monitoring info
                         val activeAI = AIManager.getActiveProcessor()
                         statusMap["ai_active"] = activeAI?.name ?: "none"
+                        statusMap["compute_mode"] = com.example.android_screen_relay.core.ComputeModeManager.getMode().displayName
                         statusMap["ai_memory_state"] = "ok"
                         statusMap["paddle_ocr_loaded"] = AIManager.paddleOCRLoaded() // Need to implement this function or check
                         statusMap["status"] = "Active"

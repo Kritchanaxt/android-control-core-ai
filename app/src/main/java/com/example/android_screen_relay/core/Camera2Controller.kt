@@ -186,10 +186,7 @@ class Camera2Controller(
                 stepName = "CAMERA_PREVIEW_INIT",
                 status = "SUCCESS",
                 extraData = mapOf(
-                    "camera_id" to cameraId,
-                    "target_resolution" to (targetResolution?.toString() ?: "AUTO"),
-                    "final_capture_size" to finalCaptureSize.toString(),
-                    "available_jpeg_sizes" to availableJpegSizes.joinToString { "${it.width}x${it.height}" },
+                    "chosen_resolution" to (targetResolution?.toString() ?: "AUTO"),
                     "is_front_camera" to isFrontCamera
                 )
             )
