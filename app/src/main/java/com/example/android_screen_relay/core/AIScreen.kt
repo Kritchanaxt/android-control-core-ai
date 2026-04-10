@@ -688,6 +688,7 @@ fun CameraPreviewScreen(
             allSizes.add(android.util.Size(1080, 1080))
             allSizes.add(android.util.Size(1440, 1440))
             allSizes.add(android.util.Size(1920, 1920))
+            allSizes.add(android.util.Size(2160, 2160))
         }
         
         val targetRatio = selectedAspectRatio.value
@@ -1110,18 +1111,6 @@ fun CameraPreviewScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
-                        Text(
-                            "Default: 1:1",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 
@@ -1163,18 +1152,6 @@ fun CameraPreviewScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(4.dp)
-                    ) {
-                        Text(
-                            "Default: 720x720",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 
