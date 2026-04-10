@@ -346,18 +346,15 @@ fun AIScreen() {
                                 var foundId = false
                                 try {
                                     val jsonArray = org.json.JSONArray(res)
-                                    val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
-                                    val anchorWords = listOf("นาย", "นาง", "นางสาว", "Number", "Identification Number", "เลขประจำตัวประชาชน", "ประชาชน")
+                                    val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
                                     
                                     for (i in 0 until jsonArray.length()) {
                                         val obj = jsonArray.optJSONObject(i)
                                         val lbl = obj?.optString("label", "") ?: ""
-                                        
                                         val rawText = lbl.replace(" ", "").replace("-", "")
-                                        val isId = rawText.contains(Regex("""\d{13}""")) || idRegex.containsMatchIn(lbl)
-                                        val isAnchor = anchorWords.any { lbl.contains(it, ignoreCase = true) }
                                         
-                                        if (isId || isAnchor) {
+                                        // ต้องดักจับเลขบัตรประชาชนแบบเต็มๆ (13 หลัก) หรือมีแพทเทิร์นครบตามต้องการเท่านั้นถึงยอมบันทึก
+                                        if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 13 && rawText.contains(Regex("""\d{13}""")))) {
                                             foundId = true
                                             break
                                         }
@@ -546,48 +543,83 @@ fun AIScreen() {
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
                                 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
-                                var minX = bitmap.width.toFloat()
-                                var minY = bitmap.height.toFloat()
-                                var maxX = 0f
-                                var maxY = 0f
                                 
-                                val idRegex = Regex("""\d[\s-]?\d{4}[\s-]?\d{5}[\s-]?\d{2}[\s-]?\d""")
-                                val anchorWords = listOf("นาย", "นาง", "นางสาว", "Number", "Identification", "เลขประจำตัวประชาชน")
-                                var validAreaFound = false
+                                var idMinX = Float.MAX_VALUE; var idMinY = Float.MAX_VALUE; var idMaxX = 0f; var idMaxY = 0f
+                                var nameMinX = Float.MAX_VALUE; var nameMinY = Float.MAX_VALUE; var nameMaxX = 0f; var nameMaxY = 0f
+                                
+                                var hasId = false
+                                var hasName = false
+
+                                val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
+                                val namePrefixes = listOf("นาย", "นาง", "นางสาว", "เด็กชาย", "เด็กหญิง", "ชื่อตัวและชื่อสกุล")
 
                                 for (i in 0 until jsonArr.length()) {
                                     val obj = jsonArr.optJSONObject(i) ?: continue
                                     val lbl = obj.optString("label", "")
-                                    
                                     val rawText = lbl.replace(" ", "").replace("-", "")
-                                    val isId = rawText.contains(Regex("""\d{13}""")) || idRegex.containsMatchIn(lbl)
-                                    val isAnchor = anchorWords.any { lbl.contains(it, ignoreCase = true) }
                                     
-                                    if (isId || isAnchor) {
-                                        validAreaFound = true
+                                    val isIdFound = strictIdRegex.containsMatchIn(lbl) || 
+                                                    (rawText.length >= 13 && rawText.contains(Regex("""\d{13}"""))) ||
+                                                    Regex("""^[1-9]$""").matches(lbl.trim()) ||
+                                                    lbl.contains("เลขประจำตัว") || lbl.contains("Identification")
+                                                    
+                                    val isNameFound = namePrefixes.any { lbl.contains(it) }
+
+                                    if (isIdFound || isNameFound) {
                                         val box = obj.optJSONArray("box") ?: continue
+                                        var bxXMin = Float.MAX_VALUE; var bxYMin = Float.MAX_VALUE; var bxXMax = 0f; var bxYMax = 0f
                                         for (j in 0 until box.length()) {
                                             val pt = box.optJSONArray(j) ?: continue
                                             val x = pt.optDouble(0, 0.0).toFloat()
                                             val y = pt.optDouble(1, 0.0).toFloat()
-                                            if (x < minX) minX = x
-                                            if (y < minY) minY = y
-                                            if (x > maxX) maxX = x
-                                            if (y > maxY) maxY = y
+                                            if (x < bxXMin) bxXMin = x
+                                            if (y < bxYMin) bxYMin = y
+                                            if (x > bxXMax) bxXMax = x
+                                            if (y > bxYMax) bxYMax = y
+                                        }
+                                        
+                                        if (isIdFound) {
+                                            hasId = true
+                                            if (bxXMin < idMinX) idMinX = bxXMin
+                                            if (bxYMin < idMinY) idMinY = bxYMin
+                                            if (bxXMax > idMaxX) idMaxX = bxXMax
+                                            if (bxYMax > idMaxY) idMaxY = bxYMax
+                                        }
+                                        if (isNameFound) {
+                                            hasName = true
+                                            if (bxXMin < nameMinX) nameMinX = bxXMin
+                                            if (bxYMin < nameMinY) nameMinY = bxYMin
+                                            if (bxXMax > nameMaxX) nameMaxX = bxXMax
+                                            if (bxYMax > nameMaxY) nameMaxY = bxYMax
                                         }
                                     }
                                 }
                                 
-                                val calculatedRect = if (validAreaFound && maxX > minX && maxY > minY) {
-                                    val padX = 40f
-                                    val padY = 40f
-                                    val left = ((minX - padX) / bitmap.width).coerceIn(0f, 1f)
-                                    val top = ((minY - padY) / bitmap.height).coerceIn(0f, 1f)
-                                    
-                                    // ขยายขอบขวาให้สุดขอบบัตร (ใช้ความกว้างเกือบสุดของภาพเพื่อครอบคลุมความยาวชื่อ)
-                                    val right = ((bitmap.width.toFloat() - 20f) / bitmap.width).coerceIn(0f, 1f).coerceAtLeast(((maxX + 40f) / bitmap.width))
-                                    
-                                    val bottom = ((maxY + padY) / bitmap.height).coerceIn(0f, 1f)
+                                var finalMinX = 0f; var finalMinY = 0f; var finalMaxX = 0f; var finalMaxY = 0f
+                                var validAreaFound = false
+
+                                // เงื่อนไข: crop แค่ ตรงเลขบัตร 13 หลัก กับ ชื่อภาษาไทย ถ้าหาไม่เจอ ให้ crop เฉพาะชื่อภาษาไทยแทน
+                                if (hasId && hasName) {
+                                    validAreaFound = true
+                                    finalMinX = minOf(idMinX, nameMinX)
+                                    finalMinY = minOf(idMinY, nameMinY)
+                                    finalMaxX = maxOf(idMaxX, nameMaxX)
+                                    finalMaxY = maxOf(idMaxY, nameMaxY)
+                                } else if (hasName) {
+                                    validAreaFound = true
+                                    finalMinX = nameMinX
+                                    finalMinY = nameMinY
+                                    finalMaxX = nameMaxX
+                                    finalMaxY = nameMaxY
+                                }
+                                
+                                val calculatedRect = if (validAreaFound && finalMaxX > finalMinX && finalMaxY > finalMinY) {
+                                    val padX = 15f
+                                    val padY = 15f
+                                    val left = ((finalMinX - padX) / bitmap.width).coerceIn(0f, 1f)
+                                    val top = ((finalMinY - padY) / bitmap.height).coerceIn(0f, 1f)
+                                    val right = ((finalMaxX + padX) / bitmap.width).coerceIn(0f, 1f)
+                                    val bottom = ((finalMaxY + padY) / bitmap.height).coerceIn(0f, 1f)
                                     if (right > left && bottom > top) Rect(left, top, right, bottom) else null
                                 } else null
 
