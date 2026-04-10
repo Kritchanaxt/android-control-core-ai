@@ -13,9 +13,9 @@ enum class UiAspectRatio(
     FULL("Full (Sensor Ratio)", "Full", null, 0, 0),
     RATIO_1_1("1:1", "1:1", 1f / 1f, 1, 1),
     RATIO_4_3("4:3", "4:3", 4f / 3f, 4, 3),
-    RATIO_3_4("3:4 Portrait", "3:4", 3f / 4f, 3, 4, true),
+    RATIO_3_4("3:4", "3:4", 3f / 4f, 3, 4, true),
     RATIO_16_9("16:9", "16:9", 16f / 9f, 16, 9),
-    RATIO_9_16("9:16 Portrait", "9:16", 9f / 16f, 9, 16, true);
+    RATIO_9_16("9:16", "9:16", 9f / 16f, 9, 16, true);
 
     val isSpecialRatio: Boolean
         get() = when (this) {
