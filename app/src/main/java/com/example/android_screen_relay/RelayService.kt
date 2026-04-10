@@ -280,8 +280,9 @@ class RelayService : Service() {
 
                         // Crash ONLY if memory drops below fatal immediately, OR stays under critical for ~60 seconds (12 loops)
                         if (availableRam < fatalThreshold || consecutiveLowMemory > 12) {
-                            android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention")
-                            statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB"
+                            val activeFeature = statusMap["ai_active"]?.toString() ?: "None"
+                            android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention during [$activeFeature]")
+                            statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB_FEATURE_$activeFeature"
                             
                             val fatalJson = org.json.JSONObject()
                             fatalJson.put("type", "heartbeat")

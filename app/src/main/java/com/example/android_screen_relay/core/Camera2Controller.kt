@@ -112,18 +112,6 @@ class Camera2Controller(
 
     @SuppressLint("MissingPermission")
     fun openCamera(textureView: TextureView, cameraIdToOpen: String, desiredResolution: Size? = null) {
-        // บันทึก Log การเลือกกล้องและ Resolution ทุกครั้งที่เปิดหรือเปลี่ยน
-        FirebaseLogger.logStep(
-            context = context,
-            stepName = "CAMERA_PREVIEW_INIT",
-            status = "SUCCESS",
-            extraData = mapOf(
-                "camera_id" to cameraIdToOpen,
-                "target_resolution" to (desiredResolution?.toString() ?: "AUTO"),
-                "is_front_camera" to isFrontCamera
-            )
-        )
-
         if (cameraDevice != null && cameraId == cameraIdToOpen && targetResolution == desiredResolution && this.textureView == textureView) {
             return
         }
@@ -177,16 +165,34 @@ class Camera2Controller(
             // Determine efficient capture size
             val validResolutions = getResolutionsForAspectRatio(aspectRatio)
             
-            // If desiredResolution is provided and valid, use it. Otherwise pick the best one.
-            // If desiredResolution is not in the list, we might still use it if it's supported by the camera map directly?
-            // The snippet logic filters strictly. Let's try to match.
+            // If desiredResolution is provided, we must check if the camera supports it as JPEG.
+            // If it's a TextureView size but NOT in JPEG sizes, we map it to the closest larger JPEG size to avoid crash (OOM scaling prevention)
             val finalCaptureSize = if (targetResolution != null) {
-                 targetResolution!!
+                 if (availableJpegSizes.contains(targetResolution)) {
+                     targetResolution!!
+                 } else {
+                     val targetArea = targetResolution!!.width * targetResolution!!.height
+                     availableJpegSizes.lastOrNull { it.width * it.height >= targetArea } ?: availableJpegSizes.lastOrNull() ?: targetResolution!!
+                 }
             } else {
                  validResolutions.mapNotNull { it.size }.minByOrNull { it.width * it.height } ?: availableJpegSizes.last()
             }
             
             Log.d(TAG, "Selected capture size: $finalCaptureSize")
+
+            // บันทึก Log การเลือกกล้องและ Resolution ทุกครั้งที่เปิดหรือเปลี่ยน
+            FirebaseLogger.logStep(
+                context = context,
+                stepName = "CAMERA_PREVIEW_INIT",
+                status = "SUCCESS",
+                extraData = mapOf(
+                    "camera_id" to cameraId,
+                    "target_resolution" to (targetResolution?.toString() ?: "AUTO"),
+                    "final_capture_size" to finalCaptureSize.toString(),
+                    "available_jpeg_sizes" to availableJpegSizes.joinToString { "${it.width}x${it.height}" },
+                    "is_front_camera" to isFrontCamera
+                )
+            )
 
             imageReader = ImageReader.newInstance(
                 finalCaptureSize.width, finalCaptureSize.height, ImageFormat.JPEG, 2
@@ -198,7 +204,57 @@ class Camera2Controller(
                             val buffer = it.planes[0].buffer
                             val bytes = ByteArray(buffer.remaining())
                             buffer.get(bytes)
-                            val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            
+                            // Scale down the captured JPEG if the user originally targeted a smaller resolution
+                            val decodeTargetArea = if (targetResolution != null) targetResolution!!.width * targetResolution!!.height else finalCaptureSize.width * finalCaptureSize.height
+                            var sampleSize = 1
+                            while ((finalCaptureSize.width * finalCaptureSize.height) / (sampleSize * sampleSize * 2) >= decodeTargetArea && sampleSize < 8) {
+                                sampleSize *= 2
+                            }
+                            
+                            val options = android.graphics.BitmapFactory.Options()
+                            options.inSampleSize = sampleSize
+                            var bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                             
+                            // การตัด (Crop) และปรับขนาด (Scale) ให้เป๊ะตาม targetResolution ที่ผู้ใช้ร้องขอ
+                            if (targetResolution != null && (bitmap.width != targetResolution!!.width || bitmap.height != targetResolution!!.height)) {
+                                val targetW = targetResolution!!.width
+                                val targetH = targetResolution!!.height
+                                
+                                // ตัดให้ได้สัดส่วน Aspect Ratio ก่อน
+                                val srcRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+                                val tgtRatio = targetW.toFloat() / targetH.toFloat()
+                                
+                                var cropW = bitmap.width
+                                var cropH = bitmap.height
+                                var cropX = 0
+                                var cropY = 0
+                                
+                                if (srcRatio > tgtRatio) {
+                                    // ภาพต้นฉบับกว้างกว่า (Crop ซ้าย-ขวา)
+                                    cropW = (bitmap.height * tgtRatio).toInt()
+                                    cropX = (bitmap.width - cropW) / 2
+                                } else if (srcRatio < tgtRatio) {
+                                    // ภาพต้นฉบับสูงกว่า (Crop บน-ล่าง)
+                                    cropH = (bitmap.width / tgtRatio).toInt()
+                                    cropY = (bitmap.height - cropH) / 2
+                                }
+                                
+                                val croppedBitmap = android.graphics.Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
+                                if (croppedBitmap != bitmap) {
+                                    bitmap.recycle()
+                                    bitmap = croppedBitmap
+                                }
+                                
+                                // ปรับขนาด (Scale Down) ให้พอดิบพอดีเป๊ะๆ ตามตัวเลข (เช่น 1920x1920)
+                                if (bitmap.width != targetW || bitmap.height != targetH) {
+                                    val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
+                                    if (scaledBitmap != bitmap) {
+                                        bitmap.recycle()
+                                        bitmap = scaledBitmap
+                                    }
+                                }
+                            }
                              
                             // Rotation logic (simple)
                             // In real app, check sensor orientation and rotate
@@ -580,9 +636,16 @@ class Camera2Controller(
 
     fun getCameraResolutions(cameraId: String): List<Size> {
         return try {
-             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-             map?.getOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList()
+            val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+            val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            
+            // รวม Resolution ที่กล้องรับได้จากทั้ง JPEG และ Preview (Texture) เผื่อบางรุ่น (เช่น Samsung ต่ำๆ) กั๊กขนาดเล็กในโหมด JPEG
+            val jpegSizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList()
+            val previewSizes = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)?.toList() ?: emptyList()
+            
+            (jpegSizes + previewSizes)
+                .distinctBy { "${it.width}x${it.height}" }
+                .filter { Math.min(it.width, it.height) >= 720 }
         } catch(e:Exception) { emptyList() }
     }
     

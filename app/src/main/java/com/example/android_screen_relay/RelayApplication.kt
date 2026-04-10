@@ -114,6 +114,15 @@ class RelayApplication : Application() {
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                         statusMap["thermal_status"] = powerManager?.currentThermalStatus ?: -1
                     }
+                    
+                    val am = getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                    if (am != null) {
+                        val memInfo = android.app.ActivityManager.MemoryInfo()
+                        am.getMemoryInfo(memInfo)
+                        statusMap["ram_free_mb"] = memInfo.availMem / (1024 * 1024)
+                        statusMap["ram_total_mb"] = memInfo.totalMem / (1024 * 1024)
+                        statusMap["low_memory_mode"] = memInfo.lowMemory
+                    }
                 } catch (e: Exception) {}
 
                 val jsonPayload = org.json.JSONObject()

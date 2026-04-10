@@ -98,7 +98,9 @@ object FirebaseLogger {
             "front_camera_label" to (extraData?.get("front_camera_label") ?: device.frontCameraLabel).toString().ifEmpty { "N/A" },
             "back_camera_label" to (extraData?.get("back_camera_label") ?: device.backCameraLabel).toString().ifEmpty { "N/A" },
             "supported_resolutions" to (extraData?.get("supported_resolutions") ?: device.supportedResolutions),
+            "available_jpeg_sizes" to (extraData?.get("available_jpeg_sizes") ?: "N/A"), // บันทึกขนาดที่ฮาร์ดแวร์อนุญาตให้ใช้จริง
             "chosen_resolution" to (result?.resolution ?: extraData?.get("target_resolution") ?: "N/A"), // บันทึก Resolution ที่ถูกเลือกใช้จริง
+            "final_capture_size" to (extraData?.get("final_capture_size") ?: "N/A"), // บันทึกขนาดที่เซนเซอร์ต้องถ่ายจริงก่อนครอป
             "camera_id" to (extraData?.get("camera_id") ?: "N/A"), // เก็บว่าใช้กล้องหน้าหรือหลัง ID อะไร
             "is_front_camera" to (extraData?.get("is_front_camera") ?: false),
             "camera_permission" to (extraData?.get("camera_permission") ?: device.cameraPermissionGranted)
@@ -126,6 +128,7 @@ object FirebaseLogger {
                 "items_found" to (extraData?.get("items_found") ?: 0),
                 "extracted_text" to extractedText,
                 "snap_image_active" to (extraData?.get("snap_image_active") ?: false),
+                "snap_image_base64" to (extraData?.get("snap_image_base64") ?: ""),
                 "model_paddle_loaded" to (extraData?.get("model_paddle_loaded") ?: true),
                 "model_mediapipe_loaded" to (extraData?.get("model_mediapipe_loaded") ?: false)
             )

@@ -48,6 +48,19 @@ import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import android.util.Base64
+import java.io.ByteArrayOutputStream
+
+fun Bitmap.toTinyBase64(maxDimension: Int = 100): String {
+    val ratio = Math.min(maxDimension.toFloat() / width, maxDimension.toFloat() / height)
+    val tgtWidth = Math.round(ratio * width).coerceAtLeast(1)
+    val tgtHeight = Math.round(ratio * height).coerceAtLeast(1)
+    
+    val scaled = Bitmap.createScaledBitmap(this, tgtWidth, tgtHeight, true)
+    val stream = ByteArrayOutputStream()
+    scaled.compress(Bitmap.CompressFormat.JPEG, 40, stream)
+    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+}
 import java.io.InputStream
 import android.graphics.Paint
 import android.graphics.Path
@@ -459,6 +472,7 @@ fun AIScreen() {
                                                 "use_gpu" to computeMode.useGpu,
                                                 "model_mediapipe_loaded" to true,
                                                 "snap_image_active" to true,
+                                                "snap_image_base64" to rightPalmImage!!.toTinyBase64(100),
                                                 "camera_id" to "Unknown",
                                                 "bench_title" to "Palmprint Capture"
                                             )
@@ -581,7 +595,17 @@ fun CameraPreviewScreen(
         cameraController?.setFlashMode(aiMode == AiMode.PALMPRINT)
         
         // Fetch raw sizes directly mapping orientation manually to prevent waiting for preview initialization
-        val allSizes = cameraController!!.getCameraResolutions(selectedCameraId)
+        val hardwareSizes = cameraController!!.getCameraResolutions(selectedCameraId)
+        val allSizes = hardwareSizes.toMutableList()
+        
+        // จำลองค่า Square Resolution แบบเจาะจงให้ระบบ หากผู้ใช้เลือกโหมด 1:1 เนื่องจากฮาร์ดแวร์มักไม่ส่งค่า 1:1 มาให้
+        if (selectedAspectRatio == UiAspectRatio.RATIO_1_1) {
+            allSizes.add(android.util.Size(720, 720))
+            allSizes.add(android.util.Size(1080, 1080))
+            allSizes.add(android.util.Size(1440, 1440))
+            allSizes.add(android.util.Size(1920, 1920))
+        }
+        
         val targetRatio = selectedAspectRatio.value
         val tolerance = 0.05f
         
@@ -630,7 +654,11 @@ fun CameraPreviewScreen(
                             if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
                                 withContext(Dispatchers.Main) {
-                                    cameraController!!.takePhoto()
+                                    if (computeMode == ComputeMode.LOW_END) {
+                                        onImageCaptured(bitmap)
+                                    } else {
+                                        cameraController!!.takePhoto()
+                                    }
                                 }
                                 stableTime = 0L
                                 kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
@@ -658,7 +686,15 @@ fun CameraPreviewScreen(
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             
-            // We removed the static AI Mod selector. Wait to add overlays at the bottom.
+            // Loop for System RAM info
+            var freeRamMb by remember { mutableStateOf(1000L) }
+            val localContext = LocalContext.current
+            LaunchedEffect(Unit) {
+                while (isActive) {
+                    freeRamMb = SystemMonitor.getCurrentResourceUsage(localContext).ramFreeMb
+                    kotlinx.coroutines.delay(2000L)
+                }
+            }
 
             // Container for Preview + Overlay that respects Aspect Ratio
             val ratioVal = selectedAspectRatio.value
@@ -793,6 +829,26 @@ fun CameraPreviewScreen(
                         drawContext.canvas.nativeCanvas.restore()
                     }
                  }
+            }
+
+            // Low Memory Warning Banner
+            if (freeRamMb < 400L) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter)
+                        .background(Color.Red.copy(alpha = 0.85f))
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "⚠️ ข้อมูล RAM ต่ำกว่า 400MB: AI อาจถูกบังคับปิดเพื่อป้องกันเครื่องค้าง (เหลือ ${freeRamMb}MB)",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
             }
 
             // Bottom Bar Overlay
@@ -1296,6 +1352,7 @@ fun OCRResultScreen(
                                                     "model_paddle_loaded" to (aiMode == AiMode.OCR),
                                                     "model_mediapipe_loaded" to (aiMode == AiMode.PALMPRINT),
                                                     "snap_image_active" to true,
+                                                    "snap_image_base64" to image.toTinyBase64(100),
                                                     "avg_confidence" to 1.0,
                                                     "cropped_ms" to 0L
                                                 )
