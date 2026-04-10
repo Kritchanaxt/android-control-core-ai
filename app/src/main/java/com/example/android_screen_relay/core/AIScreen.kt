@@ -933,7 +933,7 @@ fun CameraPreviewScreen(
                         drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
                         drawContext.canvas.nativeCanvas.restore()
                         
-                    } else {
+                    } else if (aiMode == AiMode.PALMPRINT) {
                         // PALMPRINT uses corners
                         val path = android.graphics.Path()
                         val cornerSize = 80f
