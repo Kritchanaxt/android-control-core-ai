@@ -703,7 +703,8 @@ fun CameraPreviewScreen(
             allSizes
         }
         
-        availableResolutions = filtered.sortedByDescending { it.width * it.height }
+        // Remove duplicates by converting to distinct list
+        availableResolutions = filtered.distinct().sortedByDescending { it.width * it.height }
         
         // Default to lowest resolution (e.g. 720x720) to save RAM on A10
         if (selectedResolution == null || !availableResolutions.contains(selectedResolution)) {
@@ -835,12 +836,6 @@ fun CameraPreviewScreen(
                     val right = left + frameW
                     val bottom = top + frameH
 
-                    // Draw Mask (Darken outside frame)
-                    drawRect(Color(maskColor), size = androidx.compose.ui.geometry.Size(cw, top))
-                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, bottom), size = androidx.compose.ui.geometry.Size(cw, ch - bottom))
-                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, top), size = androidx.compose.ui.geometry.Size(left, frameH))
-                    drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(right, top), size = androidx.compose.ui.geometry.Size(cw - right, frameH))
-
                     val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
                         style = android.graphics.Paint.Style.STROKE; strokeWidth = strokeW; color = frameColor; strokeCap = android.graphics.Paint.Cap.ROUND
                     }
@@ -851,18 +846,15 @@ fun CameraPreviewScreen(
                         typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
 
-                    if (aiMode == AiMode.PREVIEW) {
-                        // Just an empty clear preview or a slight border
-                        val rect = android.graphics.RectF(left, top, right, bottom)
-                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
-                        
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val topText = "เลือกโหมด AI จากเมนูด้านล่างสุด"
-                        val topTextWidth = textPaint.measureText(topText)
-                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
-                    } else if (aiMode == AiMode.OCR) {
+                    if (aiMode != AiMode.PREVIEW) {
+                        // Draw Mask (Darken outside frame only when not in PREVIEW mode)
+                        drawRect(Color(maskColor), size = androidx.compose.ui.geometry.Size(cw, top))
+                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, bottom), size = androidx.compose.ui.geometry.Size(cw, ch - bottom))
+                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, top), size = androidx.compose.ui.geometry.Size(left, frameH))
+                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(right, top), size = androidx.compose.ui.geometry.Size(cw - right, frameH))
+                    }
+
+                    if (aiMode == AiMode.OCR) {
                         // Main ID card border (Landscape)
                         val rect = android.graphics.RectF(left, top, right, bottom)
                         drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
