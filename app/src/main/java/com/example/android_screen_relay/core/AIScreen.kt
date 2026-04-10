@@ -51,16 +51,6 @@ import java.io.File
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 
-fun Bitmap.toTinyBase64(maxDimension: Int = 100): String {
-    val ratio = Math.min(maxDimension.toFloat() / width, maxDimension.toFloat() / height)
-    val tgtWidth = Math.round(ratio * width).coerceAtLeast(1)
-    val tgtHeight = Math.round(ratio * height).coerceAtLeast(1)
-    
-    val scaled = Bitmap.createScaledBitmap(this, tgtWidth, tgtHeight, true)
-    val stream = ByteArrayOutputStream()
-    scaled.compress(Bitmap.CompressFormat.JPEG, 40, stream)
-    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
-}
 import java.io.InputStream
 import android.graphics.Paint
 import android.graphics.Path
@@ -87,6 +77,17 @@ import java.util.Locale
 import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+
+fun Bitmap.toTinyBase64(maxDimension: Int = 100): String {
+    val ratio = Math.min(maxDimension.toFloat() / width, maxDimension.toFloat() / height)
+    val tgtWidth = Math.round(ratio * width).coerceAtLeast(1)
+    val tgtHeight = Math.round(ratio * height).coerceAtLeast(1)
+    
+    val scaled = Bitmap.createScaledBitmap(this, tgtWidth, tgtHeight, true)
+    val stream = ByteArrayOutputStream()
+    scaled.compress(Bitmap.CompressFormat.JPEG, 40, stream)
+    return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+}
 
 enum class AiMode { PREVIEW, OCR, PALMPRINT }
 
@@ -332,6 +333,7 @@ fun AIScreen() {
                                     bitmap
                                 }
                                 val result = previewPalm.process(processBitmap)
+                                if (processBitmap !== bitmap) processBitmap.recycle()
                                 val item = result.items.firstOrNull()
                                 result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
                             } else {
@@ -347,6 +349,7 @@ fun AIScreen() {
                                 val h = (bitmap.height * scale).toInt()
                                 val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
                                 val res = previewOcr.detect(scaled)
+                                if (scaled !== bitmap) scaled.recycle()
                                 org.json.JSONArray(res).length() >= 2
                             } else {
                                 false
@@ -355,7 +358,10 @@ fun AIScreen() {
                     }
                 },
                 onImageCaptured = { bitmap ->
-                    if (isProcessing) return@CameraPreviewScreen // Double check Busy State Lock
+                    if (isProcessing) {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                        return@CameraPreviewScreen // Double check Busy State Lock
+                    }
                     
                     if (currentAiMode == AiMode.PALMPRINT) {
                         isProcessing = true
@@ -407,9 +413,12 @@ fun AIScreen() {
                                         if (left + w > rotatedBitmap.width) w = rotatedBitmap.width - left
                                         if (top + h > rotatedBitmap.height) h = rotatedBitmap.height - top
                                         
-                                        if (w > 0 && h > 0) {
+                                        val resultBmp = if (w > 0 && h > 0) {
                                             Bitmap.createBitmap(rotatedBitmap, left, top, w, h)
                                         } else rotatedBitmap
+                                        
+                                        if (resultBmp !== rotatedBitmap) rotatedBitmap.recycle()
+                                        resultBmp
                                     } else {
                                         val left = item.boundingBox.left.toInt().coerceAtLeast(0)
                                         val top = item.boundingBox.top.toInt().coerceAtLeast(0)
@@ -427,6 +436,10 @@ fun AIScreen() {
                                     "[\n  {\n    \"area_type\": \"${item.extra["area_type"] ?: "unknown"}\",\n    \"hand\": \"${item.extra["hand"] ?: "unknown"}\"\n  }\n]"
                                 } else {
                                     "[]"
+                                }
+                                
+                                if (bitmap !== cropped && !bitmap.isRecycled) {
+                                    bitmap.recycle()
                                 }
 
                                 withContext(Dispatchers.Main) {
@@ -646,15 +659,20 @@ fun CameraPreviewScreen(
                     val bitmap = cameraController?.textureView?.bitmap
                     if (bitmap != null) {
                         // Extra lock safety before intensive computation
-                        if (isProcessingBusy) break
+                        if (isProcessingBusy) {
+                            bitmap.recycle()
+                            break
+                        }
                         
                         val criteriaMet = try { onStableDetection(bitmap, previewOcr, previewPalm) } catch(e: Exception) { false }
+                        var passedToCapture = false
                         if (criteriaMet) {
                             stableTime += 250
                             if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
                                 withContext(Dispatchers.Main) {
                                     if (computeMode == ComputeMode.LOW_END) {
+                                        passedToCapture = true
                                         onImageCaptured(bitmap)
                                     } else {
                                         cameraController!!.takePhoto()
@@ -666,6 +684,10 @@ fun CameraPreviewScreen(
                             }
                         } else {
                             stableTime = 0L
+                        }
+                        
+                        if (!passedToCapture && !bitmap.isRecycled) {
+                            bitmap.recycle()
                         }
                     }
                 }
