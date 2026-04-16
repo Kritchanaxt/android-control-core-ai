@@ -1489,7 +1489,7 @@ fun OCRResultScreen(
                                                     "ai_mode" to aiMode.name,
                                                     "payload_size" to jsonString.length,
                                                     "items_found" to try { org.json.JSONArray(jsonResult).length() } catch(e:Exception){0},
-                                                    "extracted_text" to jsonResult,
+                                                    "extracted_text" to (payload.optJSONObject("result")?.optString("full_text") ?: jsonResult), // Ensure typing
                                                     "latency_ms" to timeMs,
                                                     "compute_mode" to computeMode.displayName,
                                                     "chosen_resolution" to "Pre-Crop/Selected",
@@ -1932,10 +1932,12 @@ private fun generateOCRPayload(
         
         for (i in 0 until primaryResultBox.length()) {
             val item = primaryResultBox.getJSONObject(i)
-            if (!item.has("label")) continue 
+            val hasText = item.has("text")
+            val hasLabel = item.has("label")
+            if (!hasText && !hasLabel) continue 
 
-            val text = item.getString("label")
-            val conf = item.getDouble("prob")
+            val text = if (hasText) item.getString("text") else item.getString("label")
+            val conf = if (item.has("confidence")) item.getDouble("confidence") else item.getDouble("prob")
             val box = item.getJSONArray("box")
             
             val xs = mutableListOf<Double>()

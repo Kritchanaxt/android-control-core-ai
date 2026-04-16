@@ -106,7 +106,7 @@ object FirebaseLogger {
 
         // 5. หมวดหมู่ AI & ประมวลผล (AI Mode, Snap, Confidence, Text Extracted)
         if (result != null || stepName.contains("AI") || stepName.contains("SNAP")) {
-            val extractedText = result?.resultJson?.take(500) ?: (extraData?.get("extracted_text") as? String)?.take(500) ?: ""
+            val extractedText = (extraData?.get("extracted_text") as? String)?.take(2000) ?: result?.resultJson?.take(500) ?: ""
             // นำผลลัพธ์การ Snap ออกมาที่ Root เพื่อให้แสดงผลในตาราง Firestore ได้ชัดเจน
             if (extractedText.isNotEmpty()) {
                 logData["snap_extracted_text"] = extractedText

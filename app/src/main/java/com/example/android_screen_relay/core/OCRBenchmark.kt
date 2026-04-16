@@ -44,7 +44,12 @@ object OCRBenchmarkRunner {
         val startCpu = SystemMonitor.getCurrentResourceUsage(context)
         
         val startTime = System.currentTimeMillis()
-        val resultJson = paddleOCR.detect(bitmapToProcess)
+        val rawResultJson = paddleOCR.detect(bitmapToProcess)
+        val resultJson = OCRFormatter.formatLabelsInJsonArray(rawResultJson)
+        var formattedText = ""
+        try { 
+            formattedText = OCRFormatter.formatRawOCRResult(resultJson)
+        } catch(e: Exception) {}
         val endTime = System.currentTimeMillis()
         
         val latencyMs = endTime - startTime
@@ -65,16 +70,19 @@ object OCRBenchmarkRunner {
         )
         
         // ส่ง Log แบบละเอียดตามความต้องการของ Founder
+        val extractedData = mapOf(
+            "status" to "SUCCESS",
+            "bench_title" to title,
+            "snap_image_active" to true, // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
+            "extracted_text" to if (formattedText.isNotEmpty()) formattedText else resultJson
+        )
+        
         FirebaseLogger.logAIInference(
             context = context,
             result = result,
             aiMode = "PaddleOCR",
             useGpu = false, // ตรวจสอบจาก settings ถ้ามีการใช้ GPU
-            extra = mapOf(
-                "status" to "SUCCESS",
-                "bench_title" to title,
-                "snap_image_active" to true // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
-            )
+            extra = extractedData
         )
         
         return result
