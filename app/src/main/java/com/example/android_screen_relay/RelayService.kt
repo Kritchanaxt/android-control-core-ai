@@ -176,18 +176,17 @@ class RelayService : Service() {
         if (hasProjectionData) {
             try {
                 val quality = intent?.getIntExtra("QUALITY_MODE", 1) ?: 1 // Default to Medium (1)
-                    android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
-                    /* 
-                    // TEMPORARILY DISABLED SCREEN CAPTURE TO TEST COMMAND STABILITY
-                    screenCaptureManager.startCapture(resultCode, dataIntent, quality) { imageBytes ->
-                        // Pass raw bytes to authenticated clients
-                        relayServer?.broadcastToAuthenticated(imageBytes)
-                    }
-                    */
-                } catch (e: Exception) {
-                    android.util.Log.e("RelayService", "Error starting capture: ${e.message}")
-                    e.printStackTrace()
+                android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
+                /*
+                // TEMPORARILY DISABLED SCREEN CAPTURE TO TEST COMMAND STABILITY
+                screenCaptureManager.startCapture(resultCode, dataIntent, quality) { imageBytes ->
+                    // Pass raw bytes to authenticated clients
+                    relayServer?.broadcastToAuthenticated(imageBytes)
                 }
+                */
+            } catch (e: Exception) {
+                android.util.Log.e("RelayService", "Error starting capture: ${e.message}")
+                e.printStackTrace()
             }
         }
 
@@ -199,7 +198,7 @@ class RelayService : Service() {
         return null
     }
 
-        private fun startHeartbeat() {
+    private fun startHeartbeat() {
         var consecutiveLowMemory = 0
         var loopCount = 0
         var lastStatusCheck: Map<String, Any>? = null
