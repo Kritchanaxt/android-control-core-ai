@@ -9,7 +9,7 @@ enum class ComputeMode(val coreCount: Int, val useGpu: Boolean, val displayName:
 }
 
 object ComputeModeManager {
-    private var currentMode = ComputeMode.CPU_4_CORE
+    private var currentMode = ComputeMode.GPU
 
     fun initByDeviceSpec(context: Context) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
@@ -18,8 +18,8 @@ object ComputeModeManager {
         
         val ramTotalGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
         
-        // All devices default to CPU_4_CORE initially based on new spec requirements
-        currentMode = ComputeMode.CPU_4_CORE
+        // As requested: default globally to GPU
+        currentMode = ComputeMode.GPU
         
         FirebaseLogger.logStep(
             context,

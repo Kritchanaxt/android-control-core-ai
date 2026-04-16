@@ -94,7 +94,7 @@ class PaddleOCR {
     }
 
 
-    fun initModel(context: Context, coreCount: Int = 6, useGpu: Boolean = false): Boolean {
+    fun initModel(context: Context, coreCount: Int = 6, useGpu: Boolean = true): Boolean {
         // Resource Guard: Check available memory before init (Requested by P'Bear)
         val usage = SystemMonitor.getCurrentResourceUsage(context)
         val totalRam = usage.ramTotalMb
@@ -109,7 +109,8 @@ class PaddleOCR {
 
         return synchronized(lock) {
             try {
-                init(context.assets, coreCount, useGpu)
+                // Force useGpu = true to guarantee correct spacing on Thai OCR as discussed
+                init(context.assets, coreCount, true)
             } catch (e: Exception) {
                 Log.e("PaddleOCR", "Error initializing model", e)
                 false

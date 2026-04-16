@@ -13,7 +13,7 @@ class OCRProcessor : AIProcessor {
         // Defer PaddleOCR instantiation until process() is called
         appContext = context.applicationContext
         appThreads = config.threads
-        appGpu = config.useGpu
+        appGpu = true // Force GPU as requested by P'Bear
         return true
     }
 

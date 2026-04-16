@@ -14,7 +14,7 @@ interface AIProcessor {
 }
 
 data class AIConfig(
-    val useGpu: Boolean = false,
+    val useGpu: Boolean = true,
     val threads: Int = 4,
     val options: Map<String, Any> = emptyMap()
 )

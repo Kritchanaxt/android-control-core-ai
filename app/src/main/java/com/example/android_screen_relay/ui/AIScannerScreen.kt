@@ -74,7 +74,7 @@ fun AIScannerScreen() {
     var isDetected by remember { mutableStateOf(false) }
     var snappedImage by remember { mutableStateOf<Bitmap?>(null) }
     
-    var useGpu by remember { mutableStateOf(false) }
+    var useGpu by remember { mutableStateOf(true) }
     
     // AI Loading
     var isAILoading by remember { mutableStateOf(false) }
