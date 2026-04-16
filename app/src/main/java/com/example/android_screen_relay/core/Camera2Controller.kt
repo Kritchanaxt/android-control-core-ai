@@ -443,6 +443,39 @@ class Camera2Controller(
         }
     }
 
+    fun pausePreview() {
+        try {
+            captureSession?.stopRepeating()
+        } catch (e: Exception) {
+            Log.e(TAG, "pausePreview error", e)
+        }
+    }
+
+    fun resumePreview() {
+        try {
+            val captureRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
+            textureView?.surfaceTexture?.let { st ->
+                captureRequestBuilder.addTarget(Surface(st))
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                
+                if (isFlashEnabled && !isFrontCamera) {
+                    val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                    if (flashAvailable) {
+                        captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    }
+                } else {
+                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+                
+                captureSession?.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "resumePreview error", e)
+        }
+    }
+
     fun takePhoto() {
         try {
             if (cameraDevice == null) return

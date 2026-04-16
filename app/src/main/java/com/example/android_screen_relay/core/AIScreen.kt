@@ -97,6 +97,7 @@ fun AIScreen() {
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
     var isProcessing by remember { mutableStateOf(false) }
+    var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
     var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
     var targetHand by remember { mutableStateOf("Left") }
@@ -624,6 +625,13 @@ fun AIScreen() {
                                 } else null
 
                                 withContext(Dispatchers.Main) {
+                                    processingResultMsg = "✅ Snap image Success! Time: ${pbElapsedMs} ms\nNext: Crop Screen"
+                                }
+                                
+                                kotlinx.coroutines.delay(2000L) // ภาพหยุดให้ดู 2 วินาที
+
+                                withContext(Dispatchers.Main) {
+                                    processingResultMsg = null
                                     suggestedCropRect = calculatedRect
                                     cropImage = bitmap
                                     isProcessing = false
@@ -631,7 +639,8 @@ fun AIScreen() {
                                 
                             } catch (e: Exception) {
                                 Log.e("OCR", "Auto crop error", e)
-                                withContext(Dispatchers.Main) { 
+                                withContext(Dispatchers.Main) {
+                                    processingResultMsg = null
                                     cropImage = bitmap // fallback to full crop screen
                                     isProcessing = false 
                                 }
@@ -644,7 +653,8 @@ fun AIScreen() {
                 onGalleryClick = {
                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
-                isProcessingBusy = isProcessing
+                isProcessingBusy = isProcessing,
+                processingResultMsg = processingResultMsg
             )
         } else {
              Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -664,7 +674,8 @@ fun CameraPreviewScreen(
     onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?) -> Boolean,
     onImageCaptured: (Bitmap) -> Unit,
     onGalleryClick: () -> Unit,
-    isProcessingBusy: Boolean = false
+    isProcessingBusy: Boolean = false,
+    processingResultMsg: String? = null
 ) {
     val context = LocalContext.current
     var cameraController by remember { mutableStateOf<Camera2Controller?>(null) }
@@ -683,7 +694,9 @@ fun CameraPreviewScreen(
     
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
+    var isPreviewPaused by remember { mutableStateOf(false) }
     var stableTime by remember { mutableStateOf(0L) }
+    var lastInferenceTimeMs by remember { mutableStateOf(0L) }
 
     // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
@@ -757,6 +770,14 @@ fun CameraPreviewScreen(
         
         cameraController?.aspectRatio = selectedAspectRatio
     }
+
+    LaunchedEffect(isPreviewPaused, isProcessingBusy) {
+        if (isPreviewPaused || isProcessingBusy) {
+            cameraController?.pausePreview()
+        } else {
+            cameraController?.resumePreview()
+        }
+    }
     
     val cameraKey = "$selectedCameraId-${selectedResolution?.width}x${selectedResolution?.height}-${selectedAspectRatio.name}"
 
@@ -771,6 +792,8 @@ fun CameraPreviewScreen(
         withContext(Dispatchers.Default) {
             while (isActive && !isProcessingBusy) {
                 kotlinx.coroutines.delay(250) // ลดเวลาตรวจจับ (จาก 500ms เป็น 250ms) ให้สแกนถี่ยิ่งขึ้น
+                if (isPreviewPaused) continue // ข้ามการตรวจจับถ้า preview ถูก pause
+                
                 if (!isCapturing && cameraController?.textureView != null) {
                     val bitmap = cameraController?.textureView?.bitmap
                     if (bitmap != null) {
@@ -780,15 +803,25 @@ fun CameraPreviewScreen(
                             break
                         }
                         
+                        val startInference = System.currentTimeMillis()
                         val criteriaMet = try { onStableDetection(bitmap, previewOcr, previewPalm) } catch(e: Exception) { false }
+                        val elapsedInference = System.currentTimeMillis() - startInference
+                        lastInferenceTimeMs = elapsedInference
+
                         var passedToCapture = false
                         if (criteriaMet) {
                             stableTime += 250
                             if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
+                                passedToCapture = true
+                                
+                                // แก้ปัญหาเครื่อง RAM 2GB ถ่ายรูปไม่ติด (Hardware stall/OOM during TEMPLATE_STILL_CAPTURE): 
+                                // สั่ง Snap จาก Preview Bitmap ปัจจุบันที่มีอยู่แล้ว โยนเข้า Pipeline ได้เลย (เร็วและไม่เปลือง RAM เพิ่ม)
+                                val snapBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 withContext(Dispatchers.Main) {
-                                    cameraController!!.takePhoto()
+                                    onImageCaptured(snapBitmap)
                                 }
+                                
                                 stableTime = 0L
                                 kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
                                 isCapturing = false
@@ -903,19 +936,6 @@ fun CameraPreviewScreen(
                         val rect = android.graphics.RectF(left, top, right, bottom)
                         drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
                         
-                        // Left vertical line (Simulating card header in Landscape)
-                        val headerX = left + frameW * 0.2f
-                        drawContext.canvas.nativeCanvas.drawLine(headerX, top, headerX, bottom, paint)
-                        
-                        // Bottom Right square (Simulating face photo placeholder in Landscape)
-                        val squareSize = frameH * 0.40f
-                        val sqRight = right - frameW * 0.05f
-                        val sqLeft = sqRight - squareSize
-                        val sqBottom = bottom - frameH * 0.1f
-                        val sqTop = sqBottom - squareSize
-                        val sqRect = android.graphics.RectF(sqLeft, sqTop, sqRight, sqBottom)
-                        drawContext.canvas.nativeCanvas.drawRoundRect(sqRect, 24f, 24f, paint)
-                        
                         // Top Text
                         drawContext.canvas.nativeCanvas.save()
                         drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
@@ -975,6 +995,24 @@ fun CameraPreviewScreen(
                 }
             }
 
+            // Real-time Inference & RAM Overlay
+            Box(
+                modifier = Modifier
+                    .padding(top = if (freeRamMb < 400L) 48.dp else 16.dp, start = 16.dp)
+                    .align(Alignment.TopStart)
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                    .padding(8.dp)
+            ) {
+                Column {
+                    Text(text = "RAM Available: ${freeRamMb} MB", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(text = "Inference: ${if (aiMode == AiMode.PREVIEW) "0.0" else lastInferenceTimeMs} ms", color = Color.Cyan, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text(text = "Status: " + if(isCapturing) "Found! Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching...", color = Color.White, fontSize = 11.sp)
+                    if (processingResultMsg != null) {
+                        Text(text = processingResultMsg, color = Color.Green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
             // Bottom Bar Overlay
             Row(
                 modifier = Modifier
@@ -1013,6 +1051,14 @@ fun CameraPreviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+
+                    // Play/Pause Preview Button
+                    IconButton(
+                        onClick = { isPreviewPaused = !isPreviewPaused },
+                        modifier = Modifier.size(40.dp).background(if (isPreviewPaused) Color.Red.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(if (isPreviewPaused) Icons.Default.PlayArrow else Icons.Default.Pause, contentDescription = "Play/Pause", tint = Color.White, modifier = Modifier.size(24.dp))
+                    }
 
                     // AI Dropdown
                     Box {
