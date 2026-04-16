@@ -64,7 +64,7 @@ object FirebaseLogger {
 
         logData["step_name"] = stepName
         logData["status"] = status
-        logData["app_version"] = "1.3"
+        logData["app_version"] = "1.7"
         logData["device_id"] = android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
 
         // 2. หมวดหมู่ข้อมูลสเปคเครื่อง (Device Specs) - ข้อมูล Hardware ตายตัว

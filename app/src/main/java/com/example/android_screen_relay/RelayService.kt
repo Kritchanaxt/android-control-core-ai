@@ -145,9 +145,26 @@ class RelayService : Service() {
 
         val notification = createNotification()
 
+        val resultCode = intent?.getIntExtra("RESULT_CODE", 0) ?: 0
+        val dataIntent = intent?.getParcelableExtra<Intent>("DATA_INTENT")
+        val hasProjectionData = resultCode != 0 && dataIntent != null
+
         // IMPORTANT: Start Foreground Service BEFORE creating the virtual display (Android 14+ requirement)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+            val fgsType = if (hasProjectionData) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // API 30
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                } else {
+                    0 // Default on older versions
+                }
+            }
+            if (fgsType == 0) {
+                startForeground(1, notification)
+            } else {
+                startForeground(1, notification, fgsType)
+            }
         } else {
             startForeground(1, notification)
         }
@@ -156,13 +173,9 @@ class RelayService : Service() {
         overlayManager.showOverlay()
 
         // Start Screen Capture if data is present
-        if (intent != null) {
-            val resultCode = intent.getIntExtra("RESULT_CODE", 0)
-            val dataIntent = intent.getParcelableExtra<Intent>("DATA_INTENT")
-            
-            if (resultCode != 0 && dataIntent != null) {
-                try {
-                    val quality = intent.getIntExtra("QUALITY_MODE", 1) // Default to Medium (1)
+        if (hasProjectionData) {
+            try {
+                val quality = intent?.getIntExtra("QUALITY_MODE", 1) ?: 1 // Default to Medium (1)
                     android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
                     /* 
                     // TEMPORARILY DISABLED SCREEN CAPTURE TO TEST COMMAND STABILITY
