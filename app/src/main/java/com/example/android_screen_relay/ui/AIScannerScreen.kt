@@ -53,7 +53,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 enum class ScanMode {
-    OCR, PALM
+    OCR, PALM, FACE
 }
 
 enum class HandSide {
@@ -101,6 +101,7 @@ fun AIScannerScreen() {
             when (currentMode) {
                 ScanMode.PALM -> AIManager.switchProcessor(PalmprintProcessor(), context, AIConfig(useGpu = useGpu))
                 ScanMode.OCR -> AIManager.switchProcessor(OCRProcessor(), context, AIConfig(useGpu = useGpu))
+                ScanMode.FACE -> AIManager.switchProcessor(FaceDetectorProcessor(), context, AIConfig(useGpu = useGpu))
             }
         }
         isAILoading = false
@@ -153,10 +154,10 @@ fun AIScannerScreen() {
             ) {
                 // Mode Toggle
                 SegmentedButtonUI(
-                    options = listOf("Palm", "OCR"),
-                    selectedIndex = if (currentMode == ScanMode.PALM) 0 else 1,
+                    options = listOf("OCR", "Palm", "Face"),
+                    selectedIndex = currentMode.ordinal,
                     onSelect = { index ->
-                        currentMode = if (index == 0) ScanMode.PALM else ScanMode.OCR
+                        currentMode = ScanMode.values()[index]
                         isDetected = false
                     }
                 )
@@ -284,6 +285,17 @@ fun RealtimeCameraPreview(
                                                 put("side", handMatch.extra["side"])
                                                 put("roi_dist", handMatch.extra["roi_dist_d"])
                                                 put("area_type", handMatch.extra["area_type"])
+                                            }.toString()
+                                        }
+                                    } else if (mode == ScanMode.FACE) {
+                                        if (result.success && detectedItems.isNotEmpty()) {
+                                            criteriaMet = true
+                                            val face = detectedItems[0]
+                                            metaStr = JSONObject().apply {
+                                                put("detected", true)
+                                                put("smiling_prob", face.extra["smiling_prob"])
+                                                put("right_eye_open_prob", face.extra["right_eye_open_prob"])
+                                                put("left_eye_open_prob", face.extra["left_eye_open_prob"])
                                             }.toString()
                                         }
                                     } else {

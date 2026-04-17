@@ -72,13 +72,15 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.ClipOp
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, OCR, PALMPRINT }
+enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -284,7 +286,7 @@ fun AIScreen() {
                 onAiModeChange = { currentAiMode = it },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
-                onStableDetection = { bitmap, previewOcr, previewPalm ->
+                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen false // Return false if CPU is locked or in PREVIEW
                     
                     if (currentAiMode == AiMode.PALMPRINT) {
@@ -301,6 +303,20 @@ fun AIScreen() {
                                 if (processBitmap !== bitmap) processBitmap.recycle()
                                 val item = result.items.firstOrNull()
                                 result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
+                            } else {
+                                false
+                            }
+                        } catch (e: Exception) { false }
+                    } else if (currentAiMode == AiMode.FACE) {
+                        try {
+                            if (previewFace != null) {
+                                val scale = 480f / maxOf(bitmap.width, bitmap.height)
+                                val processBitmap = if (scale < 1f) {
+                                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                } else bitmap
+                                val result = previewFace.process(processBitmap)
+                                if (processBitmap !== bitmap) processBitmap.recycle()
+                                result.success && result.items.isNotEmpty()
                             } else {
                                 false
                             }
@@ -504,6 +520,62 @@ fun AIScreen() {
                                 }
                             } finally {
                                 tempPalm?.release()
+                            }
+                        }
+                    } else if (currentAiMode == AiMode.FACE) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            var tempFace: FaceDetectorProcessor? = null
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                tempFace = FaceDetectorProcessor()
+                                tempFace.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                val result = tempFace.process(bitmap)
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+                                
+                                val jsonStr = if (result.success && result.items.isNotEmpty()) {
+                                    val arr = org.json.JSONArray()
+                                    result.items.forEach { item ->
+                                        val obj = org.json.JSONObject()
+                                        obj.put("label", "Face")
+                                        item.extra.forEach { (key, value) ->
+                                            if (value is String && (key == "contours" || key == "landmarks")) {
+                                                obj.put(key, org.json.JSONObject(value))
+                                            } else {
+                                                obj.put(key, value)
+                                            }
+                                        }
+                                        val box = org.json.JSONArray()
+                                        box.put(item.boundingBox.left)
+                                        box.put(item.boundingBox.top)
+                                        box.put(item.boundingBox.right)
+                                        box.put(item.boundingBox.bottom)
+                                        obj.put("bbox", box)
+                                        arr.put(obj)
+                                    }
+                                    arr.toString()
+                                } else {
+                                    "[]"
+                                }
+                                
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = jsonStr
+                                    currentImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                    
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                    
+                                    val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs, currentAiMode)
+                                    val service = RelayService.getInstance()
+                                    service?.broadcastMessage(payload.toString())
+                                    
+                                    isProcessing = false
+                                }
+                            } catch (e: Throwable) {
+                                Log.e("Face", "Face error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } finally {
+                                tempFace?.release()
                             }
                         }
                     } else {
@@ -739,7 +811,7 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
-    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?) -> Boolean,
+    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?) -> Boolean,
     onImageCaptured: (Bitmap) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
@@ -769,6 +841,7 @@ fun CameraPreviewScreen(
     // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
     var previewPalm by remember { mutableStateOf<PalmprintProcessor?>(null) }
+    var previewFace by remember { mutableStateOf<FaceDetectorProcessor?>(null) }
     val computeMode = ComputeModeManager.getMode()
 
     // Initialize or release preview models when the mode changes
@@ -777,8 +850,10 @@ fun CameraPreviewScreen(
             // First release both
             previewOcr?.release()
             previewPalm?.release()
+            previewFace?.release()
             previewOcr = null
             previewPalm = null
+            previewFace = null
             
             // Then initialize the active one (Limit cores to 1 or 2 for preview stability)
             if (aiMode == AiMode.OCR) {
@@ -789,6 +864,10 @@ fun CameraPreviewScreen(
                 val palm = PalmprintProcessor()
                 val success = palm.init(context, AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2)))
                 if (success) previewPalm = palm
+            } else if (aiMode == AiMode.FACE) {
+                val face = FaceDetectorProcessor()
+                val success = face.init(context, AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2)))
+                if (success) previewFace = face
             }
         }
     }
@@ -872,7 +951,7 @@ fun CameraPreviewScreen(
                         }
                         
                         val startInference = System.currentTimeMillis()
-                        val criteriaMet = try { onStableDetection(bitmap, previewOcr, previewPalm) } catch(e: Exception) { false }
+                        val criteriaMet = try { onStableDetection(bitmap, previewOcr, previewPalm, previewFace) } catch(e: Exception) { false }
                         val elapsedInference = System.currentTimeMillis() - startInference
                         lastInferenceTimeMs = elapsedInference
 
@@ -973,7 +1052,11 @@ fun CameraPreviewScreen(
                         val maxW = cw * 0.9f
                         val idealH = ch * 0.6f
                         if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                    } else min(cw, ch) * 0.6f
+                    } else if (aiMode == AiMode.FACE) {
+                        min(cw, ch) * 0.8f
+                    } else {
+                        min(cw, ch) * 0.6f
+                    }
                     val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
                     
                     val left = (cw - frameW) / 2
@@ -992,11 +1075,24 @@ fun CameraPreviewScreen(
                     }
 
                     if (aiMode != AiMode.PREVIEW) {
-                        // Draw Mask (Darken outside frame only when not in PREVIEW mode)
-                        drawRect(Color(maskColor), size = androidx.compose.ui.geometry.Size(cw, top))
-                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, bottom), size = androidx.compose.ui.geometry.Size(cw, ch - bottom))
-                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(0f, top), size = androidx.compose.ui.geometry.Size(left, frameH))
-                        drawRect(Color(maskColor), topLeft = androidx.compose.ui.geometry.Offset(right, top), size = androidx.compose.ui.geometry.Size(cw - right, frameH))
+                        // Draw Mask with circular/rectangular cutout helper
+                        drawContext.canvas.save()
+                        val cutoutPath = androidx.compose.ui.graphics.Path().apply {
+                            val r = androidx.compose.ui.geometry.Rect(left, top, right, bottom)
+                            if (aiMode == AiMode.FACE) {
+                                addOval(r)
+                            } else {
+                                addRect(r)
+                            }
+                        }
+                        // Clip everything EXCEPT the cutout, then draw the mask color
+                        clipPath(
+                            path = cutoutPath,
+                            clipOp = ClipOp.Difference
+                        ) {
+                            drawRect(Color(maskColor))
+                        }
+                        drawContext.canvas.restore()
                     }
 
                     if (aiMode == AiMode.OCR) {
@@ -1036,6 +1132,16 @@ fun CameraPreviewScreen(
                         drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
                         val handName = if (targetHand.equals("Left", ignoreCase=true)) "ซ้าย" else "ขวา"
                         val topText = if (stableTime >= 250L || isCapturing) "ตรวจสอบมือ${handName}เรียบร้อยแล้ว กำลังบันทึกภาพ..." else "กรุณาแบมือ${handName}ให้เต็มกรอบ"
+                        val topTextWidth = textPaint.measureText(topText)
+                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+                    } else if (aiMode == AiMode.FACE) {
+                        val rect = android.graphics.RectF(left, top, right, bottom)
+                        drawContext.canvas.nativeCanvas.drawOval(rect, paint)
+
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                        val topText = if (stableTime >= 250L || isCapturing) "พบใบหน้าแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาจัดใบหน้าให้อยู่ในกรอบ"
                         val topTextWidth = textPaint.measureText(topText)
                         drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
                         drawContext.canvas.nativeCanvas.restore()
@@ -1393,7 +1499,12 @@ fun OCRResultScreen(
             TopAppBar(
                 title = { 
                     Column {
-                        Text(if (aiMode == AiMode.PALMPRINT) "Palmprint Result" else "OCR Result", style = MaterialTheme.typography.titleMedium)
+                        val title = when(aiMode) {
+                            AiMode.PALMPRINT -> "Palmprint Result"
+                            AiMode.FACE -> "Face Result"
+                            else -> "OCR Result"
+                        }
+                        Text(title, style = MaterialTheme.typography.titleMedium)
                         if (timeMs > 0) {
                             Text("Process time: ${timeMs}ms", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
@@ -1697,7 +1808,7 @@ fun OCRResultScreen(
                     for (i in 0 until boxes.length()) {
                         val boxObj = boxes.getJSONObject(i)
                         
-                        // Parse "box" [[x,y], [x,y]...]
+                        // Parse "box" for OCR (polygon)
                         if (boxObj.has("box")) {
                             val boxArr = boxObj.getJSONArray("box")
                             if (boxArr.length() > 0) {
@@ -1718,6 +1829,70 @@ fun OCRResultScreen(
                                     val x = p0.getInt(0).toFloat()
                                     val y = p0.getInt(1).toFloat()
                                     drawContext.canvas.nativeCanvas.drawText(label, x, y - 5f, textPaint)
+                                }
+                            }
+                        } else if (aiMode == AiMode.FACE && boxObj.has("bbox")) {
+                            // Draw BBox for face
+                            val bArr = boxObj.getJSONArray("bbox")
+                            val l = bArr.getDouble(0).toFloat()
+                            val t = bArr.getDouble(1).toFloat()
+                            val r = bArr.getDouble(2).toFloat()
+                            val b = bArr.getDouble(3).toFloat()
+                            
+                            val facePaint = Paint().apply {
+                                color = android.graphics.Color.RED
+                                style = Paint.Style.STROKE
+                                strokeWidth = 3f / scale
+                            }
+                            drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, facePaint)
+                            
+                            // Draw Contours
+                            if (boxObj.has("contours")) {
+                                val contours = boxObj.getJSONObject("contours")
+                                val colors = mapOf(
+                                    "FACE_OVAL" to android.graphics.Color.parseColor("#4285F4"), // Blue
+                                    "LEFT_EYEBROW_TOP" to android.graphics.Color.parseColor("#E65100"), // Orange
+                                    "LEFT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#FFC107"), // Yellow
+                                    "RIGHT_EYEBROW_TOP" to android.graphics.Color.parseColor("#0F9D58"), // Green
+                                    "RIGHT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#8E24AA"), // Purple
+                                    "LEFT_EYE" to android.graphics.Color.parseColor("#1E88E5"), // Blue
+                                    "RIGHT_EYE" to android.graphics.Color.parseColor("#00ACC1"), // Cyan
+                                    "UPPER_LIP_TOP" to android.graphics.Color.parseColor("#D81B60"), // Pink
+                                    "UPPER_LIP_BOTTOM" to android.graphics.Color.parseColor("#7CB342"), // L Green
+                                    "LOWER_LIP_TOP" to android.graphics.Color.parseColor("#E53935"), // Red
+                                    "LOWER_LIP_BOTTOM" to android.graphics.Color.parseColor("#795548"), // Brown
+                                    "NOSE_BRIDGE" to android.graphics.Color.parseColor("#AB47BC"), // Purple
+                                    "NOSE_BOTTOM" to android.graphics.Color.parseColor("#00897B") // Teal
+                                )
+                                
+                                val pointPaint = Paint().apply { style = Paint.Style.FILL }
+                                val linePaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2.5f / scale }
+                                
+                                val radius = 2f / scale
+                                
+                                contours.keys().forEach { key ->
+                                    val pts = contours.getJSONArray(key)
+                                    if (pts.length() > 0) {
+                                        val colorInt = colors[key] ?: android.graphics.Color.WHITE
+                                        pointPaint.color = android.graphics.Color.WHITE
+                                        linePaint.color = colorInt
+                                        
+                                        val path = Path()
+                                        for (j in 0 until pts.length()) {
+                                            val p = pts.getJSONArray(j)
+                                            val px = p.getDouble(0).toFloat()
+                                            val py = p.getDouble(1).toFloat()
+                                            if (j == 0) path.moveTo(px, py)
+                                            else path.lineTo(px, py)
+                                            
+                                            // Draw point slightly after line
+                                            drawContext.canvas.nativeCanvas.drawCircle(px, py, radius, pointPaint)
+                                        }
+                                        if (key == "FACE_OVAL" || key.contains("EYE") || key.contains("LIP")) {
+                                            path.close()
+                                        }
+                                        drawContext.canvas.nativeCanvas.drawPath(path, linePaint)
+                                    }
                                 }
                             }
                         }
@@ -1774,7 +1949,7 @@ fun OCRResultScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        if (showPayload) "Review the generated data structure" else "Review the processed OCR text", 
+                        if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else "palmprint data"}", 
                         style = MaterialTheme.typography.bodySmall, 
                         color = Color.Gray
                     )
@@ -1832,6 +2007,8 @@ fun OCRResultScreen(
                                  )
                             }
                         }
+                    } else if (aiMode == AiMode.FACE) {
+                         FaceResultTable(jsonResult)
                     } else {
                         // Formatted Preview Content Area
                         var fullText = ""
@@ -1849,15 +2026,14 @@ fun OCRResultScreen(
                                     rawText = obj.getString("text")
                                 }
                                 
-                                // เว้นวรรคหลังคำนำหน้าชื่อ และแก้การสะกดติดกัน
-                                val spacedText = rawText
-                                    .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ") // เว้นวรรคหน้าคำนำหน้า
-                                    .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ") // เว้นวรรคหลังคำนำหน้า
-                                    .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ") // Hardcode แก้เคสชื่อนามสกุลติดกัน 
-                                    .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
+                                    rawText = rawText
+                                        .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ") 
+                                        .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ") 
+                                        .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ") 
+                                        .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
                                     
-                                fullText += spacedText + " \n" // วรรคและขึ้นบรรทัดใหม่
-                                
+                                fullText += rawText + " \n" 
+
                                 if (obj.has("confidence")) {
                                     sumConf += obj.getDouble("confidence")
                                 } else if (obj.has("prob")) {
@@ -1926,6 +2102,130 @@ fun OCRResultScreen(
         }
 }
 
+@Composable
+fun FaceResultTable(jsonStr: String) {
+    val result = runCatching {
+        val arr = org.json.JSONArray(jsonStr)
+        val list = mutableListOf<org.json.JSONObject>()
+        for (i in 0 until arr.length()) {
+            list.add(arr.getJSONObject(i))
+        }
+        list
+    }
+    
+    if (result.isFailure) {
+        Text("Error parsing face data: ${result.exceptionOrNull()?.message}", color = Color.Red, modifier = Modifier.padding(16.dp))
+        return
+    }
+    
+    val faces = result.getOrNull() ?: emptyList()
+    
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 450.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        for (i in faces.indices) {
+            val obj = faces[i]
+            val bbox = obj.optJSONArray("bbox") ?: org.json.JSONArray()
+                val eulerY = obj.optDouble("head_euler_y", 0.0)
+                val eulerZ = obj.optDouble("head_euler_z", 0.0)
+                val trackingId = obj.optInt("tracking_id", -1)
+                
+                val smiling = obj.optDouble("smiling_prob", 0.0)
+                val lEyeC = obj.optDouble("left_eye_open_prob", 0.0)
+                val rEyeC = obj.optDouble("right_eye_open_prob", 0.0)
+                
+                val landmarks = obj.optJSONObject("landmarks") ?: org.json.JSONObject()
+                val contours = obj.optJSONObject("contours") ?: org.json.JSONObject()
+
+                // Header
+                Surface(color = Color(0xFFE5E7EB), modifier = Modifier.fillMaxWidth()) {
+                    Text("ใบหน้า ${i + 1} จาก ${faces.size}", modifier = Modifier.padding(12.dp), fontWeight = FontWeight.Bold, color = Color(0xFF374151))
+                }
+                
+                Column(modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFFE5E7EB))) {
+                    FaceTableRow("เส้นขอบรูปหลายเหลี่ยม", if (bbox.length() >= 4) ":" else ":")
+                    FaceTableRow("มุมของการหมุน", "Y: $eulerY, Z: $eulerZ")
+                    FaceTableRow("รหัสติดตาม", if (trackingId != -1) trackingId.toString() else "N/A")
+                    
+                    FaceTableRowMulti("จุดสังเกตบนใบหน้า", listOf(
+                        "ตาซ้าย" to formatPt(landmarks.optJSONArray("LEFT_EYE")),
+                        "ตาขวา" to formatPt(landmarks.optJSONArray("RIGHT_EYE")),
+                        "ก้นปาก" to formatPt(landmarks.optJSONArray("MOUTH_BOTTOM")),
+                        "... ฯลฯ" to ""
+                    ))
+                    
+                    FaceTableRowMulti("ความน่าจะเป็นของฟีเจอร์", listOf(
+                        "การยิ้ม" to smiling.toString(),
+                        "ลืมตาข้างซ้าย" to lEyeC.toString(),
+                        "ลืมตาขวา" to rEyeC.toString()
+                    ))
+                    
+                    FaceTableRowMulti("เค้าโครงของใบหน้า", listOf(
+                        "ดั้งจมูก" to formatPtArr(contours.optJSONArray("NOSE_BRIDGE")),
+                        "ตาซ้าย" to formatPtArr(contours.optJSONArray("LEFT_EYE")),
+                        "ริมฝีปากบน" to formatPtArr(contours.optJSONArray("UPPER_LIP_TOP")),
+                        "(ฯลฯ)" to ""
+                    ))
+                }
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+fun FaceTableRow(title: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFFE5E7EB)).height(IntrinsicSize.Min)) {
+        Box(modifier = Modifier.weight(0.35f).background(Color(0xFFF3F4F6)).padding(12.dp).fillMaxHeight()) {
+            Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = Color(0xFF374151))
+        }
+        Box(modifier = Modifier.weight(0.65f).padding(12.dp).fillMaxHeight(), contentAlignment = Alignment.CenterStart) {
+            Text(value, style = MaterialTheme.typography.bodySmall, color = Color(0xFF1F2937))
+        }
+    }
+}
+
+@Composable
+fun FaceTableRowMulti(title: String, rows: List<Pair<String, String>>) {
+    Row(modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFFE5E7EB)).height(IntrinsicSize.Min)) {
+         Box(modifier = Modifier.weight(0.35f).background(Color(0xFFF3F4F6)).padding(12.dp).fillMaxHeight()) {
+            Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = Color(0xFF374151))
+        }
+        Column(modifier = Modifier.weight(0.65f)) {
+            rows.forEachIndexed { idx, pair ->
+                Row(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    Text(pair.first, modifier = Modifier.weight(0.4f), style = MaterialTheme.typography.bodySmall, color = Color(0xFF1F2937))
+                    Text(pair.second, modifier = Modifier.weight(0.6f), style = MaterialTheme.typography.bodySmall, color = Color(0xFF1F2937))
+                }
+                if (idx < rows.size - 1) {
+                    HorizontalDivider(color = Color(0xFFE5E7EB))
+                }
+            }
+        }
+    }
+}
+
+fun formatPt(pt: org.json.JSONArray?): String {
+    if (pt == null || pt.length() < 2) return ""
+    return "(${String.format(java.util.Locale.US, "%.6f", pt.getDouble(0))}, ${String.format(java.util.Locale.US, "%.6f", pt.getDouble(1))})"
+}
+
+fun formatPtArr(pts: org.json.JSONArray?): String {
+    if (pts == null || pts.length() == 0) return ""
+    val sb = StringBuilder()
+    for (i in 0 until minOf(3, pts.length())) {
+        val pt = pts.optJSONArray(i)
+        if (pt != null && pt.length() >= 2) {
+            sb.append("(${String.format(java.util.Locale.US, "%.6f", pt.getDouble(0))}, ${String.format(java.util.Locale.US, "%.6f", pt.getDouble(1))})")
+            if (i < 2 && i < pts.length() - 1) sb.append(", ")
+        }
+    }
+    if (pts.length() > 3) sb.append(", ...")
+    return sb.toString()
+}
+
 fun minWith(a: Float, b: Float): Float = kotlin.math.min(a, b)
 
 private fun generateOCRPayload(
@@ -1939,7 +2239,7 @@ private fun generateOCRPayload(
     val resource = SystemMonitor.getCurrentResourceUsage(context)
     
     val payload = JSONObject()
-    payload.put("type", if (aiMode == AiMode.PALMPRINT) "palmprint_result" else "ocr_result")
+    payload.put("type", if (aiMode == AiMode.PALMPRINT) "palmprint_result" else if (aiMode == AiMode.FACE) "face_result" else "ocr_result")
     payload.put("timestamp", System.currentTimeMillis())
     
     // engine_info (new format)
@@ -1949,6 +2249,11 @@ private fun generateOCRPayload(
             put("version", "tasks-vision")
             put("runtime", "tflite")
             put("model", "hand_landmarker.task")
+        } else if (aiMode == AiMode.FACE) {
+            put("engine", "mlkit")
+            put("version", "face-detection")
+            put("runtime", "gms")
+            put("model", "face")
         } else {
             put("engine", "paddleocr")
             put("version", "v5")
@@ -1981,16 +2286,16 @@ private fun generateOCRPayload(
     try {
         val benchmarkArr = JSONArray(jsonResult)
         
-        if (aiMode == AiMode.PALMPRINT) {
-            // Palmprint structure
+        if (aiMode == AiMode.PALMPRINT || aiMode == AiMode.FACE) {
+            // Palmprint/Face structure
             payload.put("result", JSONObject().apply {
-                put("palms", benchmarkArr)
+                put(if (aiMode == AiMode.PALMPRINT) "palms" else "faces", benchmarkArr)
             })
 
             // add resource info directly to palmprint summary so the google script logs it properly
             val resourceStats = resource.toJson()
             payload.put("summary", JSONObject().apply {
-                put("palms_detected", benchmarkArr.length())
+                put(if (aiMode == AiMode.PALMPRINT) "palms_detected" else "faces_detected", benchmarkArr.length())
                 put("total_latency_ms", timeMs)
             })
 

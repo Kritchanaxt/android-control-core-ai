@@ -94,4 +94,5 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.zxing.core)
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    implementation("com.google.mlkit:face-detection:16.1.7")
 }
