@@ -56,7 +56,7 @@ class PaddleOCR {
                     error = e
                 }
             }
-        }, "OCR-Inference", 64L * 1024 * 1024)
+        }, "OCR-Inference", 4L * 1024 * 1024)
         thread.start()
         thread.join()
         error?.let { throw it }

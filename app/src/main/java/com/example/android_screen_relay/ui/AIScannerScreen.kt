@@ -258,9 +258,11 @@ fun RealtimeCameraPreview(
                             }
                             isProcessingFrame = true
                             
+                            var bitmap: Bitmap? = null
+                            var rotatedBitmap: Bitmap? = null
                             try {
-                                val bitmap = image.toBitmap()
-                                val rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees)
+                                bitmap = image.toBitmap()
+                                rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees)
                                 val processor = AIManager.getActiveProcessor()
                                 
                                 if (processor != null) {
@@ -302,7 +304,8 @@ fun RealtimeCameraPreview(
                                             // Trigger Auto Snap!
                                             // To avoid double snaps, set consecutive really high or break
                                             consecutiveDetections = -9999
-                                            onSnap(rotatedBitmap)
+                                            val snappedCopy = rotatedBitmap.copy(rotatedBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+                                            onSnap(snappedCopy)
                                         }
                                     } else {
                                         consecutiveDetections = 0
@@ -312,6 +315,10 @@ fun RealtimeCameraPreview(
                             } catch (e: Exception) {
                                 Log.e("CameraX", "Analyze error", e)
                             } finally {
+                                if (bitmap != null && rotatedBitmap != null && bitmap !== rotatedBitmap) {
+                                    rotatedBitmap.recycle()
+                                }
+                                bitmap?.recycle()
                                 image.close()
                                 isProcessingFrame = false
                             }
