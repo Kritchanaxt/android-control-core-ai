@@ -22,6 +22,27 @@ Android system-level control core featuring a persistent background service, **H
   - **Speed**: Full OCR pipeline runs in **~100-200ms** on mid-range Android devices.
 * **Crash-Free Stability**: Solved critical JNI crashes by overriding NCNN's default `-fno-exceptions` flags, enabling robust error handling in the C++ layer.
 
+* **Smart Auto-Crop (Tight Bounding Box)**: 
+  - **Dynamic Ratio Cropping**: Intelligently calculates crop boundaries by anchoring to specific string positions (e.g., cutting the top 45% of the ID number box to avoid overlapping headers like "บัตรประจำตัวประชาชน").
+  - **Keyword Filtering**: Ignores generic labels ("เลขประจำตัว", "ชื่อตัวและชื่อสกุล") and locks strictly onto the 13-digit ID and Thai name prefixes ("นาย", "นาง", etc.) for a millimeter-perfect crop.
+* **Low-RAM Device Optimization (2GB RAM Safe)**:
+  - **Pre-Capture Resolution Selection**: Allows users to select lower camera resolutions before taking a snap, preventing OOM (Out of Memory) crashes during full-res inference.
+  - **Fast Preview Downscaling**: Shrinks the live camera preview to 640px for real-time text detection without overloading the memory.
+  - **Memory Safeguards**: Forces aggressive garbage collection (`Bitmap.recycle()`) and enables OS-level `android:largeHeap="true"` to prevent app termination on budget devices.
+  - **Lenient Snap Triggers**: Triggers the auto-snap smoothly even if the camera only catches a partial ID (9+ digits) or keywords ("ประชาชน"), making it extremely user-friendly and easy to scan.
+* **Automated Thai Text Formatting**: 
+  - Uses Regex string manipulation to automatically inject properly formatted spaces between Thai titles and names (e.g., `นายกฤชณัช` -> `นาย กฤชณัช`).
+* **Streamlined UI**: Removed unnecessary debugging info (Inference time, Preview mode, Raw data) and added a clean `✅ Snap success!` visual state.
+
+
+
+### **Multi-Mode AI System**
+* **Dynamic AI Mode Selector**: Easily toggle between distinct AI processors directly from the UI dropdown (e.g., `OCR` and `PALMPRINT`). 
+* **MediaPipe Hand Landmarker**: Integrates Google's MediaPipe for precise 3D hand tracking and palmprint feature extraction.
+  - Efficiently detects hand coordinates and isolates the region of interest (ROI) for Palmprint detection.
+  - Scales fluidly alongside the existing OCR pipeline, allowing the same unified Camera/Preview engine to power completely different tasks.
+  - Defers model initialization until process execution to conserve memory on low-RAM devices until the mode is actively selected.
+
 ### **WebSocket Communication (JSON-First)**
 
 * **Server Mode**: Runs an internal WebSocket server inside the Android app (Port `8887`) for direct client connections.
@@ -41,6 +62,17 @@ Android system-level control core featuring a persistent background service, **H
 * **Watchdog (Self-Healing)**: Implements `androidx.work.WorkManager` to wake up every 15 minutes, check service health, and perform **auto-revival** if the OS kills the process.
 * **Foreground Service**: Ensures long-running execution without being killed by the system.
 * **Auto-Start on Boot**: Automatically starts the service when the device boots (via Boot Receiver).
+
+
+### **Remote Monitoring (Cloud Telemetry) ☁️**
+* **Firebase Firestore Logging (`FirebaseLogger`)**: 
+  - Streams real-time diagnostics directly to Google Cloud Firestore.
+  - Automatically attaches vital device health metadata to every log entry, including:
+    - **Memory Metrics**: Current available RAM, low-memory warnings, and total system RAM capacity.
+    - **Battery & Power State**: Real-time battery percentage, charging status, and device thermal state (e.g., interactive/idle).
+    - **App Resilience**: Tracks `BACKGROUND`, `FOREGROUND`, and `SCREEN_ON`/`OFF` cycles.
+  - Useful for debugging fleets of devices remotely, ensuring that app crashes (like OOM events) or device failures can be traced back to exact system constraints prior to failure.
+* **Persistent Cloud Audit**: Provides historical, remote-accessible logs beyond local WebSocket boundaries, making it robust for field deployments.
 
 ### **Logging & Export**
 
