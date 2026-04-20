@@ -98,6 +98,14 @@ fun AIScannerScreen() {
     LaunchedEffect(currentMode, useGpu) {
         isAILoading = true
         withContext(Dispatchers.IO) {
+            // Memory Optimization for 2GB RAM Devices
+            // 1. Release active model before loading the new one to prevent RAM spike
+            AIManager.release()
+            // 2. Suggest Garbage Collection to free up memory from the previous model
+            System.gc()
+            System.runFinalization()
+            Thread.sleep(100) // Brief pause to allow OS to reclaim memory
+
             when (currentMode) {
                 ScanMode.PALM -> AIManager.switchProcessor(PalmprintProcessor(), context, AIConfig(useGpu = useGpu))
                 ScanMode.OCR -> AIManager.switchProcessor(OCRProcessor(), context, AIConfig(useGpu = useGpu))
@@ -246,8 +254,9 @@ fun RealtimeCameraPreview(
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
-    var isProcessingFrame by remember { mutableStateOf(false) }
-    var consecutiveDetections by remember { mutableStateOf(0) }
+    val isProcessingFrame = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val consecutiveDetections = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+    var lastProcessTime = 0L
 
     val executor = remember { Executors.newSingleThreadExecutor() }
 
@@ -267,16 +276,25 @@ fun RealtimeCameraPreview(
                     .build()
 
                 val imageAnalyzer = ImageAnalysis.Builder()
+                    // Set Target Resolution to fulfill the minimum 720x720 requirement
+                    .setTargetResolution(android.util.Size(720, 1280))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also {
                         it.setAnalyzer(executor) { image ->
-                            if (isProcessingFrame) {
+                            // Free up processor by skipping frames if they come too fast (throttle to ~10 FPS max)
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastProcessTime < 100) {
                                 image.close()
                                 return@setAnalyzer
                             }
-                            isProcessingFrame = true
 
+                            if (!isProcessingFrame.compareAndSet(false, true)) {
+                                image.close()
+                                return@setAnalyzer
+                            }
+
+                            lastProcessTime = currentTime
                             var bitmap: Bitmap? = null
                             var rotatedBitmap: Bitmap? = null
                             try {
@@ -331,12 +349,12 @@ fun RealtimeCameraPreview(
                                     }
 
                                     if (criteriaMet) {
-                                        consecutiveDetections++
+                                        val count = consecutiveDetections.incrementAndGet()
                                         onDetected(true, metaStr)
-                                        if (consecutiveDetections > 5) { // Needs 5 consecutive stable frames
+                                        if (count > 5) { // Needs 5 consecutive stable frames
                                             // Trigger Auto Snap!
                                             // To avoid double snaps, set consecutive really high or break
-                                            consecutiveDetections = -9999
+                                            consecutiveDetections.set(-9999)
                                             val snappedCopy = rotatedBitmap.copy(
                                                 rotatedBitmap.config ?: Bitmap.Config.ARGB_8888,
                                                 true
@@ -344,7 +362,7 @@ fun RealtimeCameraPreview(
                                             onSnap(snappedCopy)
                                         }
                                     } else {
-                                        consecutiveDetections = 0
+                                        consecutiveDetections.set(0)
                                         onDetected(false, "")
                                     }
                                 }
@@ -356,7 +374,7 @@ fun RealtimeCameraPreview(
                                 }
                                 bitmap?.recycle()
                                 image.close()
-                                isProcessingFrame = false
+                                isProcessingFrame.set(false)
                             }
                         }
                     }
@@ -461,27 +479,7 @@ fun ReviewScreen(
     }
 }
 
-// Utils
-fun ImageProxy.toBitmap(): Bitmap {
-    val yBuffer = planes[0].buffer
-    val uBuffer = planes[1].buffer
-    val vBuffer = planes[2].buffer
-    val ySize = yBuffer.remaining()
-    val uSize = uBuffer.remaining()
-    val vSize = vBuffer.remaining()
-    val nv21 = ByteArray(ySize + uSize + vSize)
-
-    yBuffer.get(nv21, 0, ySize)
-    vBuffer.get(nv21, ySize, vSize)
-    uBuffer.get(nv21, ySize + vSize, uSize)
-
-    val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, this.width, this.height, null)
-    val out = ByteArrayOutputStream()
-    yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 100, out)
-    val imageBytes = out.toByteArray()
-    return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-}
-
+// Utils (Removed custom ImageProxy.toBitmap() to use CameraX's built-in optimized version)
 fun rotateBitmap(bitmap: Bitmap, degrees: Int): Bitmap {
     if (degrees == 0) return bitmap
     val matrix = Matrix()
