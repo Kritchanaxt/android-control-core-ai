@@ -66,23 +66,23 @@ fun AIScannerScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    
+
     // States
     var hasCameraPermission by remember { mutableStateOf(false) }
     var currentMode by remember { mutableStateOf(ScanMode.PALM) }
     var targetHand by remember { mutableStateOf(HandSide.ANY) }
     var isDetected by remember { mutableStateOf(false) }
     var snappedImage by remember { mutableStateOf<Bitmap?>(null) }
-    
+
     var useGpu by remember { mutableStateOf(true) }
-    
+
     // AI Loading
     var isAILoading by remember { mutableStateOf(false) }
-    
+
     // Post-Snap States
     var showReview by remember { mutableStateOf(false) }
     var resultJson by remember { mutableStateOf("") }
-    
+
     // Launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -93,7 +93,7 @@ fun AIScannerScreen() {
     LaunchedEffect(Unit) {
         permissionLauncher.launch(Manifest.permission.CAMERA)
     }
-    
+
     // Initialize AI when mode changes
     LaunchedEffect(currentMode, useGpu) {
         isAILoading = true
@@ -107,6 +107,13 @@ fun AIScannerScreen() {
         isAILoading = false
     }
 
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            snappedImage?.recycle()
+            AIManager.release()
+        }
+    }
+
     if (showReview && snappedImage != null) {
         // Review Screen (Crop / Send JSON)
         ReviewScreen(
@@ -114,6 +121,7 @@ fun AIScannerScreen() {
             mode = currentMode,
             resultJson = resultJson,
             onRetake = {
+                snappedImage?.recycle()
                 snappedImage = null
                 showReview = false
                 isDetected = false
@@ -140,6 +148,8 @@ fun AIScannerScreen() {
                     if (snappedImage == null) {
                         snappedImage = bitmap
                         showReview = true
+                    } else {
+                        bitmap.recycle()
                     }
                 }
             )
@@ -161,14 +171,19 @@ fun AIScannerScreen() {
                         isDetected = false
                     }
                 )
-                
+
                 // Hardware Toggle
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("GPU", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(end=4.dp))
+                    Text(
+                        "GPU",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
                     Switch(checked = useGpu, onCheckedChange = { useGpu = it })
                 }
             }
-            
+
             // Hand Targeting Toggle
             if (currentMode == ScanMode.PALM) {
                 Row(
@@ -193,7 +208,7 @@ fun AIScannerScreen() {
                 val boxHeight = if (currentMode == ScanMode.OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
                 val left = (size.width - boxWidth) / 2
                 val top = (size.height - boxHeight) / 2
-                
+
                 drawRoundRect(
                     color = boxColor,
                     topLeft = Offset(left, top),
@@ -202,10 +217,13 @@ fun AIScannerScreen() {
                     style = Stroke(width = 8f)
                 )
             }
-            
+
             // Loading text
             if (isAILoading) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha=0.5f)), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center
+                ) {
                     CircularProgressIndicator(color = Color.White)
                 }
             }
@@ -230,16 +248,16 @@ fun RealtimeCameraPreview(
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
     var isProcessingFrame by remember { mutableStateOf(false) }
     var consecutiveDetections by remember { mutableStateOf(0) }
-    
+
     val executor = remember { Executors.newSingleThreadExecutor() }
-    
+
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
             val previewView = PreviewView(ctx)
             cameraProviderFuture.addListener({
                 val cameraProvider = cameraProviderFuture.get()
-                
+
                 val preview = Preview.Builder().build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
@@ -258,25 +276,28 @@ fun RealtimeCameraPreview(
                                 return@setAnalyzer
                             }
                             isProcessingFrame = true
-                            
+
                             var bitmap: Bitmap? = null
                             var rotatedBitmap: Bitmap? = null
                             try {
                                 bitmap = image.toBitmap()
                                 rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees)
                                 val processor = AIManager.getActiveProcessor()
-                                
+
                                 if (processor != null) {
                                     val result = processor.process(rotatedBitmap)
                                     val detectedItems = result.items
-                                    
+
                                     var criteriaMet = false
                                     var metaStr = "{}"
-                                    
+
                                     if (mode == ScanMode.PALM) {
                                         val handMatch = detectedItems.find { item ->
                                             val sideStr = item.extra["side"] as? String ?: ""
-                                            targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase=true)
+                                            targetHand == HandSide.ANY || sideStr.equals(
+                                                targetHand.name,
+                                                ignoreCase = true
+                                            )
                                         }
                                         if (handMatch != null && result.success) {
                                             criteriaMet = true
@@ -301,14 +322,14 @@ fun RealtimeCameraPreview(
                                     } else {
                                         // OCR logic checking
                                         if (result.success /* Add specific OCR logic if needed */) {
-                                             criteriaMet = true
-                                             metaStr = JSONObject().apply {
-                                                 put("detected", true)
-                                                 // Add OCR texts here
-                                             }.toString()
+                                            criteriaMet = true
+                                            metaStr = JSONObject().apply {
+                                                put("detected", true)
+                                                // Add OCR texts here
+                                            }.toString()
                                         }
                                     }
-                                    
+
                                     if (criteriaMet) {
                                         consecutiveDetections++
                                         onDetected(true, metaStr)
@@ -316,7 +337,10 @@ fun RealtimeCameraPreview(
                                             // Trigger Auto Snap!
                                             // To avoid double snaps, set consecutive really high or break
                                             consecutiveDetections = -9999
-                                            val snappedCopy = rotatedBitmap.copy(rotatedBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+                                            val snappedCopy = rotatedBitmap.copy(
+                                                rotatedBitmap.config ?: Bitmap.Config.ARGB_8888,
+                                                true
+                                            )
                                             onSnap(snappedCopy)
                                         }
                                     } else {
@@ -356,6 +380,17 @@ fun RealtimeCameraPreview(
             previewView
         }
     )
+
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        onDispose {
+            try {
+                cameraProviderFuture.get().unbindAll()
+            } catch (e: Exception) {
+                android.util.Log.e("CameraX", "Unbind failed", e)
+            }
+            executor.shutdown()
+        }
+    }
 }
 
 @Composable
@@ -367,13 +402,13 @@ fun SegmentedButtonUI(
 ) {
     Row(
         modifier = Modifier
-            .background(Color.DarkGray.copy(alpha=0.7f), RoundedCornerShape(50))
+            .background(Color.DarkGray.copy(alpha = 0.7f), RoundedCornerShape(50))
             .padding(4.dp)
     ) {
         options.forEachIndexed { index, option ->
             val isSelected = index == selectedIndex
             val bgColor = animateColorAsState(if (isSelected) selectedColor else Color.Transparent)
-            
+
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(50))
@@ -400,18 +435,18 @@ fun ReviewScreen(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("Review Image", color = Color.White, fontSize = 20.sp, modifier = Modifier.padding(16.dp))
-        
+
         Image(
             bitmap = image.asImageBitmap(),
             contentDescription = "Captured",
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentScale = ContentScale.Fit
         )
-        
+
         Box(modifier = Modifier.fillMaxWidth().background(Color.DarkGray).padding(16.dp)) {
             Text("Data: $resultJson", color = Color.White, fontSize = 12.sp)
         }
-        
+
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
@@ -428,18 +463,18 @@ fun ReviewScreen(
 
 // Utils
 fun ImageProxy.toBitmap(): Bitmap {
-    val yBuffer = planes[0].buffer 
+    val yBuffer = planes[0].buffer
     val uBuffer = planes[1].buffer
     val vBuffer = planes[2].buffer
     val ySize = yBuffer.remaining()
     val uSize = uBuffer.remaining()
     val vSize = vBuffer.remaining()
     val nv21 = ByteArray(ySize + uSize + vSize)
-    
+
     yBuffer.get(nv21, 0, ySize)
     vBuffer.get(nv21, ySize, vSize)
     uBuffer.get(nv21, ySize + vSize, uSize)
-    
+
     val yuvImage = android.graphics.YuvImage(nv21, android.graphics.ImageFormat.NV21, this.width, this.height, null)
     val out = ByteArrayOutputStream()
     yuvImage.compressToJpeg(android.graphics.Rect(0, 0, yuvImage.width, yuvImage.height), 100, out)

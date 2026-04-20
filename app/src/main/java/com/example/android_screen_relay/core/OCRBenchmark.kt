@@ -37,26 +37,27 @@ object OCRBenchmarkRunner {
         bitmapToProcess: Bitmap
     ): BenchmarkResult {
         Log.d(TAG, "Starting benchmark: $title")
-        
+
         // Measure resource usage before inference to baseline
         val device = SystemMonitor.getDeviceInfo(context)
-        
+
         val startCpu = SystemMonitor.getCurrentResourceUsage(context)
-        
+
         val startTime = System.currentTimeMillis()
         val rawResultJson = paddleOCR.detect(bitmapToProcess)
         val resultJson = OCRFormatter.formatLabelsInJsonArray(rawResultJson)
         var formattedText = ""
-        try { 
+        try {
             formattedText = OCRFormatter.formatRawOCRResult(resultJson)
-        } catch(e: Exception) {}
+        } catch (e: Exception) {
+        }
         val endTime = System.currentTimeMillis()
-        
+
         val latencyMs = endTime - startTime
-        
+
         // Resource after inference
         val endCpu = SystemMonitor.getCurrentResourceUsage(context)
-        
+
         val resolution = "${bitmapToProcess.width}x${bitmapToProcess.height}"
         Log.d(TAG, "Benchmark $title completed in $latencyMs ms at $resolution")
 
@@ -68,7 +69,7 @@ object OCRBenchmarkRunner {
             deviceInfo = device,
             resultJson = resultJson
         )
-        
+
         // ส่ง Log แบบละเอียดตามความต้องการของ Founder
         val extractedData = mapOf(
             "status" to "SUCCESS",
@@ -76,7 +77,7 @@ object OCRBenchmarkRunner {
             "snap_image_active" to true, // แก้ให้บันทึกเป็น true เวลามีการ Snap หรือเรียกใช้ AI สำเร็จ
             "extracted_text" to if (formattedText.isNotEmpty()) formattedText else resultJson
         )
-        
+
         FirebaseLogger.logAIInference(
             context = context,
             result = result,
@@ -84,40 +85,45 @@ object OCRBenchmarkRunner {
             useGpu = false, // ตรวจสอบจาก settings ถ้ามีการใช้ GPU
             extra = extractedData
         )
-        
+
         return result
     }
 
     fun runFullBenchmarkSuite(
-        context: Context, 
-        paddleOCR: PaddleOCR, 
+        context: Context,
+        paddleOCR: PaddleOCR,
         bitmap: Bitmap
     ): JSONArray {
         val resultsArray = JSONArray()
-        
+
         // 1. Full Image (Baseline)
         resultsArray.put(
             runBenchmark(context, paddleOCR, bitmap, "Full Image Baseline", bitmap).toJson()
         )
-        
+
         // 2. Downscaled 720p (Max dimension 720)
         val downscaled = OCROptimizer.scaleDownToMaxDimension(bitmap, 720)
         resultsArray.put(
             runBenchmark(context, paddleOCR, bitmap, "Downscaled 720p", downscaled).toJson()
         )
-        
+        if (downscaled !== bitmap && !downscaled.isRecycled) downscaled.recycle()
+
         // 3. Downscaled Low-End (Max dimension 480)
         val lowEnd = OCROptimizer.scaleDownToMaxDimension(bitmap, 480)
         resultsArray.put(
             runBenchmark(context, paddleOCR, bitmap, "Low-end device spec (480p)", lowEnd).toJson()
         )
-        
+        if (lowEnd !== bitmap && !lowEnd.isRecycled) lowEnd.recycle()
+
         // 4. Center Crop (Assuming game UI or dialog is in center)
         val centerCropped = OCROptimizer.cropCenter(bitmap, 0.5f, 0.5f)
         resultsArray.put(
             runBenchmark(context, paddleOCR, bitmap, "Center Cropped (50%)", centerCropped).toJson()
         )
-        
+        if (centerCropped !== bitmap && !centerCropped.isRecycled) centerCropped.recycle()
+
+        if (!bitmap.isRecycled) bitmap.recycle()
+
         return resultsArray
     }
 }

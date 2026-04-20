@@ -16,6 +16,8 @@ class PaddleOCR {
         }
     }
 
+    private var executor: java.util.concurrent.ExecutorService? = null
+
     inner class Obj {
         var x0: Float = 0f
         var y0: Float = 0f
@@ -36,6 +38,8 @@ class PaddleOCR {
     fun release() {
         synchronized(lock) {
             try {
+                executor?.shutdown()
+                executor = null
                 releaseNative()
             } catch (e: Exception) {
                 Log.e("PaddleOCR", "Error releasing model", e)
@@ -46,19 +50,25 @@ class PaddleOCR {
     fun detect(bitmap: Bitmap): String {
         // Run detectNative on a thread with 8MB stack to prevent stack overflow
         // in ncnn's recursive extract() for the 316-layer recognition model.
+        if (executor == null || executor!!.isShutdown) {
+            return "[]"
+        }
+
         var result: Array<Obj>? = null
         var error: Throwable? = null
-        val thread = Thread(null, {
+
+        val future = executor!!.submit(java.util.concurrent.Callable {
             synchronized(lock) {
-                try {
-                    result = detectNative(bitmap, false)
-                } catch (e: Throwable) {
-                    error = e
-                }
+                detectNative(bitmap, false)
             }
-        }, "OCR-Inference", 4L * 1024 * 1024)
-        thread.start()
-        thread.join()
+        })
+
+        try {
+            result = future.get()
+        } catch (e: Exception) {
+            error = e.cause ?: e
+        }
+
         error?.let { throw it }
 
         val objs = result ?: return "[]"
@@ -75,7 +85,7 @@ class PaddleOCR {
             jsonObject.put("x3", obj.x3)
             jsonObject.put("y3", obj.y3)
             jsonObject.put("label", obj.label)
-            
+
             // Fix for org.json.JSONException: Forbidden numeric value: NaN
             val safeProb = if (obj.prob.isNaN() || obj.prob.isInfinite()) 0f else obj.prob
             jsonObject.put("prob", safeProb)
@@ -99,9 +109,9 @@ class PaddleOCR {
         val usage = SystemMonitor.getCurrentResourceUsage(context)
         val totalRam = usage.ramTotalMb
         val availableRamMb = totalRam - usage.ramUsedMb
-        
-        val requiredRam = if (totalRam < 2048) 120 else 300 
-        
+
+        val requiredRam = if (totalRam < 2048) 120 else 300
+
         if (availableRamMb < requiredRam) {
             Log.e("PaddleOCR", "Cannot init model: Low Memory ($availableRamMb MB available)")
             return false
@@ -109,6 +119,11 @@ class PaddleOCR {
 
         return synchronized(lock) {
             try {
+                if (executor == null || executor!!.isShutdown) {
+                    executor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                        Thread(null, r, "OCR-Inference", 4L * 1024 * 1024)
+                    }
+                }
                 // Force useGpu = true to guarantee correct spacing on Thai OCR as discussed
                 init(context.assets, coreCount, true)
             } catch (e: Exception) {
@@ -122,12 +137,12 @@ class PaddleOCR {
         val usage = SystemMonitor.getCurrentResourceUsage(context)
         val totalRam = usage.ramTotalMb
         val availableRamMb = totalRam - usage.ramUsedMb
-        
+
         val criticalLimit = if (totalRam < 2048) 80 else 200
-        
+
         return if (availableRamMb < criticalLimit) {
             Pair(false, "Critical Low Memory: ${availableRamMb}MB. Please close other apps.")
-            
+
         } else {
             Pair(true, "")
         }
