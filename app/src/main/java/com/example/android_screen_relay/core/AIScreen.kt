@@ -492,7 +492,7 @@ fun AIScreen() {
                                 } else bitmap
 
                                 val jsonStr = if (result.success && item != null) {
-                                    "[\n  {\n    \"area_type\": \"${item.extra["area_type"] ?: "unknown"}\",\n    \"hand\": \"${item.extra["hand"] ?: "unknown"}\"\n  }\n]"
+                                    "[\n  {\n    \"area_type\": \"${item.extra["area_type"] ?: "unknown"}\",\n    \"hand\": \"${item.extra["hand"] ?: "unknown"}\",\n    \"confidence\": ${item.confidence}\n  }\n]"
                                 } else {
                                     "[]"
                                 }
@@ -602,6 +602,7 @@ fun AIScreen() {
                                     result.items.forEach { item ->
                                         val obj = org.json.JSONObject()
                                         obj.put("label", "Face")
+                                        obj.put("confidence", item.confidence)
                                         item.extra.forEach { (key, value) ->
                                             if (value is String && (key == "contours" || key == "landmarks")) {
                                                 obj.put(key, org.json.JSONObject(value))
@@ -1660,13 +1661,16 @@ fun OCRResultScreen(
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
-                        if (timeMs > 0) {
-                            Text(
-                                "Process time: ${timeMs}ms",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
+                        val modelName = when (aiMode) {
+                            AiMode.PALMPRINT -> "MediaPipe Hand Gesture"
+                            AiMode.FACE -> "ML Kit Face Detection"
+                            else -> "PaddleOCRv5"
                         }
+                        Text(
+                            modelName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
                     }
                 },
                 navigationIcon = {
@@ -1866,33 +1870,6 @@ fun OCRResultScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    val itemCount = try {
-                        JSONArray(jsonResult).length()
-                    } catch (e: Exception) {
-                        0
-                    }
-
-                    // Model info
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                text = "Model: MediaPipe Hand",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "$itemCount items found (Left & Right)",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
                     // Left Palm
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).aspectRatio(1f),
@@ -2213,6 +2190,8 @@ fun OCRResultScreen(
                                 rawText = obj.getString("label")
                             } else if (obj.has("text")) {
                                 rawText = obj.getString("text")
+                            } else if (obj.has("hand")) {
+                                rawText = "Hand: ${obj.getString("hand")} (${obj.optString("area_type")})"
                             }
 
                             rawText = rawText
@@ -2359,7 +2338,16 @@ fun FaceResultTable(jsonStr: String) {
             }
 
             Column(modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFFE5E7EB))) {
-                FaceTableRow("เส้นขอบรูปหลายเหลี่ยม", if (bbox.length() >= 4) ":" else ":")
+                FaceTableRow(
+                    "เส้นขอบรูปหลายเหลี่ยม",
+                    if (bbox.length() >= 4) "[${bbox.optDouble(0).toInt()}, ${
+                        bbox.optDouble(1).toInt()
+                    }, ${bbox.optDouble(2).toInt()}, ${bbox.optDouble(3).toInt()}]" else "N/A"
+                )
+                FaceTableRow(
+                    "ความมั่นใจ (Confidence)",
+                    String.format(java.util.Locale.US, "%.2f%%", obj.optDouble("confidence", 0.0) * 100)
+                )
                 FaceTableRow("มุมของการหมุน", "Y: $eulerY, Z: $eulerZ")
                 FaceTableRow("รหัสติดตาม", if (trackingId != -1) trackingId.toString() else "N/A")
 
