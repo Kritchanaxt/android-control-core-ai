@@ -2173,8 +2173,6 @@ fun OCRResultScreen(
                             )
                         }
                     }
-                } else if (aiMode == AiMode.FACE) {
-                    FaceResultTable(jsonResult)
                 } else {
                     // Formatted Preview Content Area
                     var fullText = ""
@@ -2185,27 +2183,32 @@ fun OCRResultScreen(
                         val cnt = arr.length()
                         for (i in 0 until cnt) {
                             val obj = arr.getJSONObject(i)
-                            var rawText = ""
-                            if (obj.has("label")) {
-                                rawText = obj.getString("label")
-                            } else if (obj.has("text")) {
-                                rawText = obj.getString("text")
-                            } else if (obj.has("hand")) {
-                                rawText = "Hand: ${obj.getString("hand")} (${obj.optString("area_type")})"
-                            }
 
-                            rawText = rawText
-                                .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ")
-                                .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ")
-                                .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ")
-                                .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
-
-                            fullText += rawText + " \n"
-
+                            // Calculate Confidence (Common for all modes)
                             if (obj.has("confidence")) {
                                 sumConf += obj.getDouble("confidence")
                             } else if (obj.has("prob")) {
                                 sumConf += obj.getDouble("prob")
+                            }
+
+                            // Calculate FullText (only for OCR/Palmprint)
+                            if (aiMode != AiMode.FACE) {
+                                var rawText = ""
+                                if (obj.has("label")) {
+                                    rawText = obj.getString("label")
+                                } else if (obj.has("text")) {
+                                    rawText = obj.getString("text")
+                                } else if (obj.has("hand")) {
+                                    rawText = "Hand: ${obj.getString("hand")} (${obj.optString("area_type")})"
+                                }
+
+                                rawText = rawText
+                                    .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ")
+                                    .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ")
+                                    .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ")
+                                    .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
+
+                                fullText += rawText + " \n"
                             }
                         }
                         if (cnt > 0) avgConf = sumConf / cnt
@@ -2218,23 +2221,35 @@ fun OCRResultScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = false)
-                            .heightIn(max = 350.dp)
+                            .heightIn(max = 450.dp)
                     ) {
-                        Column(modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
-                            Text(
-                                fullText.trim(),
-                                color = Color(0xFF007AFF),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                lineHeight = 18.sp
-                            )
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            // Result Content Area (Scrollable)
+                            Box(modifier = Modifier.weight(1f, fill = false)) {
+                                if (aiMode == AiMode.FACE) {
+                                    FaceResultTable(jsonResult)
+                                } else {
+                                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                                        Text(
+                                            fullText.trim(),
+                                            color = Color(0xFF007AFF),
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            lineHeight = 18.sp
+                                        )
+                                    }
+                                }
+                            }
+
                             Spacer(Modifier.height(12.dp))
                             HorizontalDivider(color = Color(0xFFE0E0E0), thickness = 1.dp)
                             Spacer(Modifier.height(8.dp))
+
+                            // Shared Metrics Footer
                             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                 Text("Device: ${android.os.Build.HARDWARE}", color = Color.Gray, fontSize = 11.sp)
                                 Text(
-                                    "GPU: ${if (computeMode.useGpu) "ON" else "OFF"} (${computeMode.coreCount} cores)",
+                                    "GPU: ${if (computeMode.useGpu) "ON" else "OFF"}",
                                     color = Color.Gray,
                                     fontSize = 11.sp
                                 )
@@ -2344,10 +2359,7 @@ fun FaceResultTable(jsonStr: String) {
                         bbox.optDouble(1).toInt()
                     }, ${bbox.optDouble(2).toInt()}, ${bbox.optDouble(3).toInt()}]" else "N/A"
                 )
-                FaceTableRow(
-                    "ความมั่นใจ (Confidence)",
-                    String.format(java.util.Locale.US, "%.2f%%", obj.optDouble("confidence", 0.0) * 100)
-                )
+
                 FaceTableRow("มุมของการหมุน", "Y: $eulerY, Z: $eulerZ")
                 FaceTableRow("รหัสติดตาม", if (trackingId != -1) trackingId.toString() else "N/A")
 
@@ -2510,7 +2522,6 @@ private fun generateOCRPayload(
 
         val mode = ComputeModeManager.getMode()
         put("compute_mode", mode.displayName)
-        put("cores", mode.coreCount)
         put("use_gpu", mode.useGpu)
     }
     payload.put("engine_info", engineInfo)
