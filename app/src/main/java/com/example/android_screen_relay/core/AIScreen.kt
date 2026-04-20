@@ -415,7 +415,7 @@ fun AIScreen() {
                         }
                     }
                 },
-                onImageCaptured = { bitmap ->
+                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace ->
                     if (isProcessing) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
@@ -427,9 +427,13 @@ fun AIScreen() {
                             var tempPalm: com.example.android_screen_relay.core.PalmprintProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                tempPalm = com.example.android_screen_relay.core.PalmprintProcessor()
-                                tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                val result = tempPalm.process(bitmap)
+                                val result = if (previewPalm != null) {
+                                    previewPalm.process(bitmap)
+                                } else {
+                                    tempPalm = com.example.android_screen_relay.core.PalmprintProcessor()
+                                    tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                    tempPalm.process(bitmap)
+                                }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val item = result.items.firstOrNull()
@@ -592,9 +596,13 @@ fun AIScreen() {
                             var tempFace: FaceDetectorProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                tempFace = FaceDetectorProcessor()
-                                tempFace.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                val result = tempFace.process(bitmap)
+                                val result = if (previewFace != null) {
+                                    previewFace.process(bitmap)
+                                } else {
+                                    tempFace = FaceDetectorProcessor()
+                                    tempFace.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                    tempFace.process(bitmap)
+                                }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val jsonStr = if (result.success && result.items.isNotEmpty()) {
@@ -650,15 +658,18 @@ fun AIScreen() {
                             }
                         }
                     } else {
-                        // OCR mode: Automatic extraction of ID and Name
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             var tempOcr: PaddleOCR? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                tempOcr = PaddleOCR()
-                                tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-                                val resultJsonStr = tempOcr.detect(bitmap)
+                                val resultJsonStr = if (previewOcr != null) {
+                                    previewOcr.detect(bitmap)
+                                } else {
+                                    tempOcr = PaddleOCR()
+                                    tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
+                                    tempOcr.detect(bitmap)
+                                }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
@@ -846,12 +857,20 @@ fun AIScreen() {
                                 var isSuccess = false
                                 var finalJsonStr = "[]"
                                 var finalLatencyMs = 0L
+                                var localOcr: PaddleOCR? = null
                                 try {
-                                    val localOcr = PaddleOCR()
-                                    if (localOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)) {
-                                        val st = System.currentTimeMillis()
-                                        // Use formatLabelsInJsonArray if available or just rawOcrRes
-                                        val rawOcrRes = localOcr.detect(optimizedCrop)
+                                    val st = System.currentTimeMillis()
+                                    val rawOcrRes = if (previewOcr != null) {
+                                        previewOcr.detect(optimizedCrop)
+                                    } else {
+                                        localOcr = PaddleOCR()
+                                        if (localOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)) {
+                                            localOcr.detect(optimizedCrop)
+                                        } else {
+                                            "[]"
+                                        }
+                                    }
+                                    if (rawOcrRes != "[]") {
                                         finalJsonStr = OCRFormatter.formatLabelsInJsonArray(rawOcrRes)
                                         val en = System.currentTimeMillis()
                                         finalLatencyMs = en - st
@@ -859,6 +878,8 @@ fun AIScreen() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e("OCR", "Auto processing error", e)
+                                } finally {
+                                    localOcr?.release()
                                 }
 
                                 withContext(Dispatchers.Main) {
@@ -905,7 +926,7 @@ fun CameraPreviewScreen(
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
     onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?) -> Boolean,
-    onImageCaptured: (Bitmap) -> Unit,
+    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
     processingResultMsg: String? = null
@@ -937,6 +958,14 @@ fun CameraPreviewScreen(
     var previewFace by remember { mutableStateOf<FaceDetectorProcessor?>(null) }
     val computeMode = ComputeModeManager.getMode()
 
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            previewOcr?.release()
+            previewPalm?.release()
+            previewFace?.release()
+        }
+    }
+
     // Initialize or release preview models when the mode changes
     LaunchedEffect(aiMode) {
         withContext(Dispatchers.IO) {
@@ -965,10 +994,23 @@ fun CameraPreviewScreen(
         }
     }
 
+    val currentOnStableDetection = androidx.compose.runtime.rememberUpdatedState(onStableDetection)
+    val currentOnImageCaptured = androidx.compose.runtime.rememberUpdatedState(onImageCaptured)
+    val currentPreviewOcr = androidx.compose.runtime.rememberUpdatedState(previewOcr)
+    val currentPreviewPalm = androidx.compose.runtime.rememberUpdatedState(previewPalm)
+    val currentPreviewFace = androidx.compose.runtime.rememberUpdatedState(previewFace)
+
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
         if (cameraController == null) {
-            cameraController = Camera2Controller(context, onImageCaptured)
+            cameraController = Camera2Controller(context) { bitmap ->
+                currentOnImageCaptured.value(
+                    bitmap,
+                    currentPreviewOcr.value,
+                    currentPreviewPalm.value,
+                    currentPreviewFace.value
+                )
+            }
         }
 
         // Force Flash for PALMPRINT mode and normal for OCR
@@ -1046,7 +1088,12 @@ fun CameraPreviewScreen(
 
                         val startInference = System.currentTimeMillis()
                         val criteriaMet = try {
-                            onStableDetection(bitmap, previewOcr, previewPalm, previewFace)
+                            currentOnStableDetection.value(
+                                bitmap,
+                                currentPreviewOcr.value,
+                                currentPreviewPalm.value,
+                                currentPreviewFace.value
+                            )
                         } catch (e: Exception) {
                             false
                         }
@@ -1060,12 +1107,7 @@ fun CameraPreviewScreen(
                                 isCapturing = true
                                 passedToCapture = true
 
-                                // แก้ปัญหาเครื่อง RAM 2GB ถ่ายรูปไม่ติด (Hardware stall/OOM during TEMPLATE_STILL_CAPTURE):
-                                // สั่ง Snap จาก Preview Bitmap ปัจจุบันที่มีอยู่แล้ว โยนเข้า Pipeline ได้เลย (เร็วและไม่เปลือง RAM เพิ่ม)
-                                val snapBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-                                withContext(Dispatchers.Main) {
-                                    onImageCaptured(snapBitmap)
-                                }
+                                cameraController?.takePhoto()
 
                                 stableTime = 0L
                                 kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
