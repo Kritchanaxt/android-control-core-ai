@@ -178,4 +178,44 @@ object SystemMonitor {
             batteryTemp = temp / 10.0f
         )
     }
+
+    /**
+     * Helper to track RAM delta for a specific action (e.g. Model Load/Release)
+     */
+    fun <T> trackMemoryAction(context: Context, actionName: String, action: () -> T): T {
+        val before = getCurrentResourceUsage(context)
+        val startTime = System.currentTimeMillis()
+        
+        val result = action()
+        
+        val endTime = System.currentTimeMillis()
+        val after = getCurrentResourceUsage(context)
+        val delta = after.ramUsedMb - before.ramUsedMb
+        val duration = endTime - startTime
+
+        val logMsg = if (delta < 0) {
+            "RAM Recovered: ${-delta}MB ($actionName in ${duration}ms)"
+        } else {
+            "RAM Consumed: ${delta}MB ($actionName in ${duration}ms)"
+        }
+        
+        android.util.Log.i("PerformanceMonitor", "[Standard] $logMsg | Current RAM: ${after.ramUsedMb}MB")
+        
+        // Log to Repository if available
+        try {
+            com.example.android_screen_relay.LogRepository.addLog(
+                component = "Performance",
+                event = if (delta < 0) "ram_recovered" else "ram_consumed",
+                data = mapOf(
+                    "action" to actionName,
+                    "delta_mb" to delta,
+                    "duration_ms" to duration,
+                    "total_ram_used_mb" to after.ramUsedMb
+                ),
+                type = com.example.android_screen_relay.LogRepository.LogType.INFO
+            )
+        } catch (e: Exception) {}
+
+        return result
+    }
 }

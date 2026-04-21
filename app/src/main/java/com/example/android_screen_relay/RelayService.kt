@@ -312,6 +312,15 @@ class RelayService : Service() {
                         
                         relayServer?.broadcastToAuthenticated(statusJson.toString())
                         
+                        // Update Real-time Overlay with Model name
+                        overlayManager.updateMetrics(
+                            ramUsed = usage.ramUsedMb,
+                            ramTotal = usage.ramTotalMb,
+                            cpu = usage.cpuUsage,
+                            model = AIManager.getActiveProcessor()?.name ?: "Idle",
+                            status = if (consecutiveLowMemory > 0) "Critical Memory!" else "System Normal"
+                        )
+
                         if (loopCount % 5 == 0) {
                             GoogleSheetsLogger.log(statusJson.toString())
                         }
@@ -343,6 +352,31 @@ class RelayService : Service() {
         }
     }
 
+    /**
+     * Standardized Performance Alert (Heads-up)
+     */
+    fun showPerformanceEvent(message: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Performance Monitor")
+            .setContentText(message)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .build()
+        
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(1001, notification) // Fixed ID for performance alerts to avoid spamming
+        
+        // Also update overlay status briefly
+        overlayManager.updateMetrics(
+            ramUsed = SystemMonitor.getCurrentResourceUsage(this).ramUsedMb,
+            ramTotal = SystemMonitor.getCurrentResourceUsage(this).ramTotalMb,
+            cpu = "...",
+            status = message
+        )
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
@@ -355,7 +389,7 @@ class RelayService : Service() {
         }
     }
 
-        private fun createNotification(): Notification {
+    private fun createNotification(): Notification {
         val stopIntent = Intent(this, RelayService::class.java).apply {
             action = ACTION_STOP
         }
@@ -365,7 +399,7 @@ class RelayService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Screen Relay Active")
-            .setContentText("Listening for commands...")
+            .setContentText("Monitoring Resources...")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPendingIntent)

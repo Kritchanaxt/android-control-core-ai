@@ -12,7 +12,7 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 class PalmprintProcessor : AIProcessor {
-    override val name: String = "PalmprintDetection"
+    override val name: String = "MediaPipe Hand Gesture"
     private var appContext: Context? = null
     private var appConfig: AIConfig? = null
     private var handLandmarker: HandLandmarker? = null

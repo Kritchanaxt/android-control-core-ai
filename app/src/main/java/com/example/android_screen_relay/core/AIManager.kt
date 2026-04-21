@@ -40,13 +40,42 @@ object AIManager {
     private var activeProcessor: AIProcessor? = null
     
     fun switchProcessor(processor: AIProcessor, context: android.content.Context, config: AIConfig): Boolean {
-        activeProcessor?.release()
-        activeProcessor = if (processor.init(context, config)) {
-            processor
-        } else {
-            null
+        // 1. Release old with tracking
+        activeProcessor?.let { old ->
+            SystemMonitor.trackMemoryAction(context, "Release ${old.name}") {
+                old.release()
+            }
+            sendPerformanceNotification(context, "Released ${old.name}")
         }
+        
+        // 2. Init new with tracking
+        activeProcessor = SystemMonitor.trackMemoryAction(context, "Init ${processor.name}") {
+            if (processor.init(context, config)) {
+                processor
+            } else {
+                null
+            }
+        }
+        
+        activeProcessor?.let {
+            sendPerformanceNotification(context, "Loaded ${it.name}")
+        }
+        
         return activeProcessor != null
+    }
+
+    /**
+     * Helper to switch processor by name (string)
+     */
+    fun switchProcessor(context: android.content.Context, modeName: String): Boolean {
+        val config = AIConfig(useGpu = true, threads = 4)
+        val processor: AIProcessor = when {
+            modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()
+            modeName.contains("PALM", ignoreCase = true) -> PalmprintProcessor()
+            modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()
+            else -> return false
+        }
+        return switchProcessor(processor, context, config)
     }
     
     fun getActiveProcessor(): AIProcessor? = activeProcessor
@@ -62,5 +91,28 @@ object AIManager {
     fun release() {
         activeProcessor?.release()
         activeProcessor = null
+    }
+
+    private fun sendPerformanceNotification(context: android.content.Context, message: String) {
+        try {
+            val service = com.example.android_screen_relay.RelayService.getInstance()
+            if (service != null) {
+                // Determine RAM state for the message
+                val res = SystemMonitor.getCurrentResourceUsage(context)
+                val fullMsg = "$message | RAM: ${res.ramUsedMb}MB"
+                
+                // Show as Toast/Notification
+                service.showPerformanceEvent(fullMsg)
+                
+                // Broadcast to WS
+                val json = org.json.JSONObject().apply {
+                    put("type", "performance_alert")
+                    put("message", fullMsg)
+                    put("ram_used_mb", res.ramUsedMb)
+                    put("timestamp", System.currentTimeMillis())
+                }
+                service.broadcastMessage(json.toString())
+            }
+        } catch (e: Exception) {}
     }
 }

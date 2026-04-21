@@ -10,7 +10,7 @@ import com.google.mlkit.vision.face.FaceDetector
 import com.google.mlkit.vision.face.FaceDetectorOptions
 
 class FaceDetectorProcessor : AIProcessor {
-    override val name: String = "MLKitFaceDetection"
+    override val name: String = "MLKit - Face Detection"
     private var detector: FaceDetector? = null
 
     override fun init(context: Context, config: AIConfig): Boolean {

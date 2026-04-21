@@ -149,7 +149,11 @@ fun AIScreen() {
         launcher.launch(Manifest.permission.CAMERA)
         // เตรียมระบบคำนวณตามสเปคเครื่องทันทีที่เปิดหน้า AI
         ComputeModeManager.initByDeviceSpec(context)
-        computeMode = ComputeModeManager.getMode()
+        
+        // Fix IDLE bug: Initialize global AIManager with the default mode on startup
+        scope.launch(Dispatchers.IO) {
+            com.example.android_screen_relay.core.AIManager.switchProcessor(context, currentAiMode.name)
+        }
     }
 
     // Gallery Launcher
@@ -217,20 +221,13 @@ fun AIScreen() {
                     scope.launch(Dispatchers.IO) {
                         var lazyOcr: PaddleOCR? = null
                         try {
-                            lazyOcr = PaddleOCR()
-                            val success = lazyOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-                            if (!success) {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(
-                                        context,
-                                        "OCR Init Failed.",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                                return@launch
+                            lazyOcr = SystemMonitor.trackMemoryAction(context, "OCR Manual Init") {
+                                val ocr = PaddleOCR()
+                                ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
+                                ocr
                             }
-
-                            val (canRun, errorMsg) = lazyOcr.canRunInference(context)
+                            
+                            val (canRun, errorMsg) = lazyOcr!!.canRunInference(context)
                             if (!canRun) {
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
@@ -430,9 +427,12 @@ fun AIScreen() {
                                 val result = if (previewPalm != null) {
                                     previewPalm.process(bitmap)
                                 } else {
-                                    tempPalm = com.example.android_screen_relay.core.PalmprintProcessor()
-                                    tempPalm.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                    tempPalm.process(bitmap)
+                                    tempPalm = SystemMonitor.trackMemoryAction(context, "Palmprint Manual Init") {
+                                        val p = com.example.android_screen_relay.core.PalmprintProcessor()
+                                        p.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                        p
+                                    }
+                                    tempPalm!!.process(bitmap)
                                 }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
@@ -599,9 +599,12 @@ fun AIScreen() {
                                 val result = if (previewFace != null) {
                                     previewFace.process(bitmap)
                                 } else {
-                                    tempFace = FaceDetectorProcessor()
-                                    tempFace.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                    tempFace.process(bitmap)
+                                    tempFace = SystemMonitor.trackMemoryAction(context, "Face Manual Init") {
+                                        val f = FaceDetectorProcessor()
+                                        f.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                        f
+                                    }
+                                    tempFace!!.process(bitmap)
                                 }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
@@ -1325,34 +1328,29 @@ fun CameraPreviewScreen(
                 }
             }
 
-            // Real-time Inference & RAM Overlay
+            // Snap Status Indicator (Searching, Stabilizing, Capturing)
             Box(
                 modifier = Modifier
-                    .padding(top = if (freeRamMb < 400L) 48.dp else 16.dp, start = 16.dp)
+                    .padding(top = 16.dp, start = 16.dp)
                     .align(Alignment.TopStart)
-                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                     .padding(8.dp)
             ) {
                 Column {
-                    Text(
-                        text = "RAM Available: ${freeRamMb} MB",
-                        color = Color.White,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
                     val statusText =
                         if (isProcessingBusy) "✅ Snap success!" else if (isCapturing) "Found! Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching..."
-                    Text(text = "Status: $statusText", color = Color.White, fontSize = 11.sp)
+                    Text(text = "Status: $statusText", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     if (processingResultMsg != null) {
                         Text(
                             text = processingResultMsg!!,
                             color = Color.Green,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
             }
+
 
             // Bottom Bar Overlay
             Row(
@@ -1420,24 +1418,13 @@ fun CameraPreviewScreen(
                                     },
                                     onClick = {
                                         onAiModeChange(mode)
+                                        // Sync with global AI Manager for performance reporting
+                                        com.example.android_screen_relay.core.AIManager.switchProcessor(context, mode.name)
                                         aiDropdownExpanded = false
                                     }
                                 )
                             }
                         }
-                    }
-
-                    // Import Button (Icon only)
-                    IconButton(
-                        onClick = onGalleryClick,
-                        modifier = Modifier.size(40.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Default.PhotoLibrary,
-                            contentDescription = "Import",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
 
                     // Settings Button
@@ -1721,9 +1708,7 @@ fun OCRResultScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onGalleryClick) {
-                        Icon(Icons.Default.PhotoLibrary, contentDescription = "Import")
-                    }
+                    // Gallery Button removed per user request
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,
