@@ -96,6 +96,11 @@ fun AIScreen() {
     var rightPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var suggestedCropRect by remember { mutableStateOf<Rect?>(null) }
+    
+    // Benchmark States
+    var isBenchmarking by remember { mutableStateOf(false) }
+    var benchReport by remember { mutableStateOf<String?>(null) }
+    var fullCapturedImage by remember { mutableStateOf<Bitmap?>(null) }
 
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
@@ -103,6 +108,7 @@ fun AIScreen() {
             leftPalmImage?.recycle()
             rightPalmImage?.recycle()
             cropImage?.recycle()
+            fullCapturedImage?.recycle()
         }
     }
     var ocrResultJson by remember { mutableStateOf("[]") }
@@ -206,14 +212,17 @@ fun AIScreen() {
                 leftPalmImage?.recycle()
                 rightPalmImage?.recycle()
                 cropImage?.recycle()
+                fullCapturedImage?.recycle()
 
                 currentImage = null
                 leftPalmImage = null
                 rightPalmImage = null
                 cropImage = null
+                fullCapturedImage = null
                 ocrResultJson = "[]"
                 ocrTimeMs = 0
                 targetHand = "Left"
+                benchReport = null
             },
             onRunModel = {
                 if (!isProcessing) {
@@ -299,7 +308,30 @@ fun AIScreen() {
                     }
                 }
             },
-            onGalleryClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+            onGalleryClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            isBenchmarking = isBenchmarking,
+            benchReport = benchReport,
+            onRunScaleTest = {
+                val targetBmp = fullCapturedImage ?: currentImage
+                if (!isBenchmarking && targetBmp != null) {
+                    isBenchmarking = true
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val bench = IDCardFaceBenchmarker()
+                            val report = bench.runScaleStressTest(context, targetBmp)
+                            withContext(Dispatchers.Main) {
+                                benchReport = report
+                                isBenchmarking = false
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) {
+                                isBenchmarking = false
+                                Toast.makeText(context, "Bench Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            }
         )
     } else {
         // Camera Preview Mode (Screenshot 1 style)
@@ -341,17 +373,21 @@ fun AIScreen() {
                     } else if (currentAiMode == AiMode.FACE) {
                         try {
                             if (previewFace != null) {
-                                val scale = 480f / maxOf(bitmap.width, bitmap.height)
-                                val processBitmap = if (scale < 1f) {
-                                    Bitmap.createScaledBitmap(
-                                        bitmap,
-                                        (bitmap.width * scale).toInt(),
-                                        (bitmap.height * scale).toInt(),
-                                        false
-                                    )
-                                } else bitmap
-                                val result = previewFace.process(processBitmap)
-                                if (processBitmap !== bitmap) processBitmap.recycle()
+                                // 🌟 ID Card Face ROI Optimization
+                                // Crop to the face area (roughly right-middle) and scale UP to help MLKit see small faces
+                                val roiLeft = (bitmap.width * 0.65f).toInt()
+                                val roiTop = (bitmap.height * 0.2f).toInt()
+                                val roiWidth = (bitmap.width * 0.3f).toInt()
+                                val roiHeight = (bitmap.height * 0.6f).toInt()
+                                
+                                val faceArea = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
+                                // Scale UP 3x for better detection of small faces on cards
+                                val scaledFace = Bitmap.createScaledBitmap(faceArea, roiWidth * 3, roiHeight * 3, true)
+                                
+                                val result = previewFace.process(scaledFace)
+                                if (faceArea !== bitmap) faceArea.recycle()
+                                if (scaledFace !== faceArea) scaledFace.recycle()
+                                
                                 result.success && result.items.isNotEmpty()
                             } else {
                                 false
@@ -363,7 +399,7 @@ fun AIScreen() {
                         // For OCR, detect card text before snap to prevent infinite snapping
                         try {
                             if (previewOcr != null) {
-                                val scale = 640f / maxOf(bitmap.width, bitmap.height)
+                                val scale = 720f / maxOf(bitmap.width, bitmap.height)
                                 val w = (bitmap.width * scale).toInt()
                                 val h = (bitmap.height * scale).toInt()
                                 val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
@@ -379,10 +415,10 @@ fun AIScreen() {
                                         val lbl = obj?.optString("label", "") ?: ""
                                         val rawText = lbl.replace(" ", "").replace("-", "")
 
-                                        // ผ่อนปรนในหน้า Preview: แค่เห็นเลขต่อเนื่อง 9 หลัก หรือ คีย์เวิร์ดบนบัตรประชาชน ก็ถือว่าเริ่มจับภาพได้ (เพราะภาพดรอปสเกลมาอ่านยาก)
+                                        // ✅ ผ่อนปรนเกณฑ์การตรวจจับบัตร (Relaxed criteria)
                                         val isIdPattern =
-                                            strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 9 && rawText.contains(
-                                                Regex("""\d{9,}""")
+                                            strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(
+                                                Regex("""\d{5,}""")
                                             ))
                                         val idKeywords = listOf(
                                             "เลขประจำตัว",
@@ -392,7 +428,8 @@ fun AIScreen() {
                                             "ชื่อตัว",
                                             "เกิดวันที่",
                                             "นาย",
-                                            "นางสาว"
+                                            "นางสาว",
+                                            "Thai National ID Card"
                                         )
                                         val isKeyword = idKeywords.any { lbl.contains(it) }
 
@@ -596,15 +633,25 @@ fun AIScreen() {
                             var tempFace: FaceDetectorProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
+                                
+                                // 🌟 Improved Face Extraction for ID Card
+                                val roiLeft = (bitmap.width * 0.65f).toInt()
+                                val roiTop = (bitmap.height * 0.2f).toInt()
+                                val roiWidth = (bitmap.width * 0.3f).toInt()
+                                val roiHeight = (bitmap.height * 0.6f).toInt()
+                                
+                                val faceCrop = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
+                                val scaledFace = Bitmap.createScaledBitmap(faceCrop, roiWidth * 3, roiHeight * 3, true)
+
                                 val result = if (previewFace != null) {
-                                    previewFace.process(bitmap)
+                                    previewFace.process(scaledFace)
                                 } else {
                                     tempFace = SystemMonitor.trackMemoryAction(context, "Face Manual Init") {
                                         val f = FaceDetectorProcessor()
                                         f.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
                                         f
                                     }
-                                    tempFace!!.process(bitmap)
+                                    tempFace!!.process(scaledFace)
                                 }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
@@ -621,6 +668,7 @@ fun AIScreen() {
                                                 obj.put(key, value)
                                             }
                                         }
+                                        // Map BBox back to original coordinates or use the crop view
                                         val box = org.json.JSONArray()
                                         box.put(item.boundingBox.left)
                                         box.put(item.boundingBox.top)
@@ -637,9 +685,13 @@ fun AIScreen() {
                                 withContext(Dispatchers.Main) {
                                     ocrTimeMs = pbElapsedMs
                                     ocrResultJson = jsonStr
-                                    currentImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                    // Use the scaled crop for better display in result screen
+                                    currentImage = scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                    // 🌟 Save full image for benchmark
+                                    fullCapturedImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
                                     if (!bitmap.isRecycled) bitmap.recycle()
+                                    if (!faceCrop.isRecycled) faceCrop.recycle()
 
                                     val payload = generateOCRPayload(
                                         context,
@@ -1671,7 +1723,10 @@ fun OCRResultScreen(
     onClear: () -> Unit,
     onRunModel: () -> Unit,
     onSendWs: () -> Unit,
-    onGalleryClick: () -> Unit // Add gallery option here too as per screenshot?
+    onGalleryClick: () -> Unit,
+    isBenchmarking: Boolean = false,
+    benchReport: String? = null,
+    onRunScaleTest: () -> Unit = {}
 ) {
     var showJsonDialog by remember { mutableStateOf(false) }
     var fullJsonOutput by remember { mutableStateOf("") }
@@ -1878,6 +1933,25 @@ fun OCRResultScreen(
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Send", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+
+                        // 🌟 Run Scale Test Button (Only for FACE mode)
+                        if (aiMode == AiMode.FACE) {
+                            Button(
+                                onClick = onRunScaleTest,
+                                enabled = !isBenchmarking && !isProcessing,
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF673AB7)),
+                                modifier = Modifier.weight(1f).height(48.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) {
+                                if (isBenchmarking) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Scale Test", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
                         }
                     }
                 }
@@ -2253,7 +2327,9 @@ fun OCRResultScreen(
                         Column(modifier = Modifier.padding(16.dp)) {
                             // Result Content Area (Scrollable)
                             Box(modifier = Modifier.weight(1f, fill = false)) {
-                                if (aiMode == AiMode.FACE) {
+                                if (benchReport != null) {
+                                    ScaleTestReportView(benchReport!!)
+                                } else if (aiMode == AiMode.FACE) {
                                     FaceResultTable(jsonResult)
                                 } else {
                                     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -2794,4 +2870,68 @@ private fun generateOCRPayload(
     }
 
     return payload
+}
+
+@Composable
+fun ScaleTestReportView(reportJson: String) {
+    val report = remember(reportJson) { JSONObject(reportJson) }
+    val details = report.getJSONArray("details")
+    val bestScale = report.getString("best_scale")
+    val recommendation = report.getString("recommendation")
+
+    Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+        Text(
+            "ID Card Face Scale Stress Test",
+            style = MaterialTheme.typography.titleMedium,
+            color = Color(0xFF673AB7),
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        
+        // Table Header
+        Row(
+            modifier = Modifier.fillMaxWidth().background(Color(0xFFEEEEEE)).padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Scale", modifier = Modifier.weight(0.8f), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            Text("Prep", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            Text("Status", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            Text("Time", modifier = Modifier.weight(0.8f), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+        }
+
+        for (i in 0 until details.length()) {
+            val item = details.getJSONObject(i)
+            val isSuccess = item.getString("status") == "Success"
+            val scale = item.getString("scale")
+            
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(8.dp).background(if (scale == bestScale && isSuccess) Color(0xFFE8F5E9) else Color.Transparent),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(scale, modifier = Modifier.weight(0.8f), fontSize = 11.sp, fontWeight = if (scale == bestScale && isSuccess) FontWeight.Bold else FontWeight.Normal)
+                Text(item.optString("prep", "-"), modifier = Modifier.weight(1f), fontSize = 11.sp)
+                Text(
+                    item.getString("status"), 
+                    modifier = Modifier.weight(1f), 
+                    fontSize = 11.sp, 
+                    color = if (isSuccess) Color(0xFF2E7D32) else Color.Red,
+                    fontWeight = if (scale == bestScale && isSuccess) FontWeight.Bold else FontWeight.Normal
+                )
+                Text(item.getString("latency"), modifier = Modifier.weight(0.8f), fontSize = 11.sp)
+            }
+            HorizontalDivider(color = Color.LightGray.copy(alpha = 0.3f))
+        }
+
+        Spacer(Modifier.height(16.dp))
+        
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFEDE7F6)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("🏆 Best Scale: $bestScale", fontWeight = FontWeight.Bold, color = Color(0xFF512DA8))
+                Spacer(Modifier.height(4.dp))
+                Text(recommendation, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
 }
