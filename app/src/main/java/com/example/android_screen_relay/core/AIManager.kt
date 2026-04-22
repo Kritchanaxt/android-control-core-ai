@@ -114,16 +114,40 @@ object AIManager {
         activeProcessor?.name?.contains("PaddleOCR", ignoreCase = true) == true
     }
     
+    // Performance metrics
+    private var frameCount = 0
+    private var lastFpsTimestamp = 0L
+    private var currentFps = 0
+    private var lastDetectorTimeMs = 0L
+
+    fun getFPS(): Int = currentFps
+    fun getLastLatency(): Long = lastDetectorTimeMs
+
     /**
      * Thread-safe process call
      */
     fun process(bitmap: Bitmap): AIResult? {
         if (isSwitching) return null
         
+        val start = System.currentTimeMillis()
+        
         // Use read lock to allow multiple detections in parallel but block switching
-        return lock.read {
+        val result = lock.read {
             activeProcessor?.process(bitmap)
         }
+        
+        val end = System.currentTimeMillis()
+        lastDetectorTimeMs = end - start
+        
+        // Update FPS
+        frameCount++
+        if (end - lastFpsTimestamp >= 1000) {
+            currentFps = frameCount
+            frameCount = 0
+            lastFpsTimestamp = end
+        }
+        
+        return result
     }
     
     fun release() {

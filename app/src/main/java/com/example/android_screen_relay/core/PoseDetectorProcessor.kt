@@ -53,6 +53,8 @@ class PoseDetectorProcessor : AIProcessor {
             if (landmarks.isNotEmpty()) {
                 val extra = mutableMapOf<String, Any>()
                 val landmarksJson = JSONObject()
+                val landmarksRaw = mutableMapOf<Int, android.graphics.PointF>()
+                
                 landmarks.forEach { landmark ->
                     val point = JSONObject()
                     point.put("x", landmark.position.x)
@@ -60,8 +62,12 @@ class PoseDetectorProcessor : AIProcessor {
                     point.put("z", landmark.getPosition3D().z)
                     point.put("likelihood", landmark.inFrameLikelihood)
                     landmarksJson.put(landmark.landmarkType.toString(), point)
+                    
+                    // Add raw for UI
+                    landmarksRaw[landmark.landmarkType] = landmark.position
                 }
                 extra["landmarks"] = landmarksJson.toString()
+                extra["landmarks_raw"] = landmarksRaw
                 
                 items.add(
                     AIDetectedItem(
