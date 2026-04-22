@@ -72,6 +72,18 @@ object SystemMonitor {
         }
     }
 
+    fun isLowSpecDevice(context: Context): Boolean {
+        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        actManager.getMemoryInfo(memInfo)
+        
+        // Devices with less than 3GB RAM or <= 4 cores are considered low spec for heavy AI tasks
+        val totalRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+        val cores = Runtime.getRuntime().availableProcessors()
+        
+        return totalRamGb < 3.0 || cores <= 4 || actManager.isLowRamDevice
+    }
+
     fun getDeviceInfo(context: Context): DeviceInfo {
         val statFs = StatFs(Environment.getDataDirectory().path)
         val totalRomBytes = statFs.blockCountLong * statFs.blockSizeLong

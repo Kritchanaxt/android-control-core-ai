@@ -2,6 +2,9 @@ package com.example.android_screen_relay.core
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * Interface for AI Processors to allow switching and lifecycle management
@@ -34,63 +37,105 @@ data class AIDetectedItem(
 )
 
 /**
- * Manager to handle multiple AI models and ensure only one is active or managed properly
+ * Manager to handle multiple AI models and ensure only one is active or managed properly.
+ * Fixed to be thread-safe to prevent crashes when switching models while frames are processing.
  */
 object AIManager {
     private var activeProcessor: AIProcessor? = null
+    private val lock = ReentrantReadWriteLock()
+    
+    // A flag to quickly skip processing during transitions
+    @Volatile
+    private var isSwitching = false
     
     fun switchProcessor(processor: AIProcessor, context: android.content.Context, config: AIConfig): Boolean {
-        // 1. Release old with tracking
-        activeProcessor?.let { old ->
-            SystemMonitor.trackMemoryAction(context, "Release ${old.name}") {
-                old.release()
+        // Use write lock to ensure no one is processing or reading while we switch
+        lock.write {
+            isSwitching = true
+            try {
+                // 1. Release old with tracking
+                activeProcessor?.let { old ->
+                    SystemMonitor.trackMemoryAction(context, "Release ${old.name}") {
+                        old.release()
+                    }
+                    sendPerformanceNotification(context, "Released ${old.name}")
+                }
+                
+                // 2. Clear first to ensure no one uses the stale processor
+                activeProcessor = null
+                
+                // 3. Init new with tracking
+                val newProcessor = SystemMonitor.trackMemoryAction(context, "Init ${processor.name}") {
+                    if (processor.init(context, config)) {
+                        processor
+                    } else {
+                        null
+                    }
+                }
+                
+                activeProcessor = newProcessor
+                
+                activeProcessor?.let {
+                    sendPerformanceNotification(context, "Loaded ${it.name}")
+                }
+                
+                return activeProcessor != null
+            } finally {
+                isSwitching = false
             }
-            sendPerformanceNotification(context, "Released ${old.name}")
         }
-        
-        // 2. Init new with tracking
-        activeProcessor = SystemMonitor.trackMemoryAction(context, "Init ${processor.name}") {
-            if (processor.init(context, config)) {
-                processor
-            } else {
-                null
-            }
-        }
-        
-        activeProcessor?.let {
-            sendPerformanceNotification(context, "Loaded ${it.name}")
-        }
-        
-        return activeProcessor != null
     }
 
     /**
      * Helper to switch processor by name (string)
      */
     fun switchProcessor(context: android.content.Context, modeName: String): Boolean {
-        val config = AIConfig(useGpu = true, threads = 4)
+        val isLowSpec = SystemMonitor.isLowSpecDevice(context)
+        val config = AIConfig(
+            useGpu = !isLowSpec, 
+            threads = if (isLowSpec) 2 else 4,
+            options = mapOf("low_spec_mode" to isLowSpec)
+        )
         val processor: AIProcessor = when {
             modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()
             modeName.contains("PALM", ignoreCase = true) -> PalmprintProcessor()
             modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()
+            modeName.contains("POSE", ignoreCase = true) -> PoseDetectorProcessor()
+            modeName.contains("SELFIE", ignoreCase = true) -> SelfieSegmenterProcessor()
+            modeName.contains("SUBJECT", ignoreCase = true) -> SubjectSegmenterProcessor()
             else -> return false
         }
         return switchProcessor(processor, context, config)
     }
     
-    fun getActiveProcessor(): AIProcessor? = activeProcessor
+    fun getActiveProcessor(): AIProcessor? = lock.read { activeProcessor }
     
-    fun paddleOCRLoaded(): Boolean {
-        return activeProcessor?.name?.contains("PaddleOCR", ignoreCase = true) == true
+    fun paddleOCRLoaded(): Boolean = lock.read {
+        activeProcessor?.name?.contains("PaddleOCR", ignoreCase = true) == true
     }
     
+    /**
+     * Thread-safe process call
+     */
     fun process(bitmap: Bitmap): AIResult? {
-        return activeProcessor?.process(bitmap)
+        if (isSwitching) return null
+        
+        // Use read lock to allow multiple detections in parallel but block switching
+        return lock.read {
+            activeProcessor?.process(bitmap)
+        }
     }
     
     fun release() {
-        activeProcessor?.release()
-        activeProcessor = null
+        lock.write {
+            isSwitching = true
+            try {
+                activeProcessor?.release()
+                activeProcessor = null
+            } finally {
+                isSwitching = false
+            }
+        }
     }
 
     private fun sendPerformanceNotification(context: android.content.Context, message: String) {

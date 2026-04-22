@@ -81,7 +81,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE }
+enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -342,7 +342,7 @@ fun AIScreen() {
                 onAiModeChange = { currentAiMode = it },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
-                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace ->
+                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen false // Return false if CPU is locked or in PREVIEW
 
                     if (currentAiMode == AiMode.PALMPRINT) {
@@ -450,7 +450,7 @@ fun AIScreen() {
                         }
                     }
                 },
-                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace ->
+                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
                     if (isProcessing) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
@@ -981,8 +981,8 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
-    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?) -> Boolean,
-    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?) -> Unit,
+    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Boolean,
+    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
     processingResultMsg: String? = null
@@ -1012,6 +1012,9 @@ fun CameraPreviewScreen(
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
     var previewPalm by remember { mutableStateOf<PalmprintProcessor?>(null) }
     var previewFace by remember { mutableStateOf<FaceDetectorProcessor?>(null) }
+    var previewPose by remember { mutableStateOf<PoseDetectorProcessor?>(null) }
+    var previewSelfie by remember { mutableStateOf<SelfieSegmenterProcessor?>(null) }
+    var previewSubject by remember { mutableStateOf<SubjectSegmenterProcessor?>(null) }
     val computeMode = ComputeModeManager.getMode()
 
     androidx.compose.runtime.DisposableEffect(Unit) {
@@ -1019,6 +1022,9 @@ fun CameraPreviewScreen(
             previewOcr?.release()
             previewPalm?.release()
             previewFace?.release()
+            previewPose?.release()
+            previewSelfie?.release()
+            previewSubject?.release()
         }
     }
 
@@ -1029,23 +1035,42 @@ fun CameraPreviewScreen(
             previewOcr?.release()
             previewPalm?.release()
             previewFace?.release()
+            previewPose?.release()
+            previewSelfie?.release()
+            previewSubject?.release()
             previewOcr = null
             previewPalm = null
             previewFace = null
+            previewPose = null
+            previewSelfie = null
+            previewSubject = null
 
             // Then initialize the active one (Limit cores to 1 or 2 for preview stability)
+            val config = AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2))
             if (aiMode == AiMode.OCR) {
                 val ocr = PaddleOCR()
-                val success = ocr.initModel(context, maxOf(1, computeMode.coreCount - 2), computeMode.useGpu)
+                val success = ocr.initModel(context, config.threads, config.useGpu)
                 if (success) previewOcr = ocr
             } else if (aiMode == AiMode.PALMPRINT) {
                 val palm = PalmprintProcessor()
-                val success = palm.init(context, AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2)))
+                val success = palm.init(context, config)
                 if (success) previewPalm = palm
             } else if (aiMode == AiMode.FACE) {
                 val face = FaceDetectorProcessor()
-                val success = face.init(context, AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2)))
+                val success = face.init(context, config)
                 if (success) previewFace = face
+            } else if (aiMode == AiMode.POSE) {
+                val pose = PoseDetectorProcessor()
+                val success = pose.init(context, config)
+                if (success) previewPose = pose
+            } else if (aiMode == AiMode.SELFIE_SEGMENTATION) {
+                val selfie = SelfieSegmenterProcessor()
+                val success = selfie.init(context, config)
+                if (success) previewSelfie = selfie
+            } else if (aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                val subject = SubjectSegmenterProcessor()
+                val success = subject.init(context, config)
+                if (success) previewSubject = subject
             }
         }
     }
@@ -1055,6 +1080,9 @@ fun CameraPreviewScreen(
     val currentPreviewOcr = androidx.compose.runtime.rememberUpdatedState(previewOcr)
     val currentPreviewPalm = androidx.compose.runtime.rememberUpdatedState(previewPalm)
     val currentPreviewFace = androidx.compose.runtime.rememberUpdatedState(previewFace)
+    val currentPreviewPose = androidx.compose.runtime.rememberUpdatedState(previewPose)
+    val currentPreviewSelfie = androidx.compose.runtime.rememberUpdatedState(previewSelfie)
+    val currentPreviewSubject = androidx.compose.runtime.rememberUpdatedState(previewSubject)
 
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
@@ -1064,7 +1092,10 @@ fun CameraPreviewScreen(
                     bitmap,
                     currentPreviewOcr.value,
                     currentPreviewPalm.value,
-                    currentPreviewFace.value
+                    currentPreviewFace.value,
+                    currentPreviewPose.value,
+                    currentPreviewSelfie.value,
+                    currentPreviewSubject.value
                 )
             }
         }
@@ -1148,7 +1179,10 @@ fun CameraPreviewScreen(
                                 bitmap,
                                 currentPreviewOcr.value,
                                 currentPreviewPalm.value,
-                                currentPreviewFace.value
+                                currentPreviewFace.value,
+                                currentPreviewPose.value,
+                                currentPreviewSelfie.value,
+                                currentPreviewSubject.value
                             )
                         } catch (e: Exception) {
                             false

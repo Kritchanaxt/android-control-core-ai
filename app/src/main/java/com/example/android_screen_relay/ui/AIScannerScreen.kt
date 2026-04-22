@@ -53,7 +53,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 enum class ScanMode {
-    OCR, PALM, FACE
+    OCR, PALM, FACE, POSE, SELFIE, SUBJECT
 }
 
 enum class HandSide {
@@ -99,18 +99,13 @@ fun AIScannerScreen() {
         isAILoading = true
         withContext(Dispatchers.IO) {
             // Memory Optimization for 2GB RAM Devices
-            // 1. Release active model before loading the new one to prevent RAM spike
-            AIManager.release()
-            // 2. Suggest Garbage Collection to free up memory from the previous model
+            // 1. Suggest Garbage Collection to free up memory from the previous model
             System.gc()
             System.runFinalization()
             Thread.sleep(100) // Brief pause to allow OS to reclaim memory
 
-            when (currentMode) {
-                ScanMode.PALM -> AIManager.switchProcessor(PalmprintProcessor(), context, AIConfig(useGpu = useGpu))
-                ScanMode.OCR -> AIManager.switchProcessor(OCRProcessor(), context, AIConfig(useGpu = useGpu))
-                ScanMode.FACE -> AIManager.switchProcessor(FaceDetectorProcessor(), context, AIConfig(useGpu = useGpu))
-            }
+            // 2. Use the helper that already handles low-spec config and releases old model safely
+            AIManager.switchProcessor(context, currentMode.name)
         }
         isAILoading = false
     }
@@ -172,7 +167,7 @@ fun AIScannerScreen() {
             ) {
                 // Mode Toggle
                 SegmentedButtonUI(
-                    options = listOf("OCR", "Palm", "Face"),
+                    options = listOf("OCR", "Palm", "Face", "Pose", "Selfie", "Subj"),
                     selectedIndex = currentMode.ordinal,
                     onSelect = { index ->
                         currentMode = ScanMode.values()[index]
@@ -300,10 +295,11 @@ fun RealtimeCameraPreview(
                             try {
                                 bitmap = image.toBitmap()
                                 rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees)
-                                val processor = AIManager.getActiveProcessor()
+                                
+                                // Thread-safe processing via AIManager
+                                val result = AIManager.process(rotatedBitmap)
 
-                                if (processor != null) {
-                                    val result = processor.process(rotatedBitmap)
+                                if (result != null) {
                                     val detectedItems = result.items
 
                                     var criteriaMet = false
@@ -337,13 +333,25 @@ fun RealtimeCameraPreview(
                                                 put("left_eye_open_prob", face.extra["left_eye_open_prob"])
                                             }.toString()
                                         }
-                                    } else {
-                                        // OCR logic checking
-                                        if (result.success /* Add specific OCR logic if needed */) {
+                                    } else if (mode == ScanMode.POSE || mode == ScanMode.SELFIE || mode == ScanMode.SUBJECT) {
+                                        if (result.success && detectedItems.isNotEmpty()) {
                                             criteriaMet = true
                                             metaStr = JSONObject().apply {
+                                                put("type", mode.name)
                                                 put("detected", true)
-                                                // Add OCR texts here
+                                                put("item_count", detectedItems.size)
+                                            }.toString()
+                                        }
+                                    } else {
+                                        // OCR logic checking
+                                        if (result.success && detectedItems.isNotEmpty()) {
+                                            criteriaMet = true
+                                            metaStr = JSONObject().apply {
+                                                put("type", "OCR")
+                                                put("detected", true)
+                                                val texts = JSONArray()
+                                                detectedItems.forEach { texts.put(it.label) }
+                                                put("text_blocks", texts)
                                             }.toString()
                                         }
                                     }

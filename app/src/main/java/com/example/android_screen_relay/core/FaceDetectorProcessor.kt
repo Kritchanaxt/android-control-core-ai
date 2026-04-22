@@ -14,19 +14,24 @@ class FaceDetectorProcessor : AIProcessor {
     private var detector: FaceDetector? = null
 
     override fun init(context: Context, config: AIConfig): Boolean {
+        val isLowSpec = config.options["low_spec_mode"] as? Boolean ?: false
+        
         return try {
-            val options = FaceDetectorOptions.Builder()
+            val optionsBuilder = FaceDetectorOptions.Builder()
                 .setPerformanceMode(
-                    if (config.useGpu) FaceDetectorOptions.PERFORMANCE_MODE_FAST 
+                    if (isLowSpec) FaceDetectorOptions.PERFORMANCE_MODE_FAST 
                     else FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE
                 )
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
-                .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
-                .enableTracking()
-                .build()
-                
-            detector = FaceDetection.getClient(options)
+            
+            if (!isLowSpec) {
+                // Contours are heavy, disable on low spec for speed
+                optionsBuilder.setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
+            }
+            
+            optionsBuilder.enableTracking()
+            detector = FaceDetection.getClient(optionsBuilder.build())
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -71,17 +76,19 @@ class FaceDetectorProcessor : AIProcessor {
                 
                 val contoursJson = org.json.JSONObject()
                 contourTypes.forEach { (name, type) ->
-                    val contour = face.getContour(type)
-                    if (contour != null) {
-                        val ptsArray = org.json.JSONArray()
-                        contour.points.forEach { p ->
-                            val ptArr = org.json.JSONArray()
-                            ptArr.put(p.x)
-                            ptArr.put(p.y)
-                            ptsArray.put(ptArr)
+                    try {
+                        val contour = face.getContour(type)
+                        if (contour != null) {
+                            val ptsArray = org.json.JSONArray()
+                            contour.points.forEach { p ->
+                                val ptArr = org.json.JSONArray()
+                                ptArr.put(p.x)
+                                ptArr.put(p.y)
+                                ptsArray.put(ptArr)
+                            }
+                            contoursJson.put(name, ptsArray)
                         }
-                        contoursJson.put(name, ptsArray)
-                    }
+                    } catch (e: Exception) {}
                 }
                 
                 // Landmarks fallbacks
