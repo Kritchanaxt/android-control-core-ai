@@ -12,20 +12,17 @@ object ComputeModeManager {
     private var currentMode = ComputeMode.GPU
 
     fun initByDeviceSpec(context: Context) {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-        val memInfo = android.app.ActivityManager.MemoryInfo()
-        am.getMemoryInfo(memInfo)
-        
-        val ramTotalGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
-        
-        // As requested: default globally to GPU
+        // Force GPU mode globally as requested
         currentMode = ComputeMode.GPU
         
         FirebaseLogger.logStep(
             context,
             "AUTO_CONFIG_RESOURCES",
             "SUCCESS",
-            extraData = mapOf("selected_mode" to currentMode.name, "device_ram_gb" to ramTotalGb)
+            extraData = mapOf(
+                "selected_mode" to currentMode.name,
+                "forced_gpu" to true
+            )
         )
     }
 

@@ -478,38 +478,53 @@ JNIEXPORT jstring JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR
 // public native Obj[] detectNative(Bitmap bitmap, boolean use_gpu);
 JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_core_PaddleOCR_detectNative(JNIEnv* env, jobject thiz, jobject bitmap, jboolean use_gpu)
 {
-    __android_log_print(ANDROID_LOG_INFO, "PaddleOCR", "Running inference: DBNet threads=%d, Vulkan=%s", dbNet.opt.num_threads, dbNet.opt.use_vulkan_compute ? "true" : "false");
+    if (bitmap == NULL) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: Bitmap is NULL");
+        return NULL;
+    }
 
     if (!rec_session || !ort_env) {
         __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "OCR models are not initialized!");
         return NULL;
     }
 
-    if (use_gpu == JNI_TRUE && ncnn::get_gpu_count() == 0)
-    {
+    AndroidBitmapInfo info;
+    if (AndroidBitmap_getInfo(env, bitmap, &info) < 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: Failed to get bitmap info");
         return NULL;
-        //return env->NewStringUTF("no vulkan capable gpu");
     }
 
-    AndroidBitmapInfo info;
-    AndroidBitmap_getInfo(env, bitmap, &info);
-    const int width = info.width;
-    const int height = info.height;
-    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888)
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: Invalid bitmap format (expected RGBA_8888)");
         return NULL;
+    }
 
     ncnn::Mat in = ncnn::Mat::from_android_bitmap(env, bitmap, ncnn::Mat::PIXEL_RGB);
+    if (in.empty()) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: ncnn::Mat from_android_bitmap failed (empty)");
+        return NULL;
+    }
 
-    cv::Mat rgb = cv::Mat::zeros(in.h,in.w,CV_8UC3);
+    cv::Mat rgb = cv::Mat::zeros(in.h, in.w, CV_8UC3);
     in.to_pixels(rgb.data, ncnn::Mat::PIXEL_RGB);
 
+    if (rgb.empty()) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: cv::Mat conversion failed (empty)");
+        return NULL;
+    }
+
     std::vector<TextBox> objects; 
-    objects = getTextBoxes(rgb, 0.4, 0.3, 2.0);
+    try {
+        objects = getTextBoxes(rgb, 0.4, 0.3, 2.0);
+    } catch (const std::exception& e) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "getTextBoxes failed: %s", e.what());
+        return NULL;
+    }
 
     std::vector<cv::Mat> partImages = getPartImages(rgb, objects);
     std::vector<TextLine> textLines = getTextLines(partImages);
 
-    if(textLines.size() > 0)
+    if(textLines.size() > 0 && objects.size() == textLines.size())
     {
         for(int i = 0; i < textLines.size(); i++) {
             objects[i].text = textLines[i].text;
@@ -526,30 +541,28 @@ JNIEXPORT jobjectArray JNICALL Java_com_example_android_1screen_1relay_core_Padd
             }
         }
     }
-    // objects to Obj[]
+
+    if (!objCls) {
+        __android_log_print(ANDROID_LOG_ERROR, "PaddleOCR", "detectNative: objCls is NULL");
+        return NULL;
+    }
+
     jobjectArray jObjArray = env->NewObjectArray(objects.size(), objCls, NULL);
+    if (!jObjArray) return NULL;
 
     for (size_t i=0; i<objects.size(); i++)
     {
         jobject jObj = env->NewObject(objCls, constructortorId, thiz);
+        if (!jObj) continue;
 
-        float x0 = objects[i].boxPoint[0].x;
-        float y0 = objects[i].boxPoint[0].y;
-        float x1 = objects[i].boxPoint[1].x;
-        float y1 = objects[i].boxPoint[1].y;
-        float x2 = objects[i].boxPoint[2].x;
-        float y2 = objects[i].boxPoint[2].y;
-        float x3 = objects[i].boxPoint[3].x;
-        float y3 = objects[i].boxPoint[3].y;
-
-        env->SetFloatField(jObj, x0Id, x0);
-        env->SetFloatField(jObj, y0Id, y0);
-        env->SetFloatField(jObj, x1Id, x1);
-        env->SetFloatField(jObj, y1Id, y1);
-        env->SetFloatField(jObj, x2Id, x2);
-        env->SetFloatField(jObj, y2Id, y2);
-        env->SetFloatField(jObj, x3Id, x3);
-        env->SetFloatField(jObj, y3Id, y3);
+        env->SetFloatField(jObj, x0Id, objects[i].boxPoint[0].x);
+        env->SetFloatField(jObj, y0Id, objects[i].boxPoint[0].y);
+        env->SetFloatField(jObj, x1Id, objects[i].boxPoint[1].x);
+        env->SetFloatField(jObj, y1Id, objects[i].boxPoint[1].y);
+        env->SetFloatField(jObj, x2Id, objects[i].boxPoint[2].x);
+        env->SetFloatField(jObj, y2Id, objects[i].boxPoint[2].y);
+        env->SetFloatField(jObj, x3Id, objects[i].boxPoint[3].x);
+        env->SetFloatField(jObj, y3Id, objects[i].boxPoint[3].y);
         
         jstring jLabel = env->NewStringUTF(objects[i].text.c_str());
         env->SetObjectField(jObj, labelId, jLabel);

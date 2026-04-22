@@ -92,9 +92,9 @@ object AIManager {
     fun switchProcessor(context: android.content.Context, modeName: String): Boolean {
         val isLowSpec = SystemMonitor.isLowSpecDevice(context)
         val config = AIConfig(
-            useGpu = !isLowSpec, 
-            threads = if (isLowSpec) 2 else 4,
-            options = mapOf("low_spec_mode" to isLowSpec)
+            useGpu = true, // Force GPU as requested
+            threads = if (isLowSpec) 4 else 6, // Increase threads even on low spec if GPU fails
+            options = mapOf("low_spec_mode" to isLowSpec, "force_gpu" to true)
         )
         val processor: AIProcessor = when {
             modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()

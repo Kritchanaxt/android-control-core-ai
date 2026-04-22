@@ -10,6 +10,8 @@ import org.json.JSONObject
 class PaddleOCR {
     companion object {
         private val lock = Any()
+        @Volatile
+        private var isNativeInitialized = false
 
         init {
             System.loadLibrary("paddleocrncnn")
@@ -31,7 +33,7 @@ class PaddleOCR {
         var prob: Float = 0f
     }
 
-    external fun init(assetManager: AssetManager, coreCount: Int, useGpu: Boolean): Boolean
+    external fun init(assetManager: android.content.res.AssetManager, coreCount: Int, useGpu: Boolean): Boolean
     private external fun detectNative(bitmap: Bitmap, use_gpu: Boolean): Array<Obj>
     private external fun releaseNative()
 
@@ -40,7 +42,10 @@ class PaddleOCR {
             try {
                 executor?.shutdown()
                 executor = null
-                releaseNative()
+                if (isNativeInitialized) {
+                    releaseNative()
+                    isNativeInitialized = false
+                }
             } catch (e: Exception) {
                 Log.e("PaddleOCR", "Error releasing model", e)
             }
@@ -121,13 +126,23 @@ class PaddleOCR {
             try {
                 if (executor == null || executor!!.isShutdown) {
                     executor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
-                        Thread(null, r, "OCR-Inference", 4L * 1024 * 1024)
+                        Thread(null, r, "OCR-Inference", 8L * 1024 * 1024)
                     }
                 }
-                // Force useGpu = true to guarantee correct spacing on Thai OCR as discussed
-                init(context.assets, coreCount, true)
+                
+                if (isNativeInitialized) {
+                    // Safe re-init: release first since native state is global
+                    releaseNative()
+                    isNativeInitialized = false
+                }
+                
+                Log.i("PaddleOCR", "FORCING GPU MODE: $useGpu, Cores: $coreCount")
+                // Use the provided useGpu parameter
+                isNativeInitialized = init(context.assets, coreCount, useGpu)
+                return isNativeInitialized
             } catch (e: Exception) {
                 Log.e("PaddleOCR", "Error initializing model", e)
+                isNativeInitialized = false
                 false
             }
         }
