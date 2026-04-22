@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.ClipOp
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -1205,26 +1206,31 @@ fun CameraPreviewScreen(
             }
 
             // Container for Preview + Overlay that respects Aspect Ratio
-            val ratioVal = selectedAspectRatio.value
+            val ratioVal = if (selectedResolution != null && selectedResolution!!.width == selectedResolution!!.height) {
+                1.0f
+            } else {
+                selectedAspectRatio.value
+            }
 
             Box(
-                // If FULL (null), use fillMaxSize, else use aspectRatio
-                modifier = (if (ratioVal != null) Modifier.aspectRatio(ratioVal) else Modifier.fillMaxSize()).align(
-                    Alignment.Center
-                )
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .let { if (ratioVal != null) it.aspectRatio(ratioVal) else it.fillMaxHeight() }
+                    .align(Alignment.Center)
+                    .clip(RectangleShape) // 🌟 บังคับตัดส่วนเกินที่อาจโผล่ออกมา
+                    .background(Color.Black)
             ) {
                 // TextureView for Camera2
                 AndroidView(
                     factory = { ctx ->
                         TextureView(ctx).apply {
-                            // Keep reference? Controller needs it.
+                            // Controller needs it
                         }
                     },
-                    modifier = Modifier.fillMaxSize(), // Fill the AspectRatio Box
+                    modifier = Modifier.fillMaxSize(),
                     update = { tv ->
                         if (cameraController != null) {
                             try {
-                                // Make sure we pass the correct ratio/resolution
                                 cameraController?.aspectRatio = selectedAspectRatio
                                 cameraController?.openCamera(tv, selectedCameraId, selectedResolution)
                             } catch (e: Exception) {

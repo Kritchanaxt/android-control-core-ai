@@ -132,7 +132,7 @@ class Camera2Controller(
                     openCameraDevice(cameraId)
                 }
                 override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                    // Ideally configure transform here
+                    configureTransform(width, height)
                 }
                 override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
                 override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
@@ -163,18 +163,26 @@ class Camera2Controller(
             Log.d(TAG, "Max sensor processing size: $maxSensorProcessingSize. Is Front Camera: $isFrontCamera")
 
             // Determine efficient capture size
-            val validResolutions = getResolutionsForAspectRatio(aspectRatio)
-            
-            // If desiredResolution is provided, we must check if the camera supports it as JPEG.
-            // If it's a TextureView size but NOT in JPEG sizes, we map it to the closest larger JPEG size to avoid crash (OOM scaling prevention)
             val finalCaptureSize = if (targetResolution != null) {
-                 if (availableJpegSizes.contains(targetResolution)) {
-                     targetResolution!!
-                 } else {
-                     val targetArea = targetResolution!!.width * targetResolution!!.height
-                     availableJpegSizes.lastOrNull { it.width * it.height >= targetArea } ?: availableJpegSizes.lastOrNull() ?: targetResolution!!
-                 }
+                if (availableJpegSizes.contains(targetResolution)) {
+                    targetResolution!!
+                } else {
+                    val targetArea = targetResolution!!.width * targetResolution!!.height
+                    val targetRatio = targetResolution!!.width.toFloat() / targetResolution!!.height.toFloat()
+                    
+                    // 🌟 ปรับปรุงการเลือกขนาด: ค้นหาขนาดที่ "สูญเสียพื้นที่จากการ Crop น้อยที่สุด"
+                    // โดยคำนวณจากความต่างของ Aspect Ratio ร่วมกับ Area
+                    availableJpegSizes.minByOrNull { size ->
+                        val ratio = size.width.toFloat() / size.height.toFloat()
+                        val ratioDiff = Math.abs(ratio - targetRatio)
+                        val area = size.width * size.height
+                        
+                        // ให้คะแนนความสำคัญกับ Ratio ก่อน (เพื่อให้ได้มุมกว้าง) แล้วค่อยตามด้วย Area (เพื่อให้ชัดพอ)
+                        if (area >= targetArea) ratioDiff else ratioDiff + 100f
+                    } ?: availableJpegSizes.last()
+                }
             } else {
+                 val validResolutions = getResolutionsForAspectRatio(aspectRatio)
                  validResolutions.mapNotNull { it.size }.minByOrNull { it.width * it.height } ?: availableJpegSizes.last()
             }
             
@@ -376,29 +384,68 @@ class Camera2Controller(
 
     private fun getOptimalPreviewSize(sizes: Array<Size>, targetSize: Size): Size {
         val targetRatio = targetSize.width.toDouble() / targetSize.height.toDouble()
-        // Find sizes with similar aspect ratio
-        val tolerance = 0.1
-        val ratioMatched = sizes.filter { 
-            val ratio = it.width.toDouble() / it.height.toDouble() 
-            kotlin.math.abs(ratio - targetRatio) < tolerance 
+        
+        // 1. Find sizes that match aspect ratio exactly or closely
+        val tolerance = 0.01
+        val matchedAspect = sizes.filter {
+            val ratio = it.width.toDouble() / it.height.toDouble()
+            Math.abs(ratio - targetRatio) < tolerance
         }
-        
-        // Pick the largest one that is not bigger than 1920x1080 (to avoid lag) but close to target
-        // Or just pick the one closest to targetSize if it's small enough
-        // Ideally we want 1080p preview max.
-        
-        return ratioMatched.filter { it.width <= 1920 && it.height <= 1080 }
-            .maxByOrNull { it.width * it.height }
-            ?: ratioMatched.maxByOrNull { it.width * it.height }
-            ?: sizes[0]
+
+        if (matchedAspect.isNotEmpty()) {
+            // Pick largest size that doesn't exceed 1080p for preview performance
+            return matchedAspect.filter { it.width <= 1920 && it.height <= 1080 }
+                .maxByOrNull { it.width * it.height }
+                ?: matchedAspect.maxByOrNull { it.width * it.height }!!
+        }
+
+        // 2. If no exact ratio match, find one closest to the ratio
+        return sizes.minByOrNull { 
+            val ratio = it.width.toDouble() / it.height.toDouble()
+            Math.abs(ratio - targetRatio)
+        } ?: sizes[0]
     }
 
+
+    private fun configureTransform(viewWidth: Int, viewHeight: Int) {
+        val textureView = this.textureView ?: return
+        val previewSize = this.previewSize ?: return
+        val rotation = (context as? android.app.Activity)?.windowManager?.defaultDisplay?.rotation ?: 0
+        val matrix = android.graphics.Matrix()
+        val viewRect = android.graphics.RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+        val bufferRect = android.graphics.RectF(0f, 0f, previewSize.height.toFloat(), previewSize.width.toFloat())
+        val centerX = viewRect.centerX()
+        val centerY = viewRect.centerY()
+
+        if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
+            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+            matrix.setRectToRect(viewRect, bufferRect, android.graphics.Matrix.ScaleToFit.FILL)
+            val scale = max(
+                viewHeight.toFloat() / previewSize.height,
+                viewWidth.toFloat() / previewSize.width
+            )
+            matrix.postScale(scale, scale, centerX, centerY)
+            matrix.postRotate((90 * (rotation - 2)).toFloat(), centerX, centerY)
+        } else if (Surface.ROTATION_180 == rotation) {
+            matrix.postRotate(180f, centerX, centerY)
+        } else {
+            // Surface.ROTATION_0 - Handle 1:1 and other ratios to prevent stretching
+            val scaleX = viewWidth.toFloat() / previewSize.height
+            val scaleY = viewHeight.toFloat() / previewSize.width
+            
+            // If it's a square view (1:1), we want to scale to fit center (Crop)
+            val scale = max(scaleX, scaleY)
+            matrix.postScale(scale / scaleX, scale / scaleY, centerX, centerY)
+        }
+        textureView.setTransform(matrix)
+    }
 
     private fun createCameraPreviewSession() {
         try {
             val texture = textureView!!.surfaceTexture!!
             // We configure the size of default buffer to be the size of camera preview we want.
             texture.setDefaultBufferSize(previewSize!!.width, previewSize!!.height)
+            configureTransform(textureView!!.width, textureView!!.height)
 
             val surface = Surface(texture)
             val imageSurface = imageReader!!.surface
