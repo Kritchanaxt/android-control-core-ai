@@ -1386,6 +1386,29 @@ fun CameraPreviewScreen(
                         typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
 
+                    if (aiMode == AiMode.OCR) {
+                        // Main ID card border (Landscape)
+                        val rect = android.graphics.RectF(left, top, right, bottom)
+                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
+
+                        // Top Text
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                        val topText =
+                            if (stableTime >= 250L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
+                        val topTextWidth = textPaint.measureText(topText)
+                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+
+                        // Bottom Text
+                        drawContext.canvas.nativeCanvas.save()
+                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, bottom + 80f)
+                        val bottomText = "สแกนบัตรประชาชนด้านหน้า"
+                        val bottomTextWidth = textPaint.measureText(bottomText)
+                        drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
+                        drawContext.canvas.nativeCanvas.restore()
+                    }
+
                     // Dynamic Bounding Boxes from latestDetections
                     val boxScaleX = if (bitmapWidth > 0) size.width / bitmapWidth else 1f
                     val boxScaleY = if (bitmapHeight > 0) size.height / bitmapHeight else 1f
