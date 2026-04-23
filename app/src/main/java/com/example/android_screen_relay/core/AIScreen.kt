@@ -123,6 +123,7 @@ fun AIScreen() {
     
     var zoomScale by remember { mutableStateOf(1.0f) }
     val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
+    var useCropMode by remember { mutableStateOf(false) }
 
     // Models will be lazy-loaded on demand now
     DisposableEffect(Unit) {
@@ -369,6 +370,8 @@ fun AIScreen() {
                 onTargetHandChange = { targetHand = it },
                 zoomScale = zoomScale,
                 onZoomScaleChange = { zoomScale = it },
+                useCropMode = useCropMode,
+                onUseCropModeChange = { useCropMode = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
 
@@ -1062,6 +1065,8 @@ fun CameraPreviewScreen(
     onTargetHandChange: (String) -> Unit,
     zoomScale: Float,
     onZoomScaleChange: (Float) -> Unit,
+    useCropMode: Boolean,
+    onUseCropModeChange: (Boolean) -> Unit,
     onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Pair<Boolean, List<AIDetectedItem>>,
     onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Unit,
     onGalleryClick: () -> Unit,
@@ -1289,12 +1294,38 @@ fun CameraPreviewScreen(
                     }
                     if (rawBitmap != null) {
                         // 🌟 FIX: Scale bitmap to target resolution if it doesn't match
-                        val bitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
+                        val baseBitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
                             Bitmap.createScaledBitmap(rawBitmap, selectedResolution!!.width, selectedResolution!!.height, true).also {
                                 rawBitmap.recycle()
                             }
                         } else {
                             rawBitmap
+                        }
+
+                        // 🌟 CROP MODE: If enabled, crop to the centered frame area
+                        val bitmap = if (useCropMode) {
+                            val cw = baseBitmap.width.toFloat()
+                            val ch = baseBitmap.height.toFloat()
+                            val frameW = if (aiMode == AiMode.OCR) {
+                                val maxW = cw * 0.9f
+                                val idealH = ch * 0.6f
+                                if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
+                            } else if (aiMode == AiMode.FACE) {
+                                min(cw, ch) * 0.8f
+                            } else {
+                                min(cw, ch) * 0.6f
+                            }
+                            val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
+                            val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
+                            val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
+                            val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
+                            val height = frameH.toInt().coerceAtMost(baseBitmap.height - top)
+                            
+                            val cropped = Bitmap.createBitmap(baseBitmap, left, top, width, height)
+                            if (baseBitmap !== rawBitmap) baseBitmap.recycle()
+                            cropped
+                        } else {
+                            baseBitmap
                         }
 
                         val now = System.currentTimeMillis()
@@ -1536,7 +1567,7 @@ fun CameraPreviewScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopEnd)
-                    .padding(top = 0.dp, end = 12.dp, bottom = 8.dp, start = 8.dp),
+                    .padding(top = 10.dp, end = 12.dp, bottom = 8.dp, start = 8.dp),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1590,62 +1621,106 @@ fun CameraPreviewScreen(
                 }
             }
 
-            // Bottom Bar Overlay
+            // Bottom Bar Overlay (Floating Design)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.7f))
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp) // ชิดล่างมากขึ้น
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(32.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(32.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Auto-Snap Indicator (Left side)
-                Box(contentAlignment = Alignment.Center) {
+                // Auto-Snap Indicator
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 4.dp)
+                ) {
                     if (isCapturing) {
                         CircularProgressIndicator(
-                            color = Color.White,
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(24.dp)
+                            color = Color(0xFF007AFF),
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(16.dp)
                         )
                     } else {
+                        // Green if detecting/stabilizing, Gray if not (based on current logic it's always running in this screen)
+                        // But we'll use stableTime > 0 or a similar signal to show "activity"
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    if (stableTime > 0) Color.Yellow 
+                                    else if (!isProcessingBusy) Color.Green 
+                                    else Color.Gray, 
+                                    CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            "Auto-Snap\n" + if (aiMode == AiMode.PALMPRINT) targetHand else "Enabled",
+                            "AUTO-SNAP",
                             color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.5.sp
                         )
                     }
                 }
 
-                // Tools Group (Right side)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // AI Mode Selector
+                Surface(
+                    onClick = { showAiModeSheet = true },
+                    color = Color.White.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.height(36.dp)
                 ) {
-                    // AI Mode Selector (Trigger Bottom Sheet)
-                    Button(
-                        onClick = { showAiModeSheet = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White.copy(alpha = 0.2f),
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(24.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                        modifier = Modifier.height(40.dp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         val displayName = when (aiMode) {
-                            AiMode.OCR -> "PaddleOCRv5"
-                            AiMode.PALMPRINT -> "MediaPipe - Hand landmarks detection"
-                            AiMode.FACE -> "ML Kit - Face detection"
-                            AiMode.POSE -> "ML Kit - Pose detection"
-                            AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
-                            AiMode.SUBJECT_SEGMENTATION -> "ML Kit - Subject Segmentation"
-                            AiMode.OBJECT_DETECTION -> "ML Kit - Object detection"
+                            AiMode.OCR -> "PaddleOCR"
+                            AiMode.PALMPRINT -> "Hand Detect"
+                            AiMode.FACE -> "Face Detect"
+                            AiMode.POSE -> "Pose Detect"
+                            AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
+                            AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
+                            AiMode.OBJECT_DETECTION -> "Object Detect"
                             else -> aiMode.name
                         }
-                        Text(text = displayName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text(
+                            text = displayName,
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp
+                        )
+                        Icon(
+                            Icons.Default.KeyboardArrowUp,
+                            null,
+                            tint = Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
+                // Full/Crop Toggle
+                Surface(
+                    onClick = { onUseCropModeChange(!useCropMode) },
+                    color = if (useCropMode) Color(0xFF007AFF) else Color.White.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (useCropMode) "CROP" else "FULL",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
                     }
                 }
             }

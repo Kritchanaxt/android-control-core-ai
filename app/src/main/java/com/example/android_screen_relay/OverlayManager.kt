@@ -28,17 +28,26 @@ class OverlayManager(private val context: Context) {
     fun showOverlay() {
         if (overlayView != null) return
 
-        // Plain Text Monitor: Background is transparent
+        // Wrapper to handle layout properly
+        val wrapper = android.widget.FrameLayout(context)
+        
+        // Inner container with the background
         val root = android.widget.LinearLayout(context).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(16, 4, 16, 4)
+            setPadding(12, 8, 12, 8)
             gravity = Gravity.START
             
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                setColor(Color.TRANSPARENT) // Transparent background
+                setColor(Color.parseColor("#99000000")) // 60% Alpha Black
+                cornerRadius = 24f
             }
         }
+        
+        wrapper.addView(root, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+        ))
 
         // New Stats Lines
         tvInputSize = createStatTextView()
@@ -81,8 +90,8 @@ class OverlayManager(private val context: Context) {
         }
 
         try {
-            windowManager.addView(root, params)
-            overlayView = root
+            windowManager.addView(wrapper, params)
+            overlayView = wrapper
         } catch (e: Exception) {
             android.util.Log.e("OverlayManager", "Failed to add overlay", e)
         }
@@ -112,24 +121,24 @@ class OverlayManager(private val context: Context) {
     ) {
         val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
         uiHandler.post {
-            // Updated format based on user request
+            // Updated format to be more compact
             if (inputSize != null) tvInputSize?.text = "InputImage size: $inputSize"
             
             if (fps != null && frameLatency != null) {
-                tvFps?.text = "FPS: $fps, Frame latency: $frameLatency ms"
+                tvFps?.text = "FPS: $fps | Frame latency: ${frameLatency}ms"
             } else if (fps != null) {
                 tvFps?.text = "FPS: $fps"
             }
             
             if (detectorLatency != null) {
-                tvLatencies?.text = "Detector latency: $detectorLatency ms"
+                tvLatencies?.text = "Detector latency: ${detectorLatency}ms"
             }
             
-            tvRam?.text = "RAM: $ramUsed / $ramTotal MB"
+            tvRam?.text = "RAM: $ramUsed/$ramTotal MB"
             tvCpu?.text = "CPU: $cpu"
             
             if (status != null && status.isNotEmpty()) {
-                tvStatus?.text = "Status snap: $status"
+                tvStatus?.text = "Status: $status"
                 // Keep the color logic for status dot if it was still there (though we removed the dot, 
                 // we might want to color the text instead or just keep it simple)
                 if (status.contains("success", ignoreCase = true)) {
