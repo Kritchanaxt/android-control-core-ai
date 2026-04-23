@@ -1541,7 +1541,7 @@ fun CameraPreviewScreen(
                     ) {
                         val displayName = when (aiMode) {
                             AiMode.OCR -> "PaddleOCRv5"
-                            AiMode.PALMPRINT -> "Hand landmarks detection"
+                            AiMode.PALMPRINT -> "MediaPipe - Hand landmarks detection"
                             AiMode.FACE -> "ML Kit - Face detection"
                             AiMode.POSE -> "ML Kit - Pose detection"
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
@@ -1789,7 +1789,7 @@ fun CameraPreviewScreen(
                 AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
                     val label = when (mode) {
                         AiMode.OCR -> "PaddleOCRv5"
-                        AiMode.PALMPRINT -> "Hand landmarks detection"
+                        AiMode.PALMPRINT -> "MediaPipe - Hand landmarks detection"
                         AiMode.FACE -> "ML Kit - Face detection"
                         AiMode.POSE -> "ML Kit - Pose detection"
                         AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
