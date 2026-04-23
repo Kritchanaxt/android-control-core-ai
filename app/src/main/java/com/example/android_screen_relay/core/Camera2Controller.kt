@@ -57,11 +57,57 @@ class Camera2Controller(
     // Configurable Settings
     var targetResolution: Size? = null
     var aspectRatio: UiAspectRatio = UiAspectRatio.RATIO_1_1
+    var zoomScale: Float = 1.0f
 
     // Logic from OutputSettingsDialogFragment
     private var maxSensorProcessingSize: Size = Size(1920, 1080)
     private var isFrontCamera: Boolean = false
     private var isFlashEnabled: Boolean = false
+
+    fun setZoom(scale: Float) {
+        zoomScale = scale
+        applyZoom()
+    }
+
+    private fun applyZoom() {
+        try {
+            val session = captureSession ?: return
+            val device = cameraDevice ?: return
+            val charas = characteristics ?: return
+            
+            val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+            val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+            
+            val centerX = rect.centerX()
+            val centerY = rect.centerY()
+            val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
+            val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
+            
+            val cropRect = android.graphics.Rect(
+                centerX - deltaX,
+                centerY - deltaY,
+                centerX + deltaX,
+                centerY + deltaY
+            )
+            
+            val captureRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            captureRequestBuilder.addTarget(textureView!!.surfaceTexture!!.let { Surface(it) })
+            captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
+            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            
+            if (isFlashEnabled && !isFrontCamera) {
+                val flashAvailable = charas.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                if (flashAvailable) {
+                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+            }
+            
+            session.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply zoom", e)
+        }
+    }
 
     fun setFlashMode(enable: Boolean) {
         if (isFlashEnabled == enable) return
@@ -456,6 +502,21 @@ class Camera2Controller(
             val captureRequestBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             captureRequestBuilder.addTarget(surface)
 
+            // Apply Zoom if set
+            val charas = characteristics
+            if (charas != null) {
+                val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                if (rect != null) {
+                    val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+                    val centerX = rect.centerX()
+                    val centerY = rect.centerY()
+                    val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
+                    val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
+                    val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
+                    captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
+                }
+            }
+
             cameraDevice!!.createCaptureSession(
                 listOf(surface, imageSurface),
                 object : CameraCaptureSession.StateCallback() {
@@ -508,6 +569,21 @@ class Camera2Controller(
                 captureRequestBuilder.addTarget(Surface(st))
                 captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 
+                // Apply Zoom if set
+                val charas = characteristics
+                if (charas != null) {
+                    val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                    if (rect != null) {
+                        val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+                        val centerX = rect.centerX()
+                        val centerY = rect.centerY()
+                        val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
+                        val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
+                        val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
+                        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
+                    }
+                }
+
                 if (isFlashEnabled && !isFrontCamera) {
                     val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                     if (flashAvailable) {
@@ -537,6 +613,21 @@ class Camera2Controller(
             captureBuilder.addTarget(imageReader!!.surface)
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             
+            // Apply Zoom if set
+            val charas = characteristics
+            if (charas != null) {
+                val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                if (rect != null) {
+                    val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+                    val centerX = rect.centerX()
+                    val centerY = rect.centerY()
+                    val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
+                    val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
+                    val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
+                    captureBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
+                }
+            }
+
             if (isFlashEnabled && !isFrontCamera) {
                 val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                 if (flashAvailable) {

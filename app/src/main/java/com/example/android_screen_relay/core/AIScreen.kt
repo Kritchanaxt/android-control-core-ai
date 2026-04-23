@@ -367,6 +367,8 @@ fun AIScreen() {
                 onAiModeChange = { currentAiMode = it },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
+                zoomScale = zoomScale,
+                onZoomScaleChange = { zoomScale = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
 
@@ -1058,6 +1060,8 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
+    zoomScale: Float,
+    onZoomScaleChange: (Float) -> Unit,
     onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Pair<Boolean, List<AIDetectedItem>>,
     onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Unit,
     onGalleryClick: () -> Unit,
@@ -1245,6 +1249,10 @@ fun CameraPreviewScreen(
         }
 
         cameraController?.aspectRatio = selectedAspectRatio
+    }
+
+    LaunchedEffect(zoomScale) {
+        cameraController?.setZoom(zoomScale)
     }
 
     LaunchedEffect(isPreviewPaused, isProcessingBusy) {
@@ -1523,6 +1531,65 @@ fun CameraPreviewScreen(
                 }
             }
 
+            // Top Controls (Settings, Scale)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopEnd)
+                    .padding(top = 0.dp, end = 12.dp, bottom = 8.dp, start = 8.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Scale Dropdown
+                var showScaleMenu by remember { mutableStateOf(false) }
+                Box {
+                    Button(
+                        onClick = { showScaleMenu = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White.copy(alpha = 0.2f),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Text("${zoomScale}x", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.ArrowDropDown, null, modifier = Modifier.size(18.dp))
+                    }
+                    DropdownMenu(
+                        expanded = showScaleMenu,
+                        onDismissRequest = { showScaleMenu = false }
+                    ) {
+                        listOf(1.0f, 1.2f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f).forEach { scale ->
+                            DropdownMenuItem(
+                                text = { Text("${scale}x") },
+                                onClick = {
+                                    onZoomScaleChange(scale)
+                                    showScaleMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Settings Button
+                IconButton(
+                    onClick = { showSettingsDialog = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
             // Bottom Bar Overlay
             Row(
                 modifier = Modifier
@@ -1579,19 +1646,6 @@ fun CameraPreviewScreen(
                             else -> aiMode.name
                         }
                         Text(text = displayName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-
-                    // Settings Button
-                    IconButton(
-                        onClick = { showSettingsDialog = true },
-                        modifier = Modifier.size(40.dp).background(Color.White.copy(alpha = 0.2f), CircleShape)
-                    ) {
-                        Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "Settings",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
                     }
                 }
             }
