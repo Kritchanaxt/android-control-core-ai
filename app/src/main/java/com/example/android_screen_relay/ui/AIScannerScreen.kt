@@ -250,6 +250,70 @@ fun RealtimeCameraPreview(
     var previewHeight by remember { mutableStateOf(1280) }
 
     val executor = remember { Executors.newSingleThreadExecutor() }
+    val isLowSpecDevice = remember { SystemMonitor.isLowSpecDevice(context) }
+
+    // FrameProcessingRunnable สำหรับเครื่องทั่วไป (จำลองตาม mlkit/vision-quickstart)
+    val frameProcessingRunnable = remember(mode, targetHand) {
+        FrameProcessingRunnable { rotatedBitmap ->
+            try {
+                val result = AIManager.process(rotatedBitmap)
+                if (result != null) {
+                    latestDetections = result.items
+                    var criteriaMet = false
+                    var metaStr = "{}"
+
+                    if (mode == ScanMode.PALM) {
+                        val handMatch = result.items.find { item ->
+                            val sideStr = item.extra["side"] as? String ?: ""
+                            targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase = true)
+                        }
+                        if (handMatch != null && result.success) {
+                            criteriaMet = true
+                            metaStr = JSONObject().apply {
+                                put("detected", true)
+                                put("side", handMatch.extra["side"])
+                            }.toString()
+                        }
+                    } else if (mode != ScanMode.OCR) {
+                        if (result.success && result.items.isNotEmpty()) {
+                            criteriaMet = true
+                            metaStr = JSONObject().apply {
+                                put("type", mode.name)
+                                put("count", result.items.size)
+                            }.toString()
+                        }
+                    }
+
+                    if (criteriaMet) {
+                        val count = consecutiveDetections.incrementAndGet()
+                        onDetected(true, metaStr)
+                        if (count > 8) {
+                            consecutiveDetections.set(-9999)
+                            // Copy before the runnable recycles it
+                            val snap = rotatedBitmap.copy(rotatedBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+                            onSnap(snap)
+                        }
+                    } else {
+                        consecutiveDetections.set(0)
+                        onDetected(false, "")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("CameraX", "Analyze error in Runnable", e)
+            }
+        }
+    }
+
+    androidx.compose.runtime.DisposableEffect(frameProcessingRunnable) {
+        val thread = Thread(frameProcessingRunnable, "FrameProcessingThread")
+        if (!isLowSpecDevice) {
+            thread.start()
+        }
+        onDispose {
+            frameProcessingRunnable.release()
+            thread.interrupt()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
@@ -276,14 +340,24 @@ fun RealtimeCameraPreview(
                                 previewHeight = image.height
                                 
                                 val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastProcessTime < 80) { // Max ~12 FPS for UI stability
-                                    image.close()
-                                    return@setAnalyzer
-                                }
 
-                                if (!isProcessingFrame.compareAndSet(false, true)) {
-                                    image.close()
-                                    return@setAnalyzer
+                                if (isLowSpecDevice) {
+                                    // โหมด Low-Spec: บังคับจำกัด FPS และรอให้ประมวลผลเสร็จทีละเฟรม
+                                    if (currentTime - lastProcessTime < 80) { // Max ~12 FPS
+                                        image.close()
+                                        return@setAnalyzer
+                                    }
+
+                                    if (!isProcessingFrame.compareAndSet(false, true)) {
+                                        image.close()
+                                        return@setAnalyzer
+                                    }
+                                } else {
+                                    // โหมดเครื่องทั่วไป: โยนเข้า FrameProcessingRunnable ให้ทำงานอิสระตามรอบกล้อง
+                                    if (currentTime - lastProcessTime < 30) { // Max ~30 FPS limit
+                                        image.close()
+                                        return@setAnalyzer
+                                    }
                                 }
 
                                 lastProcessTime = currentTime
@@ -293,56 +367,69 @@ fun RealtimeCameraPreview(
                                     bitmap = image.toBitmap()
                                     rotatedBitmap = rotateBitmap(bitmap, image.imageInfo.rotationDegrees)
                                     
-                                    val result = AIManager.process(rotatedBitmap)
-                                    if (result != null) {
-                                        latestDetections = result.items
-                                        var criteriaMet = false
-                                        var metaStr = "{}"
+                                    // ป้องกัน Memory Leak กรณีที่ rotateBitmap คืนค่าคนละ Instance
+                                    if (bitmap !== rotatedBitmap) {
+                                        bitmap.recycle()
+                                    }
 
-                                        if (mode == ScanMode.PALM) {
-                                            val handMatch = result.items.find { item ->
-                                                val sideStr = item.extra["side"] as? String ?: ""
-                                                targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase = true)
-                                            }
-                                            if (handMatch != null && result.success) {
-                                                criteriaMet = true
-                                                metaStr = JSONObject().apply {
-                                                    put("detected", true)
-                                                    put("side", handMatch.extra["side"])
-                                                }.toString()
-                                            }
-                                        } else if (mode != ScanMode.OCR) {
-                                            // For ML Kit Vision Models
-                                            if (result.success && result.items.isNotEmpty()) {
-                                                criteriaMet = true
-                                                metaStr = JSONObject().apply {
-                                                    put("type", mode.name)
-                                                    put("count", result.items.size)
-                                                }.toString()
-                                            }
-                                        }
+                                    if (!isLowSpecDevice) {
+                                        // ให้ Runnable จัดการประมวลผลและ Recycle ต่อไป
+                                        frameProcessingRunnable.setNextFrame(rotatedBitmap)
+                                        rotatedBitmap = null // ล้าง ref ป้องกันโดน recycle ใน finally
+                                    } else {
+                                        // ประมวลผลแบบ Block สำหรับสเปคต่ำ
+                                        val result = AIManager.process(rotatedBitmap)
+                                        if (result != null) {
+                                            latestDetections = result.items
+                                            var criteriaMet = false
+                                            var metaStr = "{}"
 
-                                        if (criteriaMet) {
-                                            val count = consecutiveDetections.incrementAndGet()
-                                            onDetected(true, metaStr)
-                                            if (count > 8) {
-                                                consecutiveDetections.set(-9999)
-                                                onSnap(rotatedBitmap.copy(rotatedBitmap.config ?: Bitmap.Config.ARGB_8888, true))
+                                            if (mode == ScanMode.PALM) {
+                                                val handMatch = result.items.find { item ->
+                                                    val sideStr = item.extra["side"] as? String ?: ""
+                                                    targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase = true)
+                                                }
+                                                if (handMatch != null && result.success) {
+                                                    criteriaMet = true
+                                                    metaStr = JSONObject().apply {
+                                                        put("detected", true)
+                                                        put("side", handMatch.extra["side"])
+                                                    }.toString()
+                                                }
+                                            } else if (mode != ScanMode.OCR) {
+                                                if (result.success && result.items.isNotEmpty()) {
+                                                    criteriaMet = true
+                                                    metaStr = JSONObject().apply {
+                                                        put("type", mode.name)
+                                                        put("count", result.items.size)
+                                                    }.toString()
+                                                }
                                             }
-                                        } else {
-                                            consecutiveDetections.set(0)
-                                            onDetected(false, "")
+
+                                            if (criteriaMet) {
+                                                val count = consecutiveDetections.incrementAndGet()
+                                                onDetected(true, metaStr)
+                                                if (count > 8) {
+                                                    consecutiveDetections.set(-9999)
+                                                    onSnap(rotatedBitmap.copy(rotatedBitmap.config ?: Bitmap.Config.ARGB_8888, true))
+                                                }
+                                            } else {
+                                                consecutiveDetections.set(0)
+                                                onDetected(false, "")
+                                            }
                                         }
                                     }
                                 } catch (e: Exception) {
                                     Log.e("CameraX", "Analyze error", e)
                                 } finally {
-                                    if (bitmap != null && rotatedBitmap != null && bitmap !== rotatedBitmap) {
+                                    // เฉพาะโหมด Low Spec หรือ Error ที่ rotatedBitmap ยังไม่ถูกเซ็ตเป็น null
+                                    if (rotatedBitmap != null) {
                                         rotatedBitmap.recycle()
                                     }
-                                    bitmap?.recycle()
                                     image.close()
-                                    isProcessingFrame.set(false)
+                                    if (isLowSpecDevice) {
+                                        isProcessingFrame.set(false)
+                                    }
                                 }
                             }
                         }
