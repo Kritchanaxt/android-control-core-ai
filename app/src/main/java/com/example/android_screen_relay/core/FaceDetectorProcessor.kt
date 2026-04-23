@@ -44,88 +44,78 @@ class FaceDetectorProcessor : AIProcessor {
         val startTime = System.currentTimeMillis()
         
         return try {
-            val image = InputImage.fromBitmap(bitmap, 0)
-            val task = currentDetector.process(image)
+            val width = bitmap.width
+            val height = bitmap.height
             
-            // Block since process is called synchronously by analyzer
-            val faces = Tasks.await(task)
-            val duration = System.currentTimeMillis() - startTime
+            // Strategy: Thai ID cards usually have faces on the Right side.
+            // 1. Try Right 50% ROI
+            var result = processROI(bitmap, currentDetector, width / 2, 0, width / 2, height, offsetPixels = true)
             
-            if (faces.isEmpty()) {
-                return AIResult(true, emptyList(), duration, "No face detected")
+            // 2. If not found, try Left 50% ROI
+            if (result.items.isEmpty()) {
+                result = processROI(bitmap, currentDetector, 0, 0, width / 2, height, offsetPixels = false)
             }
             
-            val items = faces.map { face ->
-                val contourTypes = mapOf(
-                    "FACE_OVAL" to com.google.mlkit.vision.face.FaceContour.FACE,
-                    "LEFT_EYEBROW_TOP" to com.google.mlkit.vision.face.FaceContour.LEFT_EYEBROW_TOP,
-                    "LEFT_EYEBROW_BOTTOM" to com.google.mlkit.vision.face.FaceContour.LEFT_EYEBROW_BOTTOM,
-                    "RIGHT_EYEBROW_TOP" to com.google.mlkit.vision.face.FaceContour.RIGHT_EYEBROW_TOP,
-                    "RIGHT_EYEBROW_BOTTOM" to com.google.mlkit.vision.face.FaceContour.RIGHT_EYEBROW_BOTTOM,
-                    "LEFT_EYE" to com.google.mlkit.vision.face.FaceContour.LEFT_EYE,
-                    "RIGHT_EYE" to com.google.mlkit.vision.face.FaceContour.RIGHT_EYE,
-                    "UPPER_LIP_TOP" to com.google.mlkit.vision.face.FaceContour.UPPER_LIP_TOP,
-                    "UPPER_LIP_BOTTOM" to com.google.mlkit.vision.face.FaceContour.UPPER_LIP_BOTTOM,
-                    "LOWER_LIP_TOP" to com.google.mlkit.vision.face.FaceContour.LOWER_LIP_TOP,
-                    "LOWER_LIP_BOTTOM" to com.google.mlkit.vision.face.FaceContour.LOWER_LIP_BOTTOM,
-                    "NOSE_BRIDGE" to com.google.mlkit.vision.face.FaceContour.NOSE_BRIDGE,
-                    "NOSE_BOTTOM" to com.google.mlkit.vision.face.FaceContour.NOSE_BOTTOM,
-                    "LEFT_CHEEK" to com.google.mlkit.vision.face.FaceContour.LEFT_CHEEK,
-                    "RIGHT_CHEEK" to com.google.mlkit.vision.face.FaceContour.RIGHT_CHEEK
-                )
-                
-                val contoursJson = org.json.JSONObject()
-                contourTypes.forEach { (name, type) ->
-                    try {
-                        val contour = face.getContour(type)
-                        if (contour != null) {
-                            val ptsArray = org.json.JSONArray()
-                            contour.points.forEach { p ->
-                                val ptArr = org.json.JSONArray()
-                                ptArr.put(p.x)
-                                ptArr.put(p.y)
-                                ptsArray.put(ptArr)
-                            }
-                            contoursJson.put(name, ptsArray)
-                        }
-                    } catch (e: Exception) {}
-                }
-                
-                // Landmarks fallbacks
-                val landmarksJson = org.json.JSONObject()
-                val leftEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.LEFT_EYE)
-                val rightEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.RIGHT_EYE)
-                val bottomMouth = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.MOUTH_BOTTOM)
-                val noseBase = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.NOSE_BASE)
-                
-                if (leftEye != null) landmarksJson.put("LEFT_EYE", org.json.JSONArray().put(leftEye.position.x).put(leftEye.position.y))
-                if (rightEye != null) landmarksJson.put("RIGHT_EYE", org.json.JSONArray().put(rightEye.position.x).put(rightEye.position.y))
-                if (bottomMouth != null) landmarksJson.put("MOUTH_BOTTOM", org.json.JSONArray().put(bottomMouth.position.x).put(bottomMouth.position.y))
-                if (noseBase != null) landmarksJson.put("NOSE_BASE", org.json.JSONArray().put(noseBase.position.x).put(noseBase.position.y))
-                
-                AIDetectedItem(
-                    label = "Face",
-                    confidence = face.smilingProbability ?: 1.0f,
-                    boundingBox = RectF(face.boundingBox),
-                    extra = mapOf(
-                        "smiling_prob" to (face.smilingProbability ?: 0f),
-                        "right_eye_open_prob" to (face.rightEyeOpenProbability ?: 0f),
-                        "left_eye_open_prob" to (face.leftEyeOpenProbability ?: 0f),
-                        "head_euler_x" to face.headEulerAngleX,
-                        "head_euler_y" to face.headEulerAngleY,
-                        "head_euler_z" to face.headEulerAngleZ,
-                        "tracking_id" to (face.trackingId ?: -1),
-                        "contours" to contoursJson.toString(),
-                        "landmarks" to landmarksJson.toString()
-                    )
-                )
+            // 3. Fallback: Full Image (if ROI strategy didn't catch it somehow)
+            if (result.items.isEmpty()) {
+                result = processROI(bitmap, currentDetector, 0, 0, width, height, offsetPixels = false)
             }
-            
-            AIResult(true, items, duration)
+
+            AIResult(true, result.items, System.currentTimeMillis() - startTime)
         } catch (e: Exception) {
             e.printStackTrace()
             AIResult(false, emptyList(), 0, e.message)
         }
+    }
+
+    private fun processROI(
+        fullBitmap: Bitmap, 
+        detector: FaceDetector, 
+        x: Int, y: Int, w: Int, h: Int,
+        offsetPixels: Boolean
+    ): AIResult {
+        val roiBitmap = Bitmap.createBitmap(fullBitmap, x, y, w, h)
+        val image = InputImage.fromBitmap(roiBitmap, 0)
+        val task = detector.process(image)
+        val faces = Tasks.await(task)
+        
+        if (roiBitmap !== fullBitmap) roiBitmap.recycle()
+
+        val items = faces.map { face ->
+            val box = face.boundingBox
+            val shiftedBox = if (offsetPixels) {
+                android.graphics.Rect(box.left + x, box.top + y, box.right + x, box.bottom + y)
+            } else box
+            
+            val landmarksJson = org.json.JSONObject()
+            val leftEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.LEFT_EYE)
+            val rightEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.RIGHT_EYE)
+            val bottomMouth = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.MOUTH_BOTTOM)
+            
+            if (leftEye != null) {
+                val lx = if (offsetPixels) leftEye.position.x + x else leftEye.position.x
+                landmarksJson.put("LEFT_EYE", org.json.JSONArray().put(lx).put(leftEye.position.y))
+            }
+            if (rightEye != null) {
+                val rx = if (offsetPixels) rightEye.position.x + x else rightEye.position.x
+                landmarksJson.put("RIGHT_EYE", org.json.JSONArray().put(rx).put(rightEye.position.y))
+            }
+            if (bottomMouth != null) {
+                val mx = if (offsetPixels) bottomMouth.position.x + x else bottomMouth.position.y
+                landmarksJson.put("MOUTH_BOTTOM", org.json.JSONArray().put(mx).put(bottomMouth.position.y))
+            }
+
+            AIDetectedItem(
+                label = "Face",
+                confidence = face.smilingProbability ?: 1.0f,
+                boundingBox = RectF(shiftedBox),
+                extra = mapOf(
+                    "tracking_id" to (face.trackingId ?: -1),
+                    "landmarks" to landmarksJson.toString()
+                )
+            )
+        }
+        return AIResult(true, items, 0)
     }
 
     override fun release() {

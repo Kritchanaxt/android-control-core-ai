@@ -21,6 +21,7 @@ class OverlayManager(private val context: Context) {
     
     // New fields
     private var tvInputSize: TextView? = null
+    private var tvScanRes: TextView? = null
     private var tvFps: TextView? = null
     private var tvLatencies: TextView? = null
     private var tvStatus: TextView? = null
@@ -52,6 +53,10 @@ class OverlayManager(private val context: Context) {
         // New Stats Lines
         tvInputSize = createStatTextView()
         root.addView(tvInputSize)
+
+        tvScanRes = createStatTextView()
+        tvScanRes?.setTextColor(Color.parseColor("#FFCC00")) // Yellow/Amber for visibility
+        root.addView(tvScanRes)
         
         tvFps = createStatTextView()
         root.addView(tvFps)
@@ -115,6 +120,7 @@ class OverlayManager(private val context: Context) {
         model: String? = null, 
         status: String? = null,
         inputSize: String? = null,
+        scanRes: String? = null,
         fps: Int? = null,
         frameLatency: Long? = null,
         detectorLatency: Long? = null
@@ -123,7 +129,8 @@ class OverlayManager(private val context: Context) {
         uiHandler.post {
             // Updated format to be more compact
             if (inputSize != null) tvInputSize?.text = "InputImage size: $inputSize"
-            
+            if (scanRes != null) tvScanRes?.text = "Scan Res: $scanRes"
+
             if (fps != null && frameLatency != null) {
                 tvFps?.text = "FPS: $fps | Frame latency: ${frameLatency}ms"
             } else if (fps != null) {

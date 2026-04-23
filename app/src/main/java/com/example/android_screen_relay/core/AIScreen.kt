@@ -98,7 +98,7 @@ fun AIScreen() {
     var rightPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var suggestedCropRect by remember { mutableStateOf<Rect?>(null) }
-    
+
     // Benchmark States
     var isBenchmarking by remember { mutableStateOf(false) }
     var benchReport by remember { mutableStateOf<String?>(null) }
@@ -223,6 +223,7 @@ fun AIScreen() {
             rightPalmImage = rightPalmImage,
             jsonResult = ocrResultJson,
             timeMs = ocrTimeMs,
+            zoomScale = zoomScale,
             isProcessing = isProcessing,
             computeMode = computeMode,
             onComputeModeChange = {
@@ -729,6 +730,39 @@ fun AIScreen() {
                                 }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
+                                // 🌟 Dynamic Portrait Crop Logic
+                                val bestFace = result.items.maxByOrNull { it.confidence }
+                                val finalFaceImage = if (bestFace != null) {
+                                    val b = bestFace.boundingBox
+                                    // Map back to original bitmap (scaledFace was 3x ROI)
+                                    val bLeft = (b.left / 3f) + roiLeft
+                                    val bTop = (b.top / 3f) + roiTop
+                                    val bRight = (b.right / 3f) + roiLeft
+                                    val bBottom = (b.bottom / 3f) + roiTop
+                                    
+                                    val faceWidth = bRight - bLeft
+                                    val faceHeight = bBottom - bTop
+                                    
+                                    // Padding for "Portrait" look: 70% width padding, 100% top padding, 50% bottom padding
+                                    val padW = faceWidth * 0.7f
+                                    val padT = faceHeight * 1.0f 
+                                    val padB = faceHeight * 0.6f
+                                    
+                                    val cropL = (bLeft - padW).toInt().coerceAtLeast(0)
+                                    val cropT = (bTop - padT).toInt().coerceAtLeast(0)
+                                    val cropR = (bRight + padW).toInt().coerceAtMost(bitmap.width)
+                                    val cropB = (bBottom + padB).toInt().coerceAtMost(bitmap.height)
+                                    
+                                    val finalW = cropR - cropL
+                                    val finalH = cropB - cropT
+                                    
+                                    if (finalW > 0 && finalH > 0) {
+                                        Bitmap.createBitmap(bitmap, cropL, cropT, finalW, finalH)
+                                    } else scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                } else {
+                                    scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                }
+
                                 val jsonStr = if (result.success && result.items.isNotEmpty()) {
                                     val arr = org.json.JSONArray()
                                     result.items.forEach { item ->
@@ -742,13 +776,38 @@ fun AIScreen() {
                                                 obj.put(key, value)
                                             }
                                         }
-                                        // Map BBox back to original coordinates or use the crop view
-                                        val box = org.json.JSONArray()
-                                        box.put(item.boundingBox.left)
-                                        box.put(item.boundingBox.top)
-                                        box.put(item.boundingBox.right)
-                                        box.put(item.boundingBox.bottom)
-                                        obj.put("bbox", box)
+                                        
+                                        // Map BBox back to the NEW finalFaceImage coordinates
+                                        if (bestFace != null) {
+                                            val b = item.boundingBox
+                                            val bL = (b.left / 3f) + roiLeft
+                                            val bT = (b.top / 3f) + roiTop
+                                            val bR = (b.right / 3f) + roiLeft
+                                            val bB = (b.bottom / 3f) + roiTop
+                                            
+                                            // Find offsets used for finalFaceImage
+                                            val faceWidth = bestFace.boundingBox.width() / 3f
+                                            val faceHeight = bestFace.boundingBox.height() / 3f
+                                            val padW = faceWidth * 0.7f
+                                            val padT = faceHeight * 1.0f
+                                            
+                                            val cropL = ((bestFace.boundingBox.left / 3f) + roiLeft - padW).toInt().coerceAtLeast(0)
+                                            val cropT = ((bestFace.boundingBox.top / 3f) + roiTop - padT).toInt().coerceAtLeast(0)
+
+                                            val box = org.json.JSONArray()
+                                            box.put(bL - cropL)
+                                            box.put(bT - cropT)
+                                            box.put(bR - cropL)
+                                            box.put(bB - cropT)
+                                            obj.put("bbox", box)
+                                        } else {
+                                            val box = org.json.JSONArray()
+                                            box.put(item.boundingBox.left)
+                                            box.put(item.boundingBox.top)
+                                            box.put(item.boundingBox.right)
+                                            box.put(item.boundingBox.bottom)
+                                            obj.put("bbox", box)
+                                        }
                                         arr.put(obj)
                                     }
                                     arr.toString()
@@ -759,13 +818,14 @@ fun AIScreen() {
                                 withContext(Dispatchers.Main) {
                                     ocrTimeMs = pbElapsedMs
                                     ocrResultJson = jsonStr
-                                    // Use the scaled crop for better display in result screen
-                                    currentImage = scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                    // Use the dynamically cropped face image
+                                    currentImage = finalFaceImage
                                     // 🌟 Save full image for benchmark
                                     fullCapturedImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
                                     if (!bitmap.isRecycled) bitmap.recycle()
                                     if (!faceCrop.isRecycled) faceCrop.recycle()
+                                    if (finalFaceImage !== scaledFace && !scaledFace.isRecycled) scaledFace.recycle()
                                 }
 
                                 // ✅ Generate and send payload off the Main thread
@@ -1094,6 +1154,7 @@ fun CameraPreviewScreen(
     var isPreviewPaused by remember { mutableStateOf(false) }
     var stableTime by remember { mutableStateOf(0L) }
     var lastInferenceTimeMs by remember { mutableStateOf(0L) }
+    var smoothedFaceRect by remember { mutableStateOf<android.graphics.RectF?>(null) }
 
     // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
@@ -1276,6 +1337,7 @@ fun CameraPreviewScreen(
     LaunchedEffect(aiMode, targetHand, isProcessingBusy) {
         isCapturing = false // ป้องกันบัคค้างหมุนตลอดกาล (Reset state every time)
         stableTime = 0L
+        smoothedFaceRect = null
 
         if (isProcessingBusy) return@LaunchedEffect
 
@@ -1342,8 +1404,8 @@ fun CameraPreviewScreen(
                         bitmapHeight = bitmap.height.toFloat()
 
                         val startInference = System.currentTimeMillis()
-                        val criteriaMet = try {
-                            val (success, items) = currentOnStableDetection.value(
+                        var (success, items) = try {
+                            currentOnStableDetection.value(
                                 bitmap,
                                 currentPreviewOcr.value,
                                 currentPreviewPalm.value,
@@ -1352,12 +1414,65 @@ fun CameraPreviewScreen(
                                 currentPreviewSelfie.value,
                                 currentPreviewSubject.value
                             )
-                            latestDetections = items
-                            success
                         } catch (e: Exception) {
-                            latestDetections = emptyList()
-                            false
+                            Pair(false, emptyList())
                         }
+
+                        // 🌟 MULTI-SCALE INFERENCE: If initial crop failed, try a 20% larger crop
+                        if (!success && useCropMode) {
+                            val expandedBitmap = try {
+                                val cw = baseBitmap.width.toFloat()
+                                val ch = baseBitmap.height.toFloat()
+                                // Expand frame by 20%
+                                val expansion = 1.20f
+                                val frameW = (if (aiMode == AiMode.OCR) {
+                                    val maxW = cw * 0.9f
+                                    val idealH = ch * 0.6f
+                                    if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
+                                } else if (aiMode == AiMode.FACE) {
+                                    min(cw, ch) * 0.8f
+                                } else {
+                                    min(cw, ch) * 0.6f
+                                }) * expansion
+                                
+                                val frameH = (if (aiMode == AiMode.OCR) frameW / (1.58f * expansion) else frameW) * expansion
+                                val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
+                                val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
+                                val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
+                                val height = frameH.toInt().coerceAtMost(baseBitmap.height - top)
+                                
+                                Bitmap.createBitmap(baseBitmap, left, top, width, height)
+                            } catch (e: Exception) { null }
+
+                            if (expandedBitmap != null) {
+                                try {
+                                    val (retrySuccess, retryItems) = currentOnStableDetection.value(
+                                        expandedBitmap,
+                                        currentPreviewOcr.value,
+                                        currentPreviewPalm.value,
+                                        currentPreviewFace.value,
+                                        currentPreviewPose.value,
+                                        currentPreviewSelfie.value,
+                                        currentPreviewSubject.value
+                                    )
+                                    if (retrySuccess) {
+                                        success = true
+                                        items = retryItems
+                                        // Update overlay to show we found it in expanded mode
+                                        RelayService.getInstance()?.overlayManager?.updateMetrics(
+                                            ramUsed = ramUsed, ramTotal = ramTotal, cpu = cpuUsage,
+                                            status = "✨ Found in Expanded View!",
+                                            scanRes = "${expandedBitmap.width}x${expandedBitmap.height} (Expanded)"
+                                        )
+                                    }
+                                } finally {
+                                    expandedBitmap.recycle()
+                                }
+                            }
+                        }
+
+                        latestDetections = items
+                        val criteriaMet = success
                         val elapsedInference = System.currentTimeMillis() - startInference
                         lastInferenceTimeMs = elapsedInference
                         detectorLatency = elapsedInference
@@ -1378,7 +1493,8 @@ fun CameraPreviewScreen(
                                 cpu = cpuUsage,
                                 model = aiMode.name,
                                 status = if (isProcessingBusy) "Processing..." else if (isCapturing) "Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching...",
-                                inputSize = "${bitmapWidth.toInt()}x${bitmapHeight.toInt()}",
+                                inputSize = "${baseBitmap.width}x${baseBitmap.height}",
+                                scanRes = "${bitmap.width}x${bitmap.height}",
                                 fps = fps,
                                 frameLatency = frameLatency,
                                 detectorLatency = detectorLatency
@@ -1552,7 +1668,21 @@ fun CameraPreviewScreen(
                             r.right * boxScaleX, r.bottom * boxScaleY
                         )
                         if (aiMode == AiMode.FACE) {
-                            drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
+                            // Apply Smoothing (Lerp) for Magnetic Box effect
+                            val tension = 0.3f // 0.0 - 1.0 (Higher = Faster/Stiffer)
+                            val smoothed = smoothedFaceRect
+                            val target = mappedRect
+                            
+                            val nextRect = if (smoothed == null) target else {
+                                android.graphics.RectF(
+                                    (smoothed.left + (target.left - smoothed.left) * tension).toFloat(),
+                                    (smoothed.top + (target.top - smoothed.top) * tension).toFloat(),
+                                    (smoothed.right + (target.right - smoothed.right) * tension).toFloat(),
+                                    (smoothed.bottom + (target.bottom - smoothed.bottom) * tension).toFloat()
+                                )
+                            }
+                            smoothedFaceRect = nextRect
+                            drawContext.canvas.nativeCanvas.drawRoundRect(nextRect, 16f, 16f, facePaint)
                         } else if (aiMode == AiMode.PALMPRINT) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 24f, 24f, palmPaint)
                         } else if (aiMode == AiMode.OCR) {
@@ -2016,6 +2146,7 @@ fun OCRResultScreen(
     rightPalmImage: Bitmap? = null,
     jsonResult: String,
     timeMs: Long,
+    zoomScale: Float,
     isProcessing: Boolean,
     computeMode: ComputeMode,
     onComputeModeChange: (ComputeMode) -> Unit,
@@ -2658,19 +2789,42 @@ fun OCRResultScreen(
                             Spacer(Modifier.height(8.dp))
 
                             // Shared Metrics Footer
-                            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                Text("Device: ${android.os.Build.HARDWARE}", color = Color.Gray, fontSize = 11.sp)
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Text(
-                                    "GPU: ${if (computeMode.useGpu) "ON" else "OFF"}",
-                                    color = Color.Gray,
+                                    "Applied Scale: ${String.format("%.1f", zoomScale)}x",
+                                    color = Color(0xFF673AB7),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Face Output: ${image.width}x${image.height} px",
+                                    color = Color.DarkGray,
                                     fontSize = 11.sp
                                 )
                             }
-                            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                Text("Time: ${timeMs} ms", color = Color.DarkGray, fontSize = 11.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                val confPct = avgConf * 100
+                                val confColor = when {
+                                    confPct >= 90 -> Color(0xFF34C759) // Green
+                                    confPct >= 70 -> Color(0xFFFFCC00) // Yellow/Amber
+                                    else -> Color(0xFFFF3B30) // Red
+                                }
                                 Text(
-                                    "Conf: ${String.format("%.2f", avgConf * 100)}%",
-                                    color = Color(0xFF34C759),
+                                    "Match: ${String.format("%.1f", confPct)}%",
+                                    color = confColor,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Text(
+                                    "Det Time: ${timeMs} ms",
+                                    color = Color.Gray,
                                     fontSize = 11.sp
                                 )
                             }
