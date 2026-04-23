@@ -1338,7 +1338,7 @@ fun CameraPreviewScreen(
 
     // Auto-Snap polling
     // ⚠️ Busy State Lock check: Stop loop if 'isProcessingBusy' is true
-    LaunchedEffect(aiMode, targetHand, isProcessingBusy) {
+    LaunchedEffect(cameraKey, aiMode, targetHand, isProcessingBusy, useCropMode) {
         isCapturing = false // ป้องกันบัคค้างหมุนตลอดกาล (Reset state every time)
         stableTime = 0L
         smoothedFaceRect = null
