@@ -31,7 +31,7 @@ import kotlin.math.roundToInt
  */
 class Camera2Controller(
     private val context: Context,
-    private val onImageCaptured: (android.graphics.Bitmap) -> Unit
+    private val onImageCaptured: (android.graphics.Bitmap, Boolean) -> Unit
 ) : Closeable {
 
     private val cameraManager: CameraManager by lazy {
@@ -61,7 +61,7 @@ class Camera2Controller(
 
     // Logic from OutputSettingsDialogFragment
     private var maxSensorProcessingSize: Size = Size(1920, 1080)
-    private var isFrontCamera: Boolean = false
+    var isFrontCamera: Boolean = false
     private var isFlashEnabled: Boolean = false
 
     fun setZoom(scale: Float) {
@@ -312,7 +312,7 @@ class Camera2Controller(
                              
                             // Rotation logic (simple)
                             // In real app, check sensor orientation and rotate
-                            onImageCaptured(bitmap) 
+                            onImageCaptured(bitmap, isFrontCamera)
                         }
                     }
                 }, backgroundHandler)

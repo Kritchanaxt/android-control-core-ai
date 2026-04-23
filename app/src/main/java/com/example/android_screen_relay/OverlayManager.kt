@@ -128,7 +128,7 @@ class OverlayManager(private val context: Context) {
         val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
         uiHandler.post {
             // Updated format to be more compact
-            if (inputSize != null) tvInputSize?.text = "InputImage size: $inputSize"
+            if (inputSize != null) tvInputSize?.text = "Input Image size: $inputSize"
             if (scanRes != null) tvScanRes?.text = "Scan Res: $scanRes"
 
             if (fps != null && frameLatency != null) {

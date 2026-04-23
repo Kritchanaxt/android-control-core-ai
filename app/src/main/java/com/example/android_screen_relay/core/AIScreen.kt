@@ -75,6 +75,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.text.style.TextAlign
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.max
@@ -99,18 +100,12 @@ fun AIScreen() {
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var suggestedCropRect by remember { mutableStateOf<Rect?>(null) }
 
-    // Benchmark States
-    var isBenchmarking by remember { mutableStateOf(false) }
-    var benchReport by remember { mutableStateOf<String?>(null) }
-    var fullCapturedImage by remember { mutableStateOf<Bitmap?>(null) }
-
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
             currentImage?.recycle()
             leftPalmImage?.recycle()
             rightPalmImage?.recycle()
             cropImage?.recycle()
-            fullCapturedImage?.recycle()
         }
     }
     var ocrResultJson by remember { mutableStateOf("[]") }
@@ -124,6 +119,10 @@ fun AIScreen() {
     var zoomScale by remember { mutableStateOf(1.0f) }
     val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
     var useCropMode by remember { mutableStateOf(false) }
+
+    // Camera Settings State (Moved up for Result Access)
+    var selectedResolution by remember { mutableStateOf<android.util.Size?>(null) }
+    var availableResolutions by remember { mutableStateOf<List<android.util.Size>>(emptyList()) }
 
     // Models will be lazy-loaded on demand now
     DisposableEffect(Unit) {
@@ -224,6 +223,7 @@ fun AIScreen() {
             jsonResult = ocrResultJson,
             timeMs = ocrTimeMs,
             zoomScale = zoomScale,
+            scanResolution = "${selectedResolution?.width ?: 0}x${selectedResolution?.height ?: 0} px",
             isProcessing = isProcessing,
             computeMode = computeMode,
             onComputeModeChange = {
@@ -235,17 +235,14 @@ fun AIScreen() {
                 leftPalmImage?.recycle()
                 rightPalmImage?.recycle()
                 cropImage?.recycle()
-                fullCapturedImage?.recycle()
 
                 currentImage = null
                 leftPalmImage = null
                 rightPalmImage = null
                 cropImage = null
-                fullCapturedImage = null
                 ocrResultJson = "[]"
                 ocrTimeMs = 0
                 targetHand = "Left"
-                benchReport = null
             },
             onRunModel = {
                 if (!isProcessing) {
@@ -336,30 +333,7 @@ fun AIScreen() {
                     }
                 }
             },
-            onGalleryClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            isBenchmarking = isBenchmarking,
-            benchReport = benchReport,
-            onRunScaleTest = {
-                val targetBmp = fullCapturedImage ?: currentImage
-                if (!isBenchmarking && targetBmp != null) {
-                    isBenchmarking = true
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            val bench = IDCardFaceBenchmarker()
-                            val report = bench.runScaleStressTest(context, targetBmp)
-                            withContext(Dispatchers.Main) {
-                                benchReport = report
-                                isBenchmarking = false
-                            }
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                isBenchmarking = false
-                                Toast.makeText(context, "Bench Error: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                }
-            }
+            onGalleryClick = { galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
         )
     } else {
         // Camera Preview Mode (Screenshot 1 style)
@@ -373,7 +347,11 @@ fun AIScreen() {
                 onZoomScaleChange = { zoomScale = it },
                 useCropMode = useCropMode,
                 onUseCropModeChange = { useCropMode = it },
-                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
+                selectedResolution = selectedResolution,
+                onResolutionChange = { selectedResolution = it },
+                availableResolutions = availableResolutions,
+                onAvailableResolutionsChange = { availableResolutions = it },
+                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
 
                     if (currentAiMode == AiMode.PALMPRINT) {
@@ -521,7 +499,7 @@ fun AIScreen() {
                         }
                     }
                 },
-                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
+                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
                     if (isProcessing) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
@@ -590,7 +568,13 @@ fun AIScreen() {
                                         } else rotatedBitmap
 
                                         if (resultBmp !== rotatedBitmap) rotatedBitmap.recycle()
-                                        resultBmp
+                                        
+                                        // 🌟 Apply zoomScale to final crop
+                                        if (zoomScale > 1.0f) {
+                                            val scaled = Bitmap.createScaledBitmap(resultBmp, (resultBmp.width * zoomScale).toInt(), (resultBmp.height * zoomScale).toInt(), true)
+                                            resultBmp.recycle()
+                                            scaled
+                                        } else resultBmp
                                     } else {
                                         val left = item.boundingBox.left.toInt().coerceAtLeast(0)
                                         val top = item.boundingBox.top.toInt().coerceAtLeast(0)
@@ -599,7 +583,13 @@ fun AIScreen() {
                                         val width = right - left
                                         val height = bottom - top
                                         if (width > 0 && height > 0) {
-                                            Bitmap.createBitmap(bitmap, left, top, width, height)
+                                            val cropped = Bitmap.createBitmap(bitmap, left, top, width, height)
+                                            // 🌟 Apply zoomScale to final crop
+                                            if (zoomScale > 1.0f) {
+                                                val scaled = Bitmap.createScaledBitmap(cropped, (width * zoomScale).toInt(), (height * zoomScale).toInt(), true)
+                                                cropped.recycle()
+                                                scaled
+                                            } else cropped
                                         } else bitmap
                                     }
                                 } else bitmap
@@ -756,8 +746,14 @@ fun AIScreen() {
                                     val finalW = cropR - cropL
                                     val finalH = cropB - cropT
                                     
-                                    if (finalW > 0 && finalH > 0) {
-                                        Bitmap.createBitmap(bitmap, cropL, cropT, finalW, finalH)
+                                    if (finalH > 0 && finalW > 0) {
+                                        val cropped = Bitmap.createBitmap(bitmap, cropL, cropT, finalW, finalH)
+                                        // 🌟 Apply zoomScale to final crop
+                                        if (zoomScale > 1.0f) {
+                                            val scaled = Bitmap.createScaledBitmap(cropped, (finalW * zoomScale).toInt(), (finalH * zoomScale).toInt(), true)
+                                            cropped.recycle()
+                                            scaled
+                                        } else cropped
                                     } else scaledFace.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
                                     scaledFace.copy(Bitmap.Config.ARGB_8888, true)
@@ -820,8 +816,6 @@ fun AIScreen() {
                                     ocrResultJson = jsonStr
                                     // Use the dynamically cropped face image
                                     currentImage = finalFaceImage
-                                    // 🌟 Save full image for benchmark
-                                    fullCapturedImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
                                     if (!bitmap.isRecycled) bitmap.recycle()
                                     if (!faceCrop.isRecycled) faceCrop.recycle()
@@ -1024,7 +1018,7 @@ fun AIScreen() {
                                 }
 
                                 // Auto Crop without UI
-                                val cropped = if (calculatedRect != null) {
+                                val croppedResult = if (calculatedRect != null) {
                                     val w = bitmap.width
                                     val h = bitmap.height
                                     val l = (calculatedRect.left * w).toInt()
@@ -1035,11 +1029,18 @@ fun AIScreen() {
                                     val safeY = t.coerceIn(0, h - 1)
                                     val safeW = (r - safeX).coerceIn(1, w - safeX)
                                     val safeH = (b - safeY).coerceIn(1, h - safeY)
-                                    android.graphics.Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
+                                    val initialCrop = android.graphics.Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
+                                    
+                                    // 🌟 Apply zoomScale to final crop
+                                    if (zoomScale > 1.0f) {
+                                        val scaled = android.graphics.Bitmap.createScaledBitmap(initialCrop, (safeW * zoomScale).toInt(), (safeH * zoomScale).toInt(), true)
+                                        if (initialCrop !== bitmap) initialCrop.recycle()
+                                        scaled
+                                    } else initialCrop
                                 } else bitmap
 
                                 val safeRes = computeMode.maxResolution
-                                val optimizedCrop = OCROptimizer.scaleDownToMaxDimension(cropped, safeRes)
+                                val optimizedCrop = OCROptimizer.scaleDownToMaxDimension(croppedResult, safeRes)
 
                                 withContext(Dispatchers.Main) {
                                     processingResultMsg = "⏳ Running Auto OCR..."
@@ -1127,8 +1128,12 @@ fun CameraPreviewScreen(
     onZoomScaleChange: (Float) -> Unit,
     useCropMode: Boolean,
     onUseCropModeChange: (Boolean) -> Unit,
-    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Pair<Boolean, List<AIDetectedItem>>,
-    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Unit,
+    selectedResolution: android.util.Size?,
+    onResolutionChange: (android.util.Size) -> Unit,
+    availableResolutions: List<android.util.Size>,
+    onAvailableResolutionsChange: (List<android.util.Size>) -> Unit,
+    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?, Boolean) -> Pair<Boolean, List<AIDetectedItem>>,
+    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?, Boolean) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
     processingResultMsg: String? = null
@@ -1145,9 +1150,6 @@ fun CameraPreviewScreen(
 
     // Aspect Ratio State (Default 1:1 for RAM 2GB Device)
     var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_1_1) }
-
-    var availableResolutions by remember { mutableStateOf<List<Size>>(emptyList()) }
-    var selectedResolution by remember { mutableStateOf<Size?>(null) }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
@@ -1264,7 +1266,7 @@ fun CameraPreviewScreen(
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
         if (cameraController == null) {
-            cameraController = Camera2Controller(context) { bitmap ->
+            cameraController = Camera2Controller(context) { bitmap, isFront ->
                 currentOnImageCaptured.value(
                     bitmap,
                     currentPreviewOcr.value,
@@ -1272,7 +1274,8 @@ fun CameraPreviewScreen(
                     currentPreviewFace.value,
                     currentPreviewPose.value,
                     currentPreviewSelfie.value,
-                    currentPreviewSubject.value
+                    currentPreviewSubject.value,
+                    isFront
                 )
             }
         }
@@ -1307,11 +1310,12 @@ fun CameraPreviewScreen(
         }
 
         // Remove duplicates by converting to distinct list
-        availableResolutions = filtered.distinct().sortedByDescending { it.width * it.height }
+        val finalResolutions = filtered.distinct().sortedByDescending { it.width * it.height }
+        onAvailableResolutionsChange(finalResolutions)
 
         // Default to lowest resolution (e.g. 720x720) to save RAM on A10
-        if (selectedResolution == null || !availableResolutions.contains(selectedResolution)) {
-            selectedResolution = availableResolutions.minByOrNull { it.width * it.height }
+        if (selectedResolution == null || !finalResolutions.contains(selectedResolution)) {
+            finalResolutions.minByOrNull { it.width * it.height }?.let { onResolutionChange(it) }
         }
 
         cameraController?.aspectRatio = selectedAspectRatio
@@ -1404,6 +1408,7 @@ fun CameraPreviewScreen(
                         bitmapHeight = bitmap.height.toFloat()
 
                         val startInference = System.currentTimeMillis()
+                        val isFront = cameraController?.isFrontCamera ?: false
                         var (success, items) = try {
                             currentOnStableDetection.value(
                                 bitmap,
@@ -1412,7 +1417,8 @@ fun CameraPreviewScreen(
                                 currentPreviewFace.value,
                                 currentPreviewPose.value,
                                 currentPreviewSelfie.value,
-                                currentPreviewSubject.value
+                                currentPreviewSubject.value,
+                                isFront
                             )
                         } catch (e: Exception) {
                             Pair(false, emptyList())
@@ -1453,7 +1459,8 @@ fun CameraPreviewScreen(
                                         currentPreviewFace.value,
                                         currentPreviewPose.value,
                                         currentPreviewSelfie.value,
-                                        currentPreviewSubject.value
+                                        currentPreviewSubject.value,
+                                        isFront
                                     )
                                     if (retrySuccess) {
                                         success = true
@@ -1721,7 +1728,7 @@ fun CameraPreviewScreen(
                         expanded = showScaleMenu,
                         onDismissRequest = { showScaleMenu = false }
                     ) {
-                        listOf(1.0f, 1.2f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f).forEach { scale ->
+                        listOf(1.0f, 1.2f, 1.5f, 2.0f, 3.0f).forEach { scale ->
                             DropdownMenuItem(
                                 text = { Text("${scale}x") },
                                 onClick = {
@@ -2010,13 +2017,13 @@ fun CameraPreviewScreen(
                             Row(
                                 Modifier
                                     .fillMaxWidth()
-                                    .clickable { selectedResolution = size }
+                                    .clickable { onResolutionChange(size) }
                                     .padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 RadioButton(
                                     selected = (size == selectedResolution),
-                                    onClick = { selectedResolution = size }
+                                    onClick = { onResolutionChange(size) }
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
@@ -2147,16 +2154,14 @@ fun OCRResultScreen(
     jsonResult: String,
     timeMs: Long,
     zoomScale: Float,
+    scanResolution: String,
     isProcessing: Boolean,
     computeMode: ComputeMode,
     onComputeModeChange: (ComputeMode) -> Unit,
     onClear: () -> Unit,
     onRunModel: () -> Unit,
     onSendWs: () -> Unit,
-    onGalleryClick: () -> Unit,
-    isBenchmarking: Boolean = false,
-    benchReport: String? = null,
-    onRunScaleTest: () -> Unit = {}
+    onGalleryClick: () -> Unit
 ) {
     var showJsonDialog by remember { mutableStateOf(false) }
     var fullJsonOutput by remember { mutableStateOf("") }
@@ -2363,25 +2368,6 @@ fun OCRResultScreen(
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Send", maxLines = 1, style = MaterialTheme.typography.labelMedium)
-                        }
-
-                        // 🌟 Run Scale Test Button (Only for FACE mode)
-                        if (aiMode == AiMode.FACE) {
-                            Button(
-                                onClick = onRunScaleTest,
-                                enabled = !isBenchmarking && !isProcessing,
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF673AB7)),
-                                modifier = Modifier.weight(1f).height(48.dp),
-                                contentPadding = PaddingValues(horizontal = 4.dp)
-                            ) {
-                                if (isBenchmarking) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                                } else {
-                                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Scale Test", maxLines = 1, style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
                         }
                     }
                 }
@@ -2732,9 +2718,17 @@ fun OCRResultScreen(
                                 sumConf += obj.getDouble("prob")
                             }
 
-                            // Calculate FullText (only for OCR/Palmprint)
-                            if (aiMode != AiMode.FACE) {
-                                var rawText = ""
+                            // Calculate FullText
+                            var rawText = ""
+                            if (aiMode == AiMode.FACE) {
+                                val smiling = obj.optDouble("smiling_prob", -1.0)
+                                val leftEye = obj.optDouble("left_eye_open_prob", -1.0)
+                                val rightEye = obj.optDouble("right_eye_open_prob", -1.0)
+                                rawText = "Face ${i + 1}:"
+                                if (smiling >= 0) rawText += " Smiling(${String.format("%.1f", smiling * 100)}%)"
+                                if (leftEye >= 0) rawText += " L-Eye(${String.format("%.1f", leftEye * 100)}%)"
+                                if (rightEye >= 0) rawText += " R-Eye(${String.format("%.1f", rightEye * 100)}%)"
+                            } else {
                                 if (obj.has("label")) {
                                     rawText = obj.getString("label")
                                 } else if (obj.has("text")) {
@@ -2748,9 +2742,9 @@ fun OCRResultScreen(
                                     .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ")
                                     .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ")
                                     .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
-
-                                fullText += rawText + " \n"
                             }
+
+                            fullText += rawText + " \n"
                         }
                         if (cnt > 0) avgConf = sumConf / cnt
                     } catch (e: Exception) {
@@ -2762,71 +2756,133 @@ fun OCRResultScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = false)
-                            .heightIn(max = 450.dp)
+                            .heightIn(max = 550.dp)
                     ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            // Result Content Area (Scrollable)
-                            Box(modifier = Modifier.weight(1f, fill = false)) {
-                                if (benchReport != null) {
-                                    ScaleTestReportView(benchReport!!)
-                                } else if (aiMode == AiMode.FACE) {
-                                    FaceResultTable(jsonResult)
-                                } else {
-                                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Column(modifier = Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+                            // 1. Result Content Area (Scrollable Box)
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEEEEEE)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 80.dp, max = 150.dp)
+                            ) {
+                                Box(modifier = Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+                                    Text(
+                                        if (fullText.trim().isEmpty()) "No data extracted" else fullText.trim(),
+                                        color = Color(0xFF007AFF),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+                            HorizontalDivider(color = Color(0xFFE0E0E0), thickness = 1.dp)
+                            Spacer(Modifier.height(16.dp))
+
+                            // --- Professional Dashboard Metrics Section ---
+                            val isSuccess = try {
+                                val arr = org.json.JSONArray(jsonResult)
+                                arr.length() > 0
+                            } catch (e: Exception) { false }
+
+                            val statusText = when {
+                                aiMode == AiMode.FACE && isSuccess -> "Face Detected"
+                                aiMode == AiMode.PALMPRINT && isSuccess -> "Palmprint Detected"
+                                aiMode == AiMode.OCR && isSuccess -> "Text Extracted"
+                                !isSuccess -> "No Object Detected"
+                                else -> "Inference Completed"
+                            }
+
+                            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                // 1. Enhanced Status Header (Row Style)
+                                Surface(
+                                    color = if (isSuccess) Color(0xFFE8F5E9) else Color(0xFFFBE9E7),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
+                                                contentDescription = null,
+                                                tint = if (isSuccess) Color(0xFF2E7D32) else Color(0xFFC62828),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
+                                            Text(
+                                                "Result Status",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color.Gray,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1
+                                            )
+                                        }
                                         Text(
-                                            fullText.trim(),
-                                            color = Color(0xFF007AFF),
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            lineHeight = 18.sp
+                                            statusText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = if (isSuccess) Color(0xFF1B5E20) else Color(0xFFB71C1C),
+                                            textAlign = TextAlign.End,
+                                            modifier = Modifier.weight(1f)
                                         )
                                     }
                                 }
-                            }
 
-                            Spacer(Modifier.height(12.dp))
-                            HorizontalDivider(color = Color(0xFFE0E0E0), thickness = 1.dp)
-                            Spacer(Modifier.height(8.dp))
-
-                            // Shared Metrics Footer
-                            Row(
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    "Applied Scale: ${String.format("%.1f", zoomScale)}x",
-                                    color = Color(0xFF673AB7),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    "Face Output: ${image.width}x${image.height} px",
-                                    color = Color.DarkGray,
-                                    fontSize = 11.sp
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                val confPct = avgConf * 100
-                                val confColor = when {
-                                    confPct >= 90 -> Color(0xFF34C759) // Green
-                                    confPct >= 70 -> Color(0xFFFFCC00) // Yellow/Amber
-                                    else -> Color(0xFFFF3B30) // Red
+                                // 2. Detailed Metrics List (Line by Line)
+                                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    MetricRow("Confidence", "${String.format("%.1f", avgConf * 100)}%", Icons.Default.Percent)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    MetricRow("Processing Time", "${timeMs} ms", Icons.Default.Timer)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    
+                                    MetricRow("Scan Resolution", scanResolution, Icons.Default.Camera)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    
+                                    val cropW = (image.width / zoomScale).toInt()
+                                    val cropH = (image.height / zoomScale).toInt()
+                                    MetricRow("Crop Area", "${cropW}x${cropH} px", Icons.Default.Crop)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    
+                                    MetricRow("Input Image size", "${image.width}x${image.height} px", Icons.Default.AspectRatio)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    
+                                    MetricRow("Scale", "${String.format("%.1f", zoomScale)}x", Icons.Default.ZoomIn)
+                                    HorizontalDivider(color = Color(0xFFF5F5F5))
+                                    
+                                    // GPU Info
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Memory, null, modifier = Modifier.size(14.dp), tint = Color.Gray.copy(alpha = 0.6f))
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("GPU", style = MaterialTheme.typography.bodySmall, color = Color.Gray, fontWeight = FontWeight.Medium)
+                                        }
+                                        Surface(
+                                            color = if (computeMode.useGpu) Color(0xFFE3F2FD) else Color(0xFFEEEEEE),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                " ${if (computeMode.useGpu) "ON" else "OFF"} ",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (computeMode.useGpu) Color(0xFF1565C0) else Color.DarkGray,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                fontSize = 10.sp
+                                            )
+                                        }
+                                    }
                                 }
-                                Text(
-                                    "Match: ${String.format("%.1f", confPct)}%",
-                                    color = confColor,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                                Text(
-                                    "Det Time: ${timeMs} ms",
-                                    color = Color.Gray,
-                                    fontSize = 11.sp
-                                )
                             }
                         }
                     }
@@ -3396,5 +3452,38 @@ fun ScaleTestReportView(reportJson: String) {
                 Text(recommendation, style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+@Composable
+fun MetricRow(label: String, value: String, icon: ImageVector? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = Color.Gray.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.width(12.dp))
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black
+        )
     }
 }
