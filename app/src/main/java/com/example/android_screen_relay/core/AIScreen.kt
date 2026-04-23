@@ -82,7 +82,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION }
+enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1290,7 +1290,7 @@ fun CameraPreviewScreen(
         }
     }
 
-    var aiDropdownExpanded by remember { mutableStateOf(false) }
+    var showAiModeSheet by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = Color.Black
@@ -1528,45 +1528,28 @@ fun CameraPreviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // AI Dropdown
-                    Box {
-                        Button(
-                            onClick = { aiDropdownExpanded = true },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color.White.copy(alpha = 0.2f),
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(24.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                            modifier = Modifier.height(40.dp)
-                        ) {
-                            Text(text = aiMode.name, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    // AI Mode Selector (Trigger Bottom Sheet)
+                    Button(
+                        onClick = { showAiModeSheet = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White.copy(alpha = 0.2f),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        val displayName = when (aiMode) {
+                            AiMode.OCR -> "PaddleOCRv5"
+                            AiMode.PALMPRINT -> "Hand landmarks detection"
+                            AiMode.FACE -> "ML Kit - Face detection"
+                            AiMode.POSE -> "ML Kit - Pose detection"
+                            AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
+                            AiMode.SUBJECT_SEGMENTATION -> "ML Kit - Subject Segmentation"
+                            AiMode.OBJECT_DETECTION -> "ML Kit - Object detection"
+                            else -> aiMode.name
                         }
-
-                        DropdownMenu(
-                            expanded = aiDropdownExpanded,
-                            onDismissRequest = { aiDropdownExpanded = false },
-                            modifier = Modifier.background(Color(0xFF333333))
-                        ) {
-                            AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            mode.name,
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 12.sp
-                                        )
-                                    },
-                                    onClick = {
-                                        onAiModeChange(mode)
-                                        // Sync with global AI Manager for performance reporting
-                                        com.example.android_screen_relay.core.AIManager.switchProcessor(context, mode.name)
-                                        aiDropdownExpanded = false
-                                    }
-                                )
-                            }
-                        }
+                        Text(text = displayName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     }
 
                     // Settings Button
@@ -1785,6 +1768,72 @@ fun CameraPreviewScreen(
                 }
 
                 Spacer(modifier = Modifier.height(32.dp))
+            }
+        }
+    }
+
+    if (showAiModeSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAiModeSheet = false },
+            containerColor = Color.White,
+            dragHandle = { BottomSheetDefaults.DragHandle() },
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp)
+                    .padding(bottom = 48.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
+                    val label = when (mode) {
+                        AiMode.OCR -> "PaddleOCRv5"
+                        AiMode.PALMPRINT -> "Hand landmarks detection"
+                        AiMode.FACE -> "ML Kit - Face detection"
+                        AiMode.POSE -> "ML Kit - Pose detection"
+                        AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
+                        AiMode.SUBJECT_SEGMENTATION -> "ML Kit - Subject Segmentation"
+                        AiMode.OBJECT_DETECTION -> "ML Kit - Object detection"
+                        else -> mode.name
+                    }
+                    
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onAiModeChange(mode)
+                                AIManager.switchProcessor(context, mode.name)
+                                showAiModeSheet = false
+                            }
+                            .padding(vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // Radio button style icon (circular with dot)
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .border(3.dp, if (aiMode == mode) Color(0xFF008080) else Color.Gray, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (aiMode == mode) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .background(Color(0xFF008080), CircleShape)
+                                )
+                            }
+                        }
+                        
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black
+                        )
+                    }
+                }
             }
         }
     }

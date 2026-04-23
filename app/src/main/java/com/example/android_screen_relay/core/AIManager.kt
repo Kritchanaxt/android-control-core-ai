@@ -103,6 +103,7 @@ object AIManager {
             modeName.contains("POSE", ignoreCase = true) -> PoseDetectorProcessor()
             modeName.contains("SELFIE", ignoreCase = true) -> SelfieSegmenterProcessor()
             modeName.contains("SUBJECT", ignoreCase = true) -> SubjectSegmenterProcessor()
+            modeName.contains("OBJECT", ignoreCase = true) -> ObjectDetectorProcessor()
             else -> return false
         }
         return switchProcessor(processor, context, config)
