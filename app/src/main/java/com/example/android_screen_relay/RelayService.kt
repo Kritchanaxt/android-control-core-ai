@@ -21,7 +21,7 @@ class RelayService : Service() {
 
     private var relayServer: RelayServer? = null
     // private lateinit var webSocketManager: WebSocketManager // Removed
-    private lateinit var overlayManager: OverlayManager
+    lateinit var overlayManager: OverlayManager
     private lateinit var screenCaptureManager: ScreenCaptureManager
     private val CHANNEL_ID = "RelayServiceChannel"
     

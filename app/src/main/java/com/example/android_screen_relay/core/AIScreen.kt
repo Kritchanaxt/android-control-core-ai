@@ -120,6 +120,9 @@ fun AIScreen() {
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
     var currentAiMode by remember { mutableStateOf(AiMode.OCR) }
     var targetHand by remember { mutableStateOf("Left") }
+    
+    var zoomScale by remember { mutableStateOf(1.0f) }
+    val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
 
     // Models will be lazy-loaded on demand now
     DisposableEffect(Unit) {
@@ -194,6 +197,22 @@ fun AIScreen() {
     }
 
     if (currentImage != null || (leftPalmImage != null && rightPalmImage != null)) {
+        // Update floating overlay for Success state
+        LaunchedEffect(Unit) {
+            RelayService.getInstance()?.let { service ->
+                service.overlayManager.updateMetrics(
+                    ramUsed = SystemMonitor.getCurrentResourceUsage(context).ramUsedMb,
+                    ramTotal = SystemMonitor.getCurrentResourceUsage(context).ramTotalMb,
+                    cpu = SystemMonitor.getCurrentResourceUsage(context).cpuUsage,
+                    status = "✅ Snap success!",
+                    inputSize = if (currentImage != null) "${currentImage!!.width}x${currentImage!!.height}" else "--",
+                    fps = 0,
+                    frameLatency = 0,
+                    detectorLatency = ocrTimeMs
+                )
+            }
+        }
+
         // Image Analysis Mode (Screenshot 2 style)
         OCRResultScreen(
             aiMode = currentAiMode,
@@ -1080,6 +1099,31 @@ fun CameraPreviewScreen(
     var bitmapWidth by remember { mutableStateOf(720f) }
     var bitmapHeight by remember { mutableStateOf(1280f) }
 
+    // Performance monitoring states
+    var fps by remember { mutableStateOf(0) }
+    var detectorLatency by remember { mutableStateOf(0L) }
+    var frameLatency by remember { mutableStateOf(0L) }
+    var ramUsed by remember { mutableStateOf(0L) }
+    var ramTotal by remember { mutableStateOf(0L) }
+    var freeRamMb by remember { mutableStateOf(1000L) }
+    var cpuUsage by remember { mutableStateOf("0.0%") }
+
+    // Loop for System info (RAM, CPU)
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            while (isActive) {
+                val usage = SystemMonitor.getCurrentResourceUsage(context)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    freeRamMb = usage.ramFreeMb
+                    ramUsed = usage.ramUsedMb
+                    ramTotal = usage.ramTotalMb
+                    cpuUsage = usage.cpuUsage
+                }
+                kotlinx.coroutines.delay(2000L)
+            }
+        }
+    }
+
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
             previewOcr?.release()
@@ -1223,15 +1267,32 @@ fun CameraPreviewScreen(
         if (isProcessingBusy) return@LaunchedEffect
 
         withContext(Dispatchers.Default) {
+            var frameCount = 0
+            var lastFpsUpdate = System.currentTimeMillis()
+            var lastFrameTime = System.currentTimeMillis()
+
             while (isActive && !isProcessingBusy) {
                 kotlinx.coroutines.delay(250) // ลดเวลาตรวจจับ (จาก 500ms เป็น 250ms) ให้สแกนถี่ยิ่งขึ้น
                 if (isPreviewPaused) continue // ข้ามการตรวจจับถ้า preview ถูก pause
 
                 if (!isCapturing && cameraController?.textureView != null) {
-                    val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    val rawBitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         cameraController?.textureView?.bitmap
                     }
-                    if (bitmap != null) {
+                    if (rawBitmap != null) {
+                        // 🌟 FIX: Scale bitmap to target resolution if it doesn't match
+                        val bitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
+                            Bitmap.createScaledBitmap(rawBitmap, selectedResolution!!.width, selectedResolution!!.height, true).also {
+                                rawBitmap.recycle()
+                            }
+                        } else {
+                            rawBitmap
+                        }
+
+                        val now = System.currentTimeMillis()
+                        frameLatency = now - lastFrameTime
+                        lastFrameTime = now
+
                         // Extra lock safety before intensive computation
                         if (isProcessingBusy) {
                             bitmap.recycle()
@@ -1260,6 +1321,30 @@ fun CameraPreviewScreen(
                         }
                         val elapsedInference = System.currentTimeMillis() - startInference
                         lastInferenceTimeMs = elapsedInference
+                        detectorLatency = elapsedInference
+
+                        // Update FPS
+                        frameCount++
+                        if (now - lastFpsUpdate >= 1000) {
+                            fps = frameCount
+                            frameCount = 0
+                            lastFpsUpdate = now
+                        }
+                        
+                        // Update floating overlay if service is running
+                        RelayService.getInstance()?.let { service ->
+                            service.overlayManager.updateMetrics(
+                                ramUsed = ramUsed,
+                                ramTotal = ramTotal,
+                                cpu = cpuUsage,
+                                model = aiMode.name,
+                                status = if (isProcessingBusy) "Processing..." else if (isCapturing) "Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching...",
+                                inputSize = "${bitmapWidth.toInt()}x${bitmapHeight.toInt()}",
+                                fps = fps,
+                                frameLatency = frameLatency,
+                                detectorLatency = detectorLatency
+                            )
+                        }
 
                         var passedToCapture = false
                         if (criteriaMet) {
@@ -1299,21 +1384,6 @@ fun CameraPreviewScreen(
         containerColor = Color.Black
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-
-            // Loop for System RAM info
-            var freeRamMb by remember { mutableStateOf(1000L) }
-            val localContext = LocalContext.current
-            LaunchedEffect(Unit) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    while (isActive) {
-                        val usage = SystemMonitor.getCurrentResourceUsage(localContext)
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            freeRamMb = usage.ramFreeMb
-                        }
-                        kotlinx.coroutines.delay(2000L)
-                    }
-                }
-            }
 
             // Container for Preview + Overlay that respects Aspect Ratio
             val ratioVal = if (selectedResolution != null && selectedResolution!!.width == selectedResolution!!.height) {
@@ -1452,50 +1522,6 @@ fun CameraPreviewScreen(
                     }
                 }
             }
-
-            // Low Memory Warning Banner
-            if (freeRamMb < 400L) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter)
-                        .background(Color.Red.copy(alpha = 0.85f))
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "⚠️ ข้อมูล RAM ต่ำกว่า 400MB: AI อาจถูกบังคับปิดเพื่อป้องกันเครื่องค้าง (เหลือ ${freeRamMb}MB)",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
-            }
-
-            // Snap Status Indicator (Searching, Stabilizing, Capturing)
-            Box(
-                modifier = Modifier
-                    .padding(top = 16.dp, start = 16.dp)
-                    .align(Alignment.TopStart)
-                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                    .padding(8.dp)
-            ) {
-                Column {
-                    val statusText =
-                        if (isProcessingBusy) "✅ Snap success!" else if (isCapturing) "Found! Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching..."
-                    Text(text = "Status: $statusText", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    if (processingResultMsg != null) {
-                        Text(
-                            text = processingResultMsg!!,
-                            color = Color.Green,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
 
             // Bottom Bar Overlay
             Row(

@@ -18,65 +18,50 @@ class OverlayManager(private val context: Context) {
     private var tvRam: TextView? = null
     private var tvCpu: TextView? = null
     private var tvStatusDot: TextView? = null
+    
+    // New fields
+    private var tvInputSize: TextView? = null
+    private var tvFps: TextView? = null
+    private var tvLatencies: TextView? = null
+    private var tvStatus: TextView? = null
 
     fun showOverlay() {
         if (overlayView != null) return
 
-        // Ultra-Compact Glass-Badge: Positioned high to avoid header text overlap
+        // Plain Text Monitor: Background is transparent
         val root = android.widget.LinearLayout(context).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(14, 6, 14, 6)
+            setPadding(16, 4, 16, 4)
             gravity = Gravity.START
             
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = 20f
-                setColor(Color.parseColor("#99000000")) // 60% Transparent Black
-                setStroke(1, Color.parseColor("#33FFFFFF"))
+                setColor(Color.TRANSPARENT) // Transparent background
             }
-            elevation = 14f
         }
 
-        // Line 1: AI Model
-        val header = android.widget.LinearLayout(context).apply {
-            orientation = android.widget.LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
+        // New Stats Lines
+        tvInputSize = createStatTextView()
+        root.addView(tvInputSize)
         
-        tvStatusDot = TextView(context).apply {
-            text = "●"
-            setTextColor(Color.parseColor("#00E5FF")) // Bright Cyan
-            textSize = 5.5f
-            setPadding(0, 0, 6, 0)
-        }
-        header.addView(tvStatusDot)
+        tvFps = createStatTextView()
+        root.addView(tvFps)
+        
+        tvLatencies = createStatTextView()
+        root.addView(tvLatencies)
 
-        tvModel = TextView(context).apply {
-            text = "AI: Initializing..."
-            setTextColor(Color.parseColor("#00E5FF"))
-            textSize = 8.5f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-        }
-        header.addView(tvModel)
-        root.addView(header)
-
-        // Line 2: RAM
-        tvRam = TextView(context).apply {
-            text = "RAM: --/-- MB"
-            setTextColor(Color.WHITE)
-            textSize = 8f
-            setPadding(0, 1, 0, 0)
-        }
+        // Line: RAM
+        tvRam = createStatTextView("RAM: --/-- MB")
         root.addView(tvRam)
 
-        // Line 3: CPU
-        tvCpu = TextView(context).apply {
-            text = "CPU: --%"
-            setTextColor(Color.WHITE)
-            textSize = 8f
-            setPadding(0, 1, 0, 0)
-        }
+        // Line: CPU
+        tvCpu = createStatTextView("CPU: --%")
         root.addView(tvCpu)
+        
+        // Status Line
+        tvStatus = createStatTextView("Status: Searching...")
+        tvStatus?.setTextColor(Color.parseColor("#4CAF50")) // Green
+        root.addView(tvStatus)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -85,12 +70,14 @@ class OverlayManager(private val context: Context) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
             else 
                 WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or 
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 16
-            y = 80 // Positioned higher up, near the status bar area to avoid titles
+            gravity = Gravity.TOP or Gravity.START
+            x = 10
+            y = 10 
         }
 
         try {
@@ -101,31 +88,65 @@ class OverlayManager(private val context: Context) {
         }
     }
 
-    fun updateMetrics(ramUsed: Long, ramTotal: Long, cpu: String, model: String? = null, status: String? = null) {
+    private fun createStatTextView(initialText: String = ""): TextView {
+        return TextView(context).apply {
+            text = initialText
+            setTextColor(Color.WHITE)
+            textSize = 9f
+            setPadding(0, 1, 0, 0)
+            // Add shadow for better readability on light backgrounds
+            setShadowLayer(3f, 2f, 2f, Color.BLACK)
+        }
+    }
+
+    fun updateMetrics(
+        ramUsed: Long, 
+        ramTotal: Long, 
+        cpu: String, 
+        model: String? = null, 
+        status: String? = null,
+        inputSize: String? = null,
+        fps: Int? = null,
+        frameLatency: Long? = null,
+        detectorLatency: Long? = null
+    ) {
         val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
         uiHandler.post {
-            if (model != null) {
-                tvModel?.text = "AI: $model"
+            // Updated format based on user request
+            if (inputSize != null) tvInputSize?.text = "InputImage size: $inputSize"
+            
+            if (fps != null && frameLatency != null) {
+                tvFps?.text = "FPS: $fps, Frame latency: $frameLatency ms"
+            } else if (fps != null) {
+                tvFps?.text = "FPS: $fps"
             }
+            
+            if (detectorLatency != null) {
+                tvLatencies?.text = "Detector latency: $detectorLatency ms"
+            }
+            
             tvRam?.text = "RAM: $ramUsed / $ramTotal MB"
             tvCpu?.text = "CPU: $cpu"
             
             if (status != null && status.isNotEmpty()) {
-                if (status.contains("Critical", ignoreCase = true)) {
-                    tvStatusDot?.setTextColor(Color.RED)
-                } else if (status.contains("Loaded", ignoreCase = true) || status.contains("Released", ignoreCase = true)) {
-                    tvStatusDot?.setTextColor(Color.CYAN)
+                tvStatus?.text = "Status snap: $status"
+                // Keep the color logic for status dot if it was still there (though we removed the dot, 
+                // we might want to color the text instead or just keep it simple)
+                if (status.contains("success", ignoreCase = true)) {
+                    tvStatus?.setTextColor(Color.GREEN)
+                } else if (status.contains("Critical", ignoreCase = true)) {
+                    tvStatus?.setTextColor(Color.RED)
                 } else {
-                    tvStatusDot?.setTextColor(Color.parseColor("#00E5FF"))
+                    tvStatus?.setTextColor(Color.CYAN)
                 }
             }
             
-            // Dynamic color selection for values
+            // Dynamic color selection for RAM
             val pct = if (ramTotal > 0) ramUsed.toDouble() / ramTotal.toDouble() else 0.0
             if (pct > 0.85) {
-                tvRam?.setTextColor(Color.parseColor("#FF5252")) // Vibrant Red
+                tvRam?.setTextColor(Color.parseColor("#FF5252")) 
             } else if (pct > 0.70) {
-                tvRam?.setTextColor(Color.parseColor("#FFD740")) // Vibrant Amber
+                tvRam?.setTextColor(Color.parseColor("#FFD740")) 
             } else {
                 tvRam?.setTextColor(Color.WHITE)
             }
