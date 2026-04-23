@@ -131,7 +131,7 @@ class RelayApplication : Application() {
                 
                 // Log synchronously so it sends before killing the process
                 Log.e("RelayApplication", "FATAL CRASH! Attempting to log to Google Sheets...", throwable)
-                GoogleSheetsLogger.logSync(jsonPayload.toString())
+
                 
             } catch (loggingException: Exception) {
                 Log.e("RelayApplication", "Failed to log crash", loggingException)

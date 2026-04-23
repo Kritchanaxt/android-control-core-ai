@@ -300,7 +300,6 @@ class RelayService : Service() {
                             val fatalJson = org.json.JSONObject()
                             fatalJson.put("type", "heartbeat")
                             statusMap.forEach { (k, v) -> fatalJson.put(k, v) }
-                            GoogleSheetsLogger.log(fatalJson.toString())
                             
                             showClientNotification("Emergency Stop", "Low Memory (${availableRam}MB). App closed.")
                             stopSelf()
@@ -322,7 +321,7 @@ class RelayService : Service() {
                         )
 
                         if (loopCount % 5 == 0) {
-                            GoogleSheetsLogger.log(statusJson.toString())
+
                         }
                         
                         val statusCheck = statusMap.minus("uptime_sec")
@@ -453,3 +452,4 @@ class RelayService : Service() {
         manager.notify(requestId.hashCode(), notification)
     }
 }
+

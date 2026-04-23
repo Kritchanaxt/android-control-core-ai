@@ -489,11 +489,30 @@ fun RealtimeCameraPreview(
                     ScanMode.FACE -> {
                         val rect = item.boundingBox
                         drawRoundRect(
-                            color = Color.Magenta,
+                            color = Color.Red,
                             topLeft = Offset(rect.left * scaleX, rect.top * scaleY),
                             size = Size((rect.right - rect.left) * scaleX, (rect.bottom - rect.top) * scaleY),
                             cornerRadius = CornerRadius(10f, 10f),
                             style = Stroke(width = 3.dp.toPx())
+                        )
+                    }
+                    ScanMode.PALM -> {
+                        val rect = item.boundingBox
+                        drawRoundRect(
+                            color = Color.Yellow,
+                            topLeft = Offset(rect.left * scaleX, rect.top * scaleY),
+                            size = Size((rect.right - rect.left) * scaleX, (rect.bottom - rect.top) * scaleY),
+                            cornerRadius = CornerRadius(16f, 16f),
+                            style = Stroke(width = 4.dp.toPx())
+                        )
+                    }
+                    ScanMode.OCR -> {
+                        val rect = item.boundingBox
+                        drawRect(
+                            color = Color.Cyan.copy(alpha = 0.8f),
+                            topLeft = Offset(rect.left * scaleX, rect.top * scaleY),
+                            size = Size((rect.right - rect.left) * scaleX, (rect.bottom - rect.top) * scaleY),
+                            style = Stroke(width = 2.dp.toPx())
                         )
                     }
                     ScanMode.SELFIE, ScanMode.SUBJECT -> {
@@ -505,7 +524,6 @@ fun RealtimeCameraPreview(
                             style = Stroke(width = 2.dp.toPx())
                         )
                     }
-                    else -> {} // OCR and Palm use default guide box
                 }
             }
 

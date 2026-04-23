@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.ClipOp
 import java.text.SimpleDateFormat
 import java.util.Locale
+import kotlin.math.max
 import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -251,15 +252,20 @@ fun AIScreen() {
                                 OCRBenchmarkRunner.runFullBenchmarkSuite(context, lazyOcr, mutableBitmap)
                             val end = System.currentTimeMillis()
 
+                            val duration = end - start
+
                             withContext(Dispatchers.Main) {
                                 ocrResultJson = benchmarkResults.toString()
-                                ocrTimeMs = end - start
+                                ocrTimeMs = duration
+                            }
 
-                                // ✅ 1. Log-on-Success (Instant Send)
-                                val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs)
-                                val service = RelayService.getInstance()
-                                service?.broadcastMessage(payload.toString())
+                            // ✅ Generate and send payload off the Main thread
+                            val payload = generateOCRPayload(context, currentImage!!, benchmarkResults.toString(), duration)
+                            val payloadStr = payload.toString()
+                            val service = RelayService.getInstance()
+                            service?.broadcastMessage(payloadStr)
 
+                            withContext(Dispatchers.Main) {
                                 isProcessing = false
                             }
                         } catch (e: Throwable) {
@@ -277,7 +283,7 @@ fun AIScreen() {
                                 put("cpu_usage", res.cpuUsage)
                                 put("battery_temp", res.batteryTemp)
                             }
-                            com.example.android_screen_relay.GoogleSheetsLogger.logSync(errorJson.toString())
+
 
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(context, "OCR Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -343,12 +349,11 @@ fun AIScreen() {
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject ->
-                    if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen false // Return false if CPU is locked or in PREVIEW
+                    if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
 
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
                             if (previewPalm != null) {
-                                // Scale down bitmap for faster/lower-memory auto-snap detection
                                 val scale = 480f / maxOf(bitmap.width, bitmap.height)
                                 val processBitmap = if (scale < 1f) {
                                     Bitmap.createScaledBitmap(
@@ -363,19 +368,27 @@ fun AIScreen() {
                                 val result = previewPalm.process(processBitmap)
                                 if (processBitmap !== bitmap) processBitmap.recycle()
                                 val item = result.items.firstOrNull()
-                                result.success && item?.extra?.get("hand")?.toString()
+                                val success = result.success && item?.extra?.get("hand")?.toString()
                                     ?.equals(targetHand, ignoreCase = true) == true
+                                
+                                val scaledItems = if (scale < 1f) {
+                                    result.items.map {
+                                        val rect = it.boundingBox
+                                        it.copy(boundingBox = android.graphics.RectF(rect.left / scale, rect.top / scale, rect.right / scale, rect.bottom / scale))
+                                    }
+                                } else result.items
+                                
+                                Pair(success, scaledItems)
                             } else {
-                                false
+                                Pair(false, emptyList())
                             }
                         } catch (e: Exception) {
-                            false
+                            Pair(false, emptyList())
                         }
                     } else if (currentAiMode == AiMode.FACE) {
                         try {
                             if (previewFace != null) {
                                 // 🌟 ID Card Face ROI Optimization
-                                // Crop to the face area (roughly right-middle) and scale UP to help MLKit see small faces
                                 val roiLeft = (bitmap.width * 0.65f).toInt()
                                 val roiTop = (bitmap.height * 0.2f).toInt()
                                 val roiWidth = (bitmap.width * 0.3f).toInt()
@@ -389,12 +402,24 @@ fun AIScreen() {
                                 if (faceArea !== bitmap) faceArea.recycle()
                                 if (scaledFace !== faceArea) scaledFace.recycle()
                                 
-                                result.success && result.items.isNotEmpty()
+                                val success = result.success && result.items.isNotEmpty()
+                                
+                                val mappedItems = result.items.map {
+                                    val rect = it.boundingBox
+                                    // Scale back down, then add ROI offset
+                                    it.copy(boundingBox = android.graphics.RectF(
+                                        (rect.left / 3f) + roiLeft,
+                                        (rect.top / 3f) + roiTop,
+                                        (rect.right / 3f) + roiLeft,
+                                        (rect.bottom / 3f) + roiTop
+                                    ))
+                                }
+                                Pair(success, mappedItems)
                             } else {
-                                false
+                                Pair(false, emptyList())
                             }
                         } catch (e: Exception) {
-                            false
+                            Pair(false, emptyList())
                         }
                     } else {
                         // For OCR, detect card text before snap to prevent infinite snapping
@@ -407,6 +432,7 @@ fun AIScreen() {
                                 val res = previewOcr.detect(scaled)
                                 if (scaled !== bitmap) scaled.recycle()
                                 var foundId = false
+                                val ocrItems = mutableListOf<AIDetectedItem>()
                                 try {
                                     val jsonArray = org.json.JSONArray(res)
                                     val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
@@ -415,6 +441,27 @@ fun AIScreen() {
                                         val obj = jsonArray.optJSONObject(i)
                                         val lbl = obj?.optString("label", "") ?: ""
                                         val rawText = lbl.replace(" ", "").replace("-", "")
+
+                                        // Parse box for drawing
+                                        val x0 = obj.optDouble("x0", 0.0).toFloat()
+                                        val y0 = obj.optDouble("y0", 0.0).toFloat()
+                                        val x1 = obj.optDouble("x1", 0.0).toFloat()
+                                        val y1 = obj.optDouble("y1", 0.0).toFloat()
+                                        val x2 = obj.optDouble("x2", 0.0).toFloat()
+                                        val y2 = obj.optDouble("y2", 0.0).toFloat()
+                                        val x3 = obj.optDouble("x3", 0.0).toFloat()
+                                        val y3 = obj.optDouble("y3", 0.0).toFloat()
+
+                                        val minX = min(min(x0, x1), min(x2, x3))
+                                        val maxX = max(max(x0, x1), max(x2, x3))
+                                        val minY = min(min(y0, y1), min(y2, y3))
+                                        val maxY = max(max(y0, y1), max(y2, y3))
+
+                                        ocrItems.add(AIDetectedItem(
+                                            label = lbl,
+                                            confidence = obj.optDouble("prob", 0.0).toFloat(),
+                                            boundingBox = android.graphics.RectF(minX / scale, minY / scale, maxX / scale, maxY / scale)
+                                        ))
 
                                         // ✅ ผ่อนปรนเกณฑ์การตรวจจับบัตร (Relaxed criteria)
                                         val isIdPattern =
@@ -436,17 +483,16 @@ fun AIScreen() {
 
                                         if (isIdPattern || isKeyword) {
                                             foundId = true
-                                            break
                                         }
                                     }
                                 } catch (e: Exception) {
                                 }
-                                foundId
+                                Pair(foundId, ocrItems)
                             } else {
-                                false
+                                Pair(false, emptyList())
                             }
                         } catch (e: Exception) {
-                            false
+                            Pair(false, emptyList())
                         }
                     }
                 },
@@ -539,10 +585,6 @@ fun AIScreen() {
                                     "[]"
                                 }
 
-                                if (bitmap !== cropped && !bitmap.isRecycled) {
-                                    bitmap.recycle()
-                                }
-
                                 withContext(Dispatchers.Main) {
                                     if (targetHand.equals("Left", ignoreCase = true)) {
                                         ocrTimeMs = pbElapsedMs
@@ -567,38 +609,43 @@ fun AIScreen() {
 
                                         ocrResultJson = combined.toString()
                                         cropImage = null
+                                    }
+                                }
 
-                                        // ✅ Both hands captured, automatically logs
-                                        val payload = generateOCRPayload(
-                                            context,
-                                            rightPalmImage!!,
-                                            ocrResultJson,
-                                            ocrTimeMs,
-                                            currentAiMode
+                                if (targetHand.equals("Right", ignoreCase = true)) {
+                                    // ✅ Generate and send payload off the Main thread
+                                    val payload = generateOCRPayload(
+                                        context,
+                                        rightPalmImage!!,
+                                        ocrResultJson,
+                                        ocrTimeMs,
+                                        currentAiMode
+                                    )
+                                    val payloadStr = payload.toString()
+                                    val service = RelayService.getInstance()
+                                    service?.broadcastMessage(payloadStr)
+
+                                    FirebaseLogger.logStep(
+                                        context = context,
+                                        stepName = "AI_INFERENCE",
+                                        status = "SUCCESS",
+                                        extraData = mapOf<String, Any>(
+                                            "ai_mode" to currentAiMode.name,
+                                            "status" to "SUCCESS",
+                                            "extracted_text" to ocrResultJson,
+                                            "latency_ms" to ocrTimeMs,
+                                            "compute_mode" to computeMode.displayName,
+                                            "chosen_resolution" to "${bitmap.width}x${bitmap.height}",
+                                            "final_ai_resolution" to "${rightPalmImage!!.width}x${rightPalmImage!!.height}",
+                                            "type" to "PalmPrint",
+                                            "use_gpu" to computeMode.useGpu,
+                                            "model_mediapipe_loaded" to true,
+                                            "snap_image_active" to true,
+                                            "bench_title" to "Palmprint Capture"
                                         )
-                                        val service = RelayService.getInstance()
-                                        service?.broadcastMessage(payload.toString())
+                                    )
 
-                                        FirebaseLogger.logStep(
-                                            context = context,
-                                            stepName = "AI_INFERENCE",
-                                            status = "SUCCESS",
-                                            extraData = mapOf<String, Any>(
-                                                "ai_mode" to currentAiMode.name,
-                                                "status" to "SUCCESS",
-                                                "extracted_text" to ocrResultJson,
-                                                "latency_ms" to ocrTimeMs,
-                                                "compute_mode" to computeMode.displayName,
-                                                "chosen_resolution" to "${bitmap.width}x${bitmap.height}",
-                                                "final_ai_resolution" to "${rightPalmImage!!.width}x${rightPalmImage!!.height}",
-                                                "type" to "PalmPrint",
-                                                "use_gpu" to computeMode.useGpu,
-                                                "model_mediapipe_loaded" to true,
-                                                "snap_image_active" to true,
-                                                "bench_title" to "Palmprint Capture"
-                                            )
-                                        )
-
+                                    withContext(Dispatchers.Main) {
                                         isProcessing = false
                                     }
                                 }
@@ -618,7 +665,7 @@ fun AIScreen() {
                                     put("cpu_usage", res.cpuUsage)
                                     put("battery_temp", res.batteryTemp)
                                 }
-                                com.example.android_screen_relay.GoogleSheetsLogger.logSync(errorJson.toString())
+    
 
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(context, "Palmprint Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -626,6 +673,8 @@ fun AIScreen() {
                                 }
                             } finally {
                                 tempPalm?.release()
+                                // The original bitmap given by Camera2Controller must be recycled when we are done extracting
+                                if (!bitmap.isRecycled) bitmap.recycle()
                             }
                         }
                     } else if (currentAiMode == AiMode.FACE) {
@@ -693,17 +742,21 @@ fun AIScreen() {
 
                                     if (!bitmap.isRecycled) bitmap.recycle()
                                     if (!faceCrop.isRecycled) faceCrop.recycle()
+                                }
 
-                                    val payload = generateOCRPayload(
-                                        context,
-                                        currentImage!!,
-                                        ocrResultJson,
-                                        ocrTimeMs,
-                                        currentAiMode
-                                    )
-                                    val service = RelayService.getInstance()
-                                    service?.broadcastMessage(payload.toString())
+                                // ✅ Generate and send payload off the Main thread
+                                val payload = generateOCRPayload(
+                                    context,
+                                    currentImage!!,
+                                    ocrResultJson,
+                                    ocrTimeMs,
+                                    currentAiMode
+                                )
+                                val payloadStr = payload.toString()
+                                val service = RelayService.getInstance()
+                                service?.broadcastMessage(payloadStr)
 
+                                withContext(Dispatchers.Main) {
                                     isProcessing = false
                                 }
                             } catch (e: Throwable) {
@@ -956,6 +1009,11 @@ fun AIScreen() {
                                 }
                             } finally {
                                 tempOcr?.release()
+                                withContext(Dispatchers.Main) {
+                                    if (currentImage !== bitmap && !bitmap.isRecycled) {
+                                        bitmap.recycle()
+                                    }
+                                }
                             }
                         }
                     }
@@ -981,7 +1039,7 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
-    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Boolean,
+    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Pair<Boolean, List<AIDetectedItem>>,
     onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
@@ -1016,6 +1074,10 @@ fun CameraPreviewScreen(
     var previewSelfie by remember { mutableStateOf<SelfieSegmenterProcessor?>(null) }
     var previewSubject by remember { mutableStateOf<SubjectSegmenterProcessor?>(null) }
     val computeMode = ComputeModeManager.getMode()
+    
+    var latestDetections by remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    var bitmapWidth by remember { mutableStateOf(720f) }
+    var bitmapHeight by remember { mutableStateOf(1280f) }
 
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose {
@@ -1172,10 +1234,13 @@ fun CameraPreviewScreen(
                             bitmap.recycle()
                             break
                         }
+                        
+                        bitmapWidth = bitmap.width.toFloat()
+                        bitmapHeight = bitmap.height.toFloat()
 
                         val startInference = System.currentTimeMillis()
                         val criteriaMet = try {
-                            currentOnStableDetection.value(
+                            val (success, items) = currentOnStableDetection.value(
                                 bitmap,
                                 currentPreviewOcr.value,
                                 currentPreviewPalm.value,
@@ -1184,7 +1249,10 @@ fun CameraPreviewScreen(
                                 currentPreviewSelfie.value,
                                 currentPreviewSubject.value
                             )
+                            latestDetections = items
+                            success
                         } catch (e: Exception) {
+                            latestDetections = emptyList()
                             false
                         }
                         val elapsedInference = System.currentTimeMillis() - startInference
@@ -1233,9 +1301,14 @@ fun CameraPreviewScreen(
             var freeRamMb by remember { mutableStateOf(1000L) }
             val localContext = LocalContext.current
             LaunchedEffect(Unit) {
-                while (isActive) {
-                    freeRamMb = SystemMonitor.getCurrentResourceUsage(localContext).ramFreeMb
-                    kotlinx.coroutines.delay(2000L)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    while (isActive) {
+                        val usage = SystemMonitor.getCurrentResourceUsage(localContext)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            freeRamMb = usage.ramFreeMb
+                        }
+                        kotlinx.coroutines.delay(2000L)
+                    }
                 }
             }
 
@@ -1307,95 +1380,49 @@ fun CameraPreviewScreen(
                         frameColor; strokeCap = android.graphics.Paint.Cap.ROUND
                     }
                     val textPaint = android.graphics.Paint().apply {
-                        color = frameColor
+                        color = android.graphics.Color.WHITE
                         textSize = 36f
                         isAntiAlias = true
                         typeface = android.graphics.Typeface.DEFAULT_BOLD
                     }
 
-                    if (aiMode != AiMode.PREVIEW) {
-                        // Draw Mask with circular/rectangular cutout helper
-                        drawContext.canvas.save()
-                        val cutoutPath = androidx.compose.ui.graphics.Path().apply {
-                            val r = androidx.compose.ui.geometry.Rect(left, top, right, bottom)
-                            if (aiMode == AiMode.FACE) {
-                                addOval(r)
-                            } else {
-                                addRect(r)
-                            }
-                        }
-                        // Clip everything EXCEPT the cutout, then draw the mask color
-                        clipPath(
-                            path = cutoutPath,
-                            clipOp = ClipOp.Difference
-                        ) {
-                            drawRect(Color(maskColor))
-                        }
-                        drawContext.canvas.restore()
+                    // Dynamic Bounding Boxes from latestDetections
+                    val boxScaleX = if (bitmapWidth > 0) size.width / bitmapWidth else 1f
+                    val boxScaleY = if (bitmapHeight > 0) size.height / bitmapHeight else 1f
+                    
+                    val facePaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.RED
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 6f
+                        isAntiAlias = true
+                    }
+                    val palmPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.YELLOW
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 8f
+                        isAntiAlias = true
+                    }
+                    val ocrPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.CYAN
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 4f
+                        alpha = 200
+                        isAntiAlias = true
                     }
 
-                    if (aiMode == AiMode.OCR) {
-                        // Main ID card border (Landscape)
-                        val rect = android.graphics.RectF(left, top, right, bottom)
-                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
-
-                        // Top Text
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        // เปลี่ยน Text ทันทีที่ตรวจพบแค่รอบเดียว (>= 250L) เพื่อความลื่นไหล
-                        val topText =
-                            if (stableTime >= 250L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
-                        val topTextWidth = textPaint.measureText(topText)
-                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
-
-                        // Bottom Text
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, bottom + 80f)
-                        val bottomText = "สแกนบัตรประชาชนด้านหน้า"
-                        val bottomTextWidth = textPaint.measureText(bottomText)
-                        drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
-
-                    } else if (aiMode == AiMode.PALMPRINT) {
-                        // PALMPRINT uses corners
-                        val path = android.graphics.Path()
-                        val cornerSize = 80f
-                        path.moveTo(left, top + cornerSize); path.lineTo(left, top); path.lineTo(left + cornerSize, top)
-                        path.moveTo(right - cornerSize, top); path.lineTo(right, top); path.lineTo(
-                            right,
-                            top + cornerSize
+                    latestDetections.forEach { item ->
+                        val r = item.boundingBox
+                        val mappedRect = android.graphics.RectF(
+                            r.left * boxScaleX, r.top * boxScaleY, 
+                            r.right * boxScaleX, r.bottom * boxScaleY
                         )
-                        path.moveTo(right, bottom - cornerSize); path.lineTo(
-                            right,
-                            bottom
-                        ); path.lineTo(right - cornerSize, bottom)
-                        path.moveTo(left + cornerSize, bottom); path.lineTo(left, bottom); path.lineTo(
-                            left,
-                            bottom - cornerSize
-                        )
-                        drawContext.canvas.nativeCanvas.drawPath(path, paint)
-
-                        // Top Text
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val handName = if (targetHand.equals("Left", ignoreCase = true)) "ซ้าย" else "ขวา"
-                        val topText =
-                            if (stableTime >= 250L || isCapturing) "ตรวจสอบมือ${handName}เรียบร้อยแล้ว กำลังบันทึกภาพ..." else "กรุณาแบมือ${handName}ให้เต็มกรอบ"
-                        val topTextWidth = textPaint.measureText(topText)
-                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
-                    } else if (aiMode == AiMode.FACE) {
-                        val rect = android.graphics.RectF(left, top, right, bottom)
-                        drawContext.canvas.nativeCanvas.drawOval(rect, paint)
-
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val topText =
-                            if (stableTime >= 250L || isCapturing) "พบใบหน้าแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาจัดใบหน้าให้อยู่ในกรอบ"
-                        val topTextWidth = textPaint.measureText(topText)
-                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
+                        if (aiMode == AiMode.FACE) {
+                            drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
+                        } else if (aiMode == AiMode.PALMPRINT) {
+                            drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 24f, 24f, palmPaint)
+                        } else if (aiMode == AiMode.OCR) {
+                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        }
                     }
                 }
             }
@@ -2074,8 +2101,41 @@ fun OCRResultScreen(
                     contentScale = ContentScale.Fit
                 )
 
+                // Pre-calculated data for Overlay to avoid heavy parsing in DrawScope
+                val drawingBoxes = remember(jsonResult) {
+                    val list = mutableListOf<org.json.JSONObject>()
+                    try {
+                        val arr = org.json.JSONArray(jsonResult)
+                        for (i in 0 until arr.length()) {
+                            list.add(arr.getJSONObject(i))
+                        }
+                    } catch (e: Exception) {}
+                    list
+                }
+                
+                val redPaint = remember {
+                    Paint().apply {
+                        color = android.graphics.Color.RED
+                        style = Paint.Style.STROKE
+                        strokeWidth = 2f
+                    }
+                }
+                val redFillPaint = remember {
+                    Paint().apply {
+                        color = android.graphics.Color.parseColor("#33FF0000")
+                        style = Paint.Style.FILL
+                    }
+                }
+                val textPaint = remember {
+                    Paint().apply {
+                        color = android.graphics.Color.WHITE
+                        textSize = 12f
+                        textAlign = Paint.Align.LEFT
+                        setShadowLayer(3f, 0f, 0f, android.graphics.Color.BLACK)
+                    }
+                }
+
                 // Overlay
-                val density = LocalContext.current.resources.displayMetrics.density
                 Canvas(modifier = Modifier.fillMaxSize().padding(16.dp)) {
                     val scaleX = size.width / image.width.toFloat()
                     val scaleY = size.height / image.height.toFloat()
@@ -2088,32 +2148,11 @@ fun OCRResultScreen(
                     val offsetY = (size.height - image.height * scale) / 2
 
                     try {
-                        // Draw Boxes
-                        val boxes = JSONArray(jsonResult)
-                        val paint = Paint().apply {
-                            color = android.graphics.Color.RED
-                            style = Paint.Style.STROKE
-                            strokeWidth = 2f / scale
-                        }
-                        val fillPaint = Paint().apply {
-                            color = android.graphics.Color.parseColor("#33FF0000") // Red with alpha
-                            style = Paint.Style.FILL
-                        }
-
                         drawContext.canvas.nativeCanvas.save()
                         drawContext.canvas.nativeCanvas.translate(offsetX, offsetY)
                         drawContext.canvas.nativeCanvas.scale(scale, scale)
 
-                        val textPaint = Paint().apply {
-                            color = android.graphics.Color.WHITE
-                            textSize = 12f
-                            textAlign = Paint.Align.LEFT
-                            setShadowLayer(3f, 0f, 0f, android.graphics.Color.BLACK)
-                        }
-
-                        for (i in 0 until boxes.length()) {
-                            val boxObj = boxes.getJSONObject(i)
-
+                        drawingBoxes.forEach { boxObj ->
                             // Parse "box" for OCR (polygon)
                             if (boxObj.has("box")) {
                                 val boxArr = boxObj.getJSONArray("box")
@@ -2126,15 +2165,18 @@ fun OCRResultScreen(
                                         path.lineTo(p.getInt(0).toFloat(), p.getInt(1).toFloat())
                                     }
                                     path.close()
-                                    drawContext.canvas.nativeCanvas.drawPath(path, fillPaint)
-                                    drawContext.canvas.nativeCanvas.drawPath(path, paint)
+                                    drawContext.canvas.nativeCanvas.drawPath(path, redFillPaint)
+                                    
+                                    redPaint.strokeWidth = 2f / scale
+                                    drawContext.canvas.nativeCanvas.drawPath(path, redPaint)
 
                                     // Draw label
                                     if (boxObj.has("label")) {
                                         val label = boxObj.getString("label")
                                         val x = p0.getInt(0).toFloat()
                                         val y = p0.getInt(1).toFloat()
-                                        drawContext.canvas.nativeCanvas.drawText(label, x, y - 5f, textPaint)
+                                        textPaint.textSize = 12f / scale
+                                        drawContext.canvas.nativeCanvas.drawText(label, x, y - (5f / scale), textPaint)
                                     }
                                 }
                             } else if (aiMode == AiMode.FACE && boxObj.has("bbox")) {
@@ -2145,42 +2187,37 @@ fun OCRResultScreen(
                                 val r = bArr.getDouble(2).toFloat()
                                 val b = bArr.getDouble(3).toFloat()
 
-                                val facePaint = Paint().apply {
-                                    color = android.graphics.Color.RED
-                                    style = Paint.Style.STROKE
-                                    strokeWidth = 3f / scale
-                                }
-                                drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, facePaint)
+                                redPaint.strokeWidth = 3f / scale
+                                drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, redPaint)
 
                                 // Draw Contours
                                 if (boxObj.has("contours")) {
                                     val contours = boxObj.getJSONObject("contours")
-                                    val colors = mapOf(
-                                        "FACE_OVAL" to android.graphics.Color.parseColor("#4285F4"), // Blue
-                                        "LEFT_EYEBROW_TOP" to android.graphics.Color.parseColor("#E65100"), // Orange
-                                        "LEFT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#FFC107"), // Yellow
-                                        "RIGHT_EYEBROW_TOP" to android.graphics.Color.parseColor("#0F9D58"), // Green
-                                        "RIGHT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#8E24AA"), // Purple
-                                        "LEFT_EYE" to android.graphics.Color.parseColor("#1E88E5"), // Blue
-                                        "RIGHT_EYE" to android.graphics.Color.parseColor("#00ACC1"), // Cyan
-                                        "UPPER_LIP_TOP" to android.graphics.Color.parseColor("#D81B60"), // Pink
-                                        "UPPER_LIP_BOTTOM" to android.graphics.Color.parseColor("#7CB342"), // L Green
-                                        "LOWER_LIP_TOP" to android.graphics.Color.parseColor("#E53935"), // Red
-                                        "LOWER_LIP_BOTTOM" to android.graphics.Color.parseColor("#795548"), // Brown
-                                        "NOSE_BRIDGE" to android.graphics.Color.parseColor("#AB47BC"), // Purple
-                                        "NOSE_BOTTOM" to android.graphics.Color.parseColor("#00897B") // Teal
+                                    // Static map of contour colors
+                                    val contourColors = mapOf(
+                                        "FACE_OVAL" to android.graphics.Color.parseColor("#4285F4"),
+                                        "LEFT_EYEBROW_TOP" to android.graphics.Color.parseColor("#E65100"),
+                                        "LEFT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#FFC107"),
+                                        "RIGHT_EYEBROW_TOP" to android.graphics.Color.parseColor("#0F9D58"),
+                                        "RIGHT_EYEBROW_BOTTOM" to android.graphics.Color.parseColor("#8E24AA"),
+                                        "LEFT_EYE" to android.graphics.Color.parseColor("#1E88E5"),
+                                        "RIGHT_EYE" to android.graphics.Color.parseColor("#00ACC1"),
+                                        "UPPER_LIP_TOP" to android.graphics.Color.parseColor("#D81B60"),
+                                        "UPPER_LIP_BOTTOM" to android.graphics.Color.parseColor("#7CB342"),
+                                        "LOWER_LIP_TOP" to android.graphics.Color.parseColor("#E53935"),
+                                        "LOWER_LIP_BOTTOM" to android.graphics.Color.parseColor("#795548"),
+                                        "NOSE_BRIDGE" to android.graphics.Color.parseColor("#AB47BC"),
+                                        "NOSE_BOTTOM" to android.graphics.Color.parseColor("#00897B")
                                     )
 
                                     val pointPaint = Paint().apply { style = Paint.Style.FILL }
-                                    val linePaint =
-                                        Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2.5f / scale }
-
+                                    val linePaint = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 2.5f / scale }
                                     val radius = 2f / scale
 
                                     contours.keys().forEach { key ->
                                         val pts = contours.getJSONArray(key)
                                         if (pts.length() > 0) {
-                                            val colorInt = colors[key] ?: android.graphics.Color.WHITE
+                                            val colorInt = (contourColors[key] ?: android.graphics.Color.WHITE) as Int
                                             pointPaint.color = android.graphics.Color.WHITE
                                             linePaint.color = colorInt
 
@@ -2627,13 +2664,13 @@ fun formatPtArr(pts: org.json.JSONArray?): String {
 
 fun minWith(a: Float, b: Float): Float = kotlin.math.min(a, b)
 
-private fun generateOCRPayload(
+private suspend fun generateOCRPayload(
     context: Context,
     image: Bitmap,
     jsonResult: String,
     timeMs: Long,
     aiMode: AiMode = AiMode.OCR
-): JSONObject {
+): JSONObject = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
     val device = SystemMonitor.getDeviceInfo(context)
     val resource = SystemMonitor.getCurrentResourceUsage(context)
 
@@ -2707,7 +2744,7 @@ private fun generateOCRPayload(
             payload.put("battery_level", resourceStats.optInt("battery_level"))
             payload.put("battery_temp", resourceStats.optDouble("battery_temp_c"))
 
-            return payload
+            return@withContext payload
         }
 
         // Handle empty array case cleanly for OCR
@@ -2722,7 +2759,7 @@ private fun generateOCRPayload(
                 put("text_object_count", 0)
                 put("average_confidence", 0.0)
             })
-            return payload
+            return@withContext payload
         }
 
         // 1. Result (full_text & lines)
@@ -2909,7 +2946,7 @@ private fun generateOCRPayload(
         payload.put("error", e.message)
     }
 
-    return payload
+    return@withContext payload
 }
 
 @Composable

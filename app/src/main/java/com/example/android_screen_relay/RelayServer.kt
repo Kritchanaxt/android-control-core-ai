@@ -352,64 +352,58 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
     
     // Kept for legacy textual interface if needed (but we are moving to binary)
     fun broadcastToAuthenticated(message: String) {
-        synchronized(authenticatedSessions) {
-            for (client in authenticatedSessions) {
-                if (client.isOpen) {
-                    client.send(message)
-                }
+        for (client in authenticatedSessions) {
+            if (client.isOpen) {
+                client.send(message)
             }
         }
         
-        // Log based on message type for better readability in logs
-        when {
-            message.contains("\"type\":\"heartbeat\"") -> {
-                // Heartbeat is too spammy, log only that it was sent
-                // LogRepository.addLog(component = "RelayServer", event = "heartbeat_sent", level = "DEBUG") 
-            }
-            message.contains("\"type\":\"state_update\"") -> {
-                // Parse and log app state changes clearly
-                try {
-                    val json = org.json.JSONObject(message)
-                    LogRepository.addLog(
-                        component = "RelayServer",
-                        event = "state_change_pushed",
-                        data = mapOf("state" to json.optString("state")),
-                        type = LogRepository.LogType.OUTGOING
-                    )
-                } catch (e: Exception) {
-                    LogRepository.addLog(component = "RelayServer", event = "broadcast_message", data = mapOf("message" to message), type = LogRepository.LogType.OUTGOING)
+        // Move heavy logging to background thread to avoid blocking the caller (often Main thread)
+        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
+            try {
+                // Log based on message type for better readability in logs
+                when {
+                    message.contains("\"type\":\"heartbeat\"") -> {
+                        // Heartbeat is too spammy
+                    }
+                    message.contains("\"type\":\"state_update\"") -> {
+                        try {
+                            val json = org.json.JSONObject(message)
+                            LogRepository.addLog(
+                                component = "RelayServer",
+                                event = "state_change_pushed",
+                                data = mapOf("state" to json.optString("state")),
+                                type = LogRepository.LogType.OUTGOING
+                            )
+                        } catch (e: Exception) {}
+                    }
+                    message.contains("\"engine_info\":") && message.contains("\"result\":") -> {
+                        try {
+                            val json = org.json.JSONObject(message)
+                            val summary = json.optJSONObject("summary")
+                            LogRepository.addLog(
+                                component = "RelayServer",
+                                event = "ocr_result_pushed",
+                                data = mapOf(
+                                    "text_count" to (summary?.optInt("text_object_count") ?: 0),
+                                    "latency_ms" to (summary?.optInt("total_latency_ms") ?: 0),
+                                    "full_text_preview" to (json.optJSONObject("result")?.optString("full_text")?.take(50) ?: "")
+                                ),
+                                type = LogRepository.LogType.OUTGOING
+                            )
+                        } catch (e: Exception) {}
+                    }
+                    else -> {
+                        LogRepository.addLog(
+                            component = "RelayServer",
+                            event = "broadcast_message",
+                            data = mapOf("message" to (if (message.length > 100) message.take(100) + "..." else message)),
+                            type = LogRepository.LogType.OUTGOING
+                        )
+                    }
                 }
-            }
-            message.contains("\"engine_info\":") && message.contains("\"result\":") -> {
-                // Direct post to Google Sheets to satisfy User's requirement
-                GoogleSheetsLogger.log(message)
-                
-                // This is an OCR result, log a summary instead of the giant JSON
-                try {
-                    val json = org.json.JSONObject(message)
-                    val summary = json.optJSONObject("summary")
-                    LogRepository.addLog(
-                        component = "RelayServer",
-                        event = "ocr_result_pushed",
-                        data = mapOf(
-                            "text_count" to (summary?.optInt("text_object_count") ?: 0),
-                            "latency_ms" to (summary?.optInt("total_latency_ms") ?: 0),
-                            "full_text_preview" to (json.optJSONObject("result")?.optString("full_text")?.take(50) ?: "")
-                        ),
-                        type = LogRepository.LogType.OUTGOING
-                    )
-                } catch (e: Exception) {
-                    LogRepository.addLog(component = "RelayServer", event = "broadcast_message", data = mapOf("message" to message), type = LogRepository.LogType.OUTGOING)
-                }
-            }
-            else -> {
-                // General broadcast message
-                LogRepository.addLog(
-                    component = "RelayServer",
-                    event = "broadcast_message",
-                    data = mapOf("message" to message),
-                    type = LogRepository.LogType.OUTGOING
-                )
+            } catch (e: Exception) {
+                android.util.Log.e("RelayServer", "Error logging broadcast", e)
             }
         }
     }

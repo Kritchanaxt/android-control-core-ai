@@ -1,7 +1,11 @@
 package com.example.android_screen_relay.core
 
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.util.Log
+import org.json.JSONArray
+import kotlin.math.max
+import kotlin.math.min
 
 class OCRProcessor : AIProcessor {
     private var appContext: android.content.Context? = null
@@ -42,8 +46,41 @@ class OCRProcessor : AIProcessor {
         
         try {
             val jsonResult = paddleOCR?.detect(bitmap)
-            // Assuming json mapping if we needed to populate AIDetectedItem
-            // Convert PaddleOCR results to Generic AIResult
+            if (!jsonResult.isNullOrBlank() && jsonResult != "[]") {
+                val array = JSONArray(jsonResult)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val label = obj.optString("label", "")
+                    val prob = obj.optDouble("prob", 0.0).toFloat()
+                    
+                    // JSON coordinates (x0, y0, ..., x3, y3)
+                    val x0 = obj.optDouble("x0", 0.0).toFloat()
+                    val y0 = obj.optDouble("y0", 0.0).toFloat()
+                    val x1 = obj.optDouble("x1", 0.0).toFloat()
+                    val y1 = obj.optDouble("y1", 0.0).toFloat()
+                    val x2 = obj.optDouble("x2", 0.0).toFloat()
+                    val y2 = obj.optDouble("y2", 0.0).toFloat()
+                    val x3 = obj.optDouble("x3", 0.0).toFloat()
+                    val y3 = obj.optDouble("y3", 0.0).toFloat()
+
+                    // Bounding Box
+                    val minX = min(min(x0, x1), min(x2, x3))
+                    val maxX = max(max(x0, x1), max(x2, x3))
+                    val minY = min(min(y0, y1), min(y2, y3))
+                    val maxY = max(max(y0, y1), max(y2, y3))
+
+                    if (label.isNotBlank()) {
+                        results.add(
+                            AIDetectedItem(
+                                label = label,
+                                confidence = prob,
+                                boundingBox = RectF(minX, minY, maxX, maxY),
+                                extra = mapOf("raw_json" to obj.toString())
+                            )
+                        )
+                    }
+                }
+            }
         } catch (e: Exception) {
             Log.e("OCR", "Process error", e)
         }

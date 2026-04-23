@@ -52,6 +52,7 @@ class Camera2Controller(
     private var cameraId: String = ""
     private var characteristics: CameraCharacteristics? = null
     private val cameraOpenCloseLock = Semaphore(1)
+    private val cameraExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     // Configurable Settings
     var targetResolution: Size? = null
@@ -102,47 +103,49 @@ class Camera2Controller(
     fun stopBackgroundThread() {
         backgroundThread?.quitSafely()
         try {
-            backgroundThread?.join()
+            // Remove join() to avoid deadlocking the Main thread while the camera framework
+            // is still posting close/teardown events to the background handler.
             backgroundThread = null
             backgroundHandler = null
-        } catch (e: InterruptedException) {
-            Log.e(TAG, "Interrupted while stopping background thread", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error while stopping background thread", e)
         }
     }
 
     @SuppressLint("MissingPermission")
     fun openCamera(textureView: TextureView, cameraIdToOpen: String, desiredResolution: Size? = null) {
-        if (cameraDevice != null && cameraId == cameraIdToOpen && targetResolution == desiredResolution && this.textureView == textureView) {
-            return
-        }
-        
-        close()
+        cameraExecutor.execute {
+            if (cameraDevice != null && cameraId == cameraIdToOpen && targetResolution == desiredResolution && this.textureView == textureView) {
+                return@execute
+            }
 
-        this.textureView = textureView
-        this.cameraId = cameraIdToOpen
-        this.targetResolution = desiredResolution
+            closeInternal()
 
-        startBackgroundThread()
+            this.textureView = textureView
+            this.cameraId = cameraIdToOpen
+            this.targetResolution = desiredResolution
 
-        if (textureView.isAvailable) {
-            openCameraDevice(cameraId)
-        } else {
-            textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                    openCameraDevice(cameraId)
+            startBackgroundThread()
+
+            if (textureView.isAvailable) {
+                openCameraDeviceInternal(cameraId)
+            } else {
+                textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                        cameraExecutor.execute { openCameraDeviceInternal(cameraId) }
+                    }
+                    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                        configureTransform(width, height)
+                    }
+                    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
+                    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
                 }
-                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                    configureTransform(width, height)
-                }
-                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
-                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
             }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun openCameraDevice(cameraId: String) {
-        try {
+    private fun openCameraDeviceInternal(cameraId: String) {        try {
             if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                 throw RuntimeException("Time out waiting to lock camera opening.")
             }
@@ -736,6 +739,12 @@ class Camera2Controller(
 
 
     override fun close() {
+        cameraExecutor.execute {
+            closeInternal()
+        }
+    }
+
+    private fun closeInternal() {
         try {
             cameraOpenCloseLock.acquire()
             captureSession?.close()
