@@ -1046,6 +1046,7 @@ fun CameraPreviewScreen(
     processingResultMsg: String? = null
 ) {
     val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var cameraController by remember { mutableStateOf<Camera2Controller?>(null) }
 
     // State for Settings
@@ -1227,7 +1228,9 @@ fun CameraPreviewScreen(
                 if (isPreviewPaused) continue // ข้ามการตรวจจับถ้า preview ถูก pause
 
                 if (!isCapturing && cameraController?.textureView != null) {
-                    val bitmap = cameraController?.textureView?.bitmap
+                    val bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        cameraController?.textureView?.bitmap
+                    }
                     if (bitmap != null) {
                         // Extra lock safety before intensive computation
                         if (isProcessingBusy) {
@@ -1803,7 +1806,9 @@ fun CameraPreviewScreen(
                             .fillMaxWidth()
                             .clickable {
                                 onAiModeChange(mode)
-                                AIManager.switchProcessor(context, mode.name)
+                                scope.launch(Dispatchers.Default) {
+                                    AIManager.switchProcessor(context, mode.name)
+                                }
                                 showAiModeSheet = false
                             }
                             .padding(vertical = 12.dp),

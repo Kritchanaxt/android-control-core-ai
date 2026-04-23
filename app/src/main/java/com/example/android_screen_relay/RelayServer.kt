@@ -351,6 +351,8 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
     }
     
     // Kept for legacy textual interface if needed (but we are moving to binary)
+    private val logExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     fun broadcastToAuthenticated(message: String) {
         for (client in authenticatedSessions) {
             if (client.isOpen) {
@@ -358,15 +360,18 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
             }
         }
         
-        // Move heavy logging to background thread to avoid blocking the caller (often Main thread)
-        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
+        // Move heavy logging and string analysis to background thread
+        logExecutor.execute {
             try {
-                // Log based on message type for better readability in logs
+                // Perform content checks off-thread as they are expensive for large Base64 messages
+                val isHeartbeat = message.contains("\"type\":\"heartbeat\"")
+                if (isHeartbeat) return@execute
+
+                val isStateUpdate = message.contains("\"type\":\"state_update\"")
+                val isEngineResult = message.contains("\"engine_info\":") && message.contains("\"result\":")
+
                 when {
-                    message.contains("\"type\":\"heartbeat\"") -> {
-                        // Heartbeat is too spammy
-                    }
-                    message.contains("\"type\":\"state_update\"") -> {
+                    isStateUpdate -> {
                         try {
                             val json = org.json.JSONObject(message)
                             LogRepository.addLog(
@@ -377,7 +382,7 @@ class RelayServer(port: Int) : WebSocketServer(InetSocketAddress(port)) {
                             )
                         } catch (e: Exception) {}
                     }
-                    message.contains("\"engine_info\":") && message.contains("\"result\":") -> {
+                    isEngineResult -> {
                         try {
                             val json = org.json.JSONObject(message)
                             val summary = json.optJSONObject("summary")
