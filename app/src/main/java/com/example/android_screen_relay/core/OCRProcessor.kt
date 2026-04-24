@@ -38,7 +38,7 @@ class OCRProcessor : AIProcessor {
         }
     }
 
-    override fun process(bitmap: Bitmap): AIResult {
+    override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         if (appContext == null || paddleOCR == null) return AIResult(false, emptyList(), 0, "OCR Not initialized")
         
         val start = System.currentTimeMillis()

@@ -353,6 +353,7 @@ fun AIScreen() {
                 onAvailableResolutionsChange = { availableResolutions = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
+                    val options = mapOf("is_front" to isFront)
 
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
@@ -368,7 +369,7 @@ fun AIScreen() {
                                 } else {
                                     bitmap
                                 }
-                                val result = previewPalm.process(processBitmap)
+                                val result = previewPalm.process(processBitmap, options)
                                 if (processBitmap !== bitmap) processBitmap.recycle()
                                 val item = result.items.firstOrNull()
                                 val success = result.success && item?.extra?.get("hand")?.toString()
@@ -391,33 +392,8 @@ fun AIScreen() {
                     } else if (currentAiMode == AiMode.FACE) {
                         try {
                             if (previewFace != null) {
-                                // 🌟 ID Card Face ROI Optimization
-                                val roiLeft = (bitmap.width * 0.65f).toInt()
-                                val roiTop = (bitmap.height * 0.2f).toInt()
-                                val roiWidth = (bitmap.width * 0.3f).toInt()
-                                val roiHeight = (bitmap.height * 0.6f).toInt()
-                                
-                                val faceArea = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
-                                // Scale UP 3x for better detection of small faces on cards
-                                val scaledFace = Bitmap.createScaledBitmap(faceArea, roiWidth * 3, roiHeight * 3, true)
-                                
-                                val result = previewFace.process(scaledFace)
-                                if (faceArea !== bitmap) faceArea.recycle()
-                                if (scaledFace !== faceArea) scaledFace.recycle()
-                                
-                                val success = result.success && result.items.isNotEmpty()
-                                
-                                val mappedItems = result.items.map {
-                                    val rect = it.boundingBox
-                                    // Scale back down, then add ROI offset
-                                    it.copy(boundingBox = android.graphics.RectF(
-                                        (rect.left / 3f) + roiLeft,
-                                        (rect.top / 3f) + roiTop,
-                                        (rect.right / 3f) + roiLeft,
-                                        (rect.bottom / 3f) + roiTop
-                                    ))
-                                }
-                                Pair(success, mappedItems)
+                                val result = previewFace.process(bitmap, options)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else {
                                 Pair(false, emptyList())
                             }
@@ -427,24 +403,24 @@ fun AIScreen() {
                     } else if (currentAiMode == AiMode.POSE) {
                         try {
                             if (previewPose != null) {
-                                val result = previewPose.process(bitmap)
+                                val result = previewPose.process(bitmap, options)
                                 Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     } else if (currentAiMode == AiMode.OBJECT_DETECTION || currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                         try {
                             if (previewOcr is ObjectDetectorProcessor && currentAiMode == AiMode.OBJECT_DETECTION) {
-                                val result = previewOcr.process(bitmap)
+                                val result = previewOcr.process(bitmap, options)
                                 Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else if (previewOcr is CustomObjectDetectorProcessor && currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
-                                val result = previewOcr.process(bitmap)
+                                val result = previewOcr.process(bitmap, options)
                                 Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else {
                                 // AIManager should have switched it, but as fallback
                                 val processor = if (currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) CustomObjectDetectorProcessor() else ObjectDetectorProcessor()
                                 val result = processor.let { 
                                     it.init(context, AIConfig())
-                                    val r = it.process(bitmap)
+                                    val r = it.process(bitmap, options)
                                     it.release()
                                     r
                                 }
@@ -454,14 +430,14 @@ fun AIScreen() {
                     } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
                         try {
                             if (previewSelfie != null) {
-                                val result = previewSelfie.process(bitmap)
+                                val result = previewSelfie.process(bitmap, options)
                                 Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     } else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
                         try {
                             if (previewSubject != null) {
-                                val result = previewSubject.process(bitmap)
+                                val result = previewSubject.process(bitmap, options)
                                 Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
@@ -1221,6 +1197,7 @@ fun CameraPreviewScreen(
     var latestDetections by remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
     var bitmapWidth by remember { mutableStateOf(720f) }
     var bitmapHeight by remember { mutableStateOf(1280f) }
+    var isFrontCamera by remember { mutableStateOf(false) }
 
     // Performance monitoring states
     var fps by remember { mutableStateOf(0) }
@@ -1460,6 +1437,8 @@ fun CameraPreviewScreen(
 
                         val startInference = System.currentTimeMillis()
                         val isFront = cameraController?.isFrontCamera ?: false
+                        isFrontCamera = isFront
+
                         var (success, items) = try {
                             currentOnStableDetection.value(
                                 bitmap,
@@ -1712,6 +1691,41 @@ fun CameraPreviewScreen(
                             drawContext.canvas.nativeCanvas.restore()
                         } else if (aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
                              // Optional: Draw basic guide for Face/Palm if needed, currently just showing latestDetections
+                             if (aiMode == AiMode.FACE && isFrontCamera) {
+                                 val guideColor = android.graphics.Color.YELLOW
+                                 val cardPaint = android.graphics.Paint().apply {
+                                     color = guideColor
+                                     style = android.graphics.Paint.Style.STROKE
+                                     strokeWidth = 4f
+                                     pathEffect = android.graphics.DashPathEffect(floatArrayOf(20f, 10f), 0f)
+                                 }
+                                 
+                                 // 1. Draw ID Card Frame (Landscape aspect 1.58:1)
+                                 val cardW = cw * 0.85f
+                                 val cardH = cardW / 1.58f
+                                 val cardLeft = (cw - cardW) / 2f
+                                 val cardTop = (ch - cardH) / 2f
+                                 val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
+                                 drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, cardPaint)
+
+                                 // 3. Instructions
+                                 val textPaint = android.graphics.Paint().apply {
+                                     color = guideColor
+                                     textSize = 36f
+                                     typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                     textAlign = android.graphics.Paint.Align.CENTER
+                                     setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                 }
+                                 drawContext.canvas.nativeCanvas.drawText("วางบัตรในกรอบ", cw / 2f, cardTop - 60f, textPaint)
+                                 
+                                 val subTextPaint = android.graphics.Paint().apply {
+                                     color = android.graphics.Color.WHITE
+                                     textSize = 30f
+                                     textAlign = android.graphics.Paint.Align.CENTER
+                                     setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                 }
+                                 drawContext.canvas.nativeCanvas.drawText("จัดใบหน้าบนบัตรให้อยู่ในช่องขวา", cw / 2f, cardTop - 20f, subTextPaint)
+                             }
                         }
                     }
 
@@ -3211,6 +3225,24 @@ fun FaceResultTable(jsonStr: String) {
             }
 
             Column(modifier = Modifier.fillMaxWidth().border(1.dp, Color(0xFFE5E7EB))) {
+                FaceTableRow(
+                    "Lens Info",
+                    if (obj.optBoolean("is_front", false)) "Front Camera (Mirror)" else "Back Camera"
+                )
+
+                FaceTableRow(
+                    "Detected Distance",
+                    if (obj.has("face_ratio")) String.format("Face Ratio: %.1f%%", obj.optDouble("face_ratio") * 100) else "N/A"
+                )
+
+                FaceTableRow(
+                    "Applied Processing",
+                    listOfNotNull(
+                        if (obj.optBoolean("applied_mirror", false)) "Mirror Compensation" else null,
+                        if (obj.optBoolean("applied_upscaling", false)) "Adaptive Upscaling" else null
+                    ).joinToString(", ").ifEmpty { "None" }
+                )
+
                 FaceTableRow(
                     "เส้นขอบรูปหลายเหลี่ยม",
                     if (bbox.length() >= 4) "[${bbox.optDouble(0).toInt()}, ${

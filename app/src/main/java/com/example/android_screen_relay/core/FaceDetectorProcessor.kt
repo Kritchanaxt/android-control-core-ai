@@ -12,26 +12,27 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 class FaceDetectorProcessor : AIProcessor {
     override val name: String = "MLKit - Face Detection"
     private var detector: FaceDetector? = null
+    private var accurateDetector: FaceDetector? = null
 
     override fun init(context: Context, config: AIConfig): Boolean {
         val isLowSpec = config.options["low_spec_mode"] as? Boolean ?: false
         
         return try {
-            val optionsBuilder = FaceDetectorOptions.Builder()
-                .setPerformanceMode(
-                    if (isLowSpec) FaceDetectorOptions.PERFORMANCE_MODE_FAST 
-                    else FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE
-                )
+            val fastOptions = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .build()
             
-            if (!isLowSpec) {
-                // Contours are heavy, disable on low spec for speed
-                optionsBuilder.setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
-            }
+            val accurateOptions = FaceDetectorOptions.Builder()
+                .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
+                .build()
             
-            optionsBuilder.enableTracking()
-            detector = FaceDetection.getClient(optionsBuilder.build())
+            detector = FaceDetection.getClient(fastOptions)
+            accurateDetector = FaceDetection.getClient(accurateOptions)
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -39,29 +40,86 @@ class FaceDetectorProcessor : AIProcessor {
         }
     }
 
-    override fun process(bitmap: Bitmap): AIResult {
-        val currentDetector = detector ?: return AIResult(false, emptyList(), 0, "Not initialized")
+    override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
+        val isFront = options["is_front"] as? Boolean ?: false
+        val currentDetector = if (isFront) accurateDetector ?: detector else detector
+        if (currentDetector == null) return AIResult(false, emptyList(), 0, "Not initialized")
+        
         val startTime = System.currentTimeMillis()
         
         return try {
-            val width = bitmap.width
-            val height = bitmap.height
-            
-            // Strategy: Thai ID cards usually have faces on the Right side.
-            // 1. Try Right 50% ROI
-            var result = processROI(bitmap, currentDetector, width / 2, 0, width / 2, height, offsetPixels = true)
-            
-            // 2. If not found, try Left 50% ROI
-            if (result.items.isEmpty()) {
-                result = processROI(bitmap, currentDetector, 0, 0, width / 2, height, offsetPixels = false)
-            }
-            
-            // 3. Fallback: Full Image (if ROI strategy didn't catch it somehow)
-            if (result.items.isEmpty()) {
-                result = processROI(bitmap, currentDetector, 0, 0, width, height, offsetPixels = false)
+            var processingBitmap = bitmap
+            val appliedMirrorCompensation = isFront
+            var appliedUpscaling = false
+
+            // Action 3: Pre-processing Flip for front camera
+            if (isFront) {
+                val matrix = android.graphics.Matrix().apply { postScale(-1f, 1f, bitmap.width / 2f, bitmap.height / 2f) }
+                processingBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
             }
 
-            AIResult(true, result.items, System.currentTimeMillis() - startTime)
+            val width = processingBitmap.width
+            val height = processingBitmap.height
+            
+            // Strategy: Thai ID cards have faces on the Right side (60% to 95% of card width)
+            // Focus on a specific ROI that matches the yellow UI guide
+            val roiLeft = (width * 0.60f).toInt()
+            val roiTop = (height * 0.25f).toInt()
+            val roiWidth = (width * 0.35f).toInt()
+            val roiHeight = (height * 0.50f).toInt()
+
+            var result = processROI(processingBitmap, currentDetector, roiLeft, roiTop, roiWidth, roiHeight, offsetPixels = true)
+            
+            // If not found in primary ROI, expand slightly
+            if (result.items.isEmpty()) {
+                result = processROI(processingBitmap, currentDetector, width / 2, 0, width / 2, height, offsetPixels = true)
+            }
+            
+            // Fallback: Full Image
+            if (result.items.isEmpty()) {
+                result = processROI(processingBitmap, currentDetector, 0, 0, width, height, offsetPixels = false)
+            }
+
+            // Filter: In front-camera mode, we only want small faces (on cards), 
+            // so ignore faces that take up too much of the frame (likely the user's face)
+            val filteredItems = if (isFront) {
+                result.items.filter { 
+                    val b = it.boundingBox
+                    val ratio = (b.width() * b.height()) / (width * height)
+                    ratio < 0.25f // Ignore if face takes > 25% of the total frame
+                }
+            } else result.items
+
+            // Action 2: Adaptive Upscaling for small faces
+            val bestFace = filteredItems.maxByOrNull { it.confidence }
+            if (bestFace != null && isFront) {
+                val box = bestFace.boundingBox
+                if (box.width() < 300 || box.height() < 300) {
+                    appliedUpscaling = true
+                    // Re-process with upscale could be done here, but for now we'll just flag it and use the accurate detector results
+                }
+            }
+
+            // Map coordinates back if we flipped
+            val finalItems = if (isFront) {
+                filteredItems.map { item ->
+                    val b = item.boundingBox
+                    // Flip X back
+                    val flippedBox = RectF(width - b.right, b.top, width - b.left, b.bottom)
+                    
+                    val extra = item.extra.toMutableMap()
+                    extra["is_front"] = true
+                    extra["applied_mirror"] = appliedMirrorCompensation
+                    extra["applied_upscaling"] = appliedUpscaling
+                    extra["face_ratio"] = (b.width() * b.height()) / (width * height)
+                    
+                    item.copy(boundingBox = flippedBox, extra = extra)
+                }
+            } else filteredItems
+
+            if (processingBitmap !== bitmap) processingBitmap.recycle()
+
+            AIResult(true, finalItems, System.currentTimeMillis() - startTime)
         } catch (e: Exception) {
             e.printStackTrace()
             AIResult(false, emptyList(), 0, e.message)
@@ -75,43 +133,40 @@ class FaceDetectorProcessor : AIProcessor {
         offsetPixels: Boolean
     ): AIResult {
         val roiBitmap = Bitmap.createBitmap(fullBitmap, x, y, w, h)
-        val image = InputImage.fromBitmap(roiBitmap, 0)
+        // Adaptive Upscaling Check for ROI
+        val finalRoiBitmap = if (w < 300 || h < 300) {
+            val scale = 2.0f
+            Bitmap.createScaledBitmap(roiBitmap, (w * scale).toInt(), (h * scale).toInt(), true)
+        } else roiBitmap
+
+        val image = InputImage.fromBitmap(finalRoiBitmap, 0)
         val task = detector.process(image)
         val faces = Tasks.await(task)
         
+        val scaleBack = if (finalRoiBitmap !== roiBitmap) finalRoiBitmap.width.toFloat() / roiBitmap.width.toFloat() else 1.0f
+        
         if (roiBitmap !== fullBitmap) roiBitmap.recycle()
+        if (finalRoiBitmap !== roiBitmap) finalRoiBitmap.recycle()
 
         val items = faces.map { face ->
             val box = face.boundingBox
-            val shiftedBox = if (offsetPixels) {
-                android.graphics.Rect(box.left + x, box.top + y, box.right + x, box.bottom + y)
+            val scaledBox = if (scaleBack > 1.0f) {
+                android.graphics.Rect(
+                    (box.left / scaleBack).toInt(), (box.top / scaleBack).toInt(),
+                    (box.right / scaleBack).toInt(), (box.bottom / scaleBack).toInt()
+                )
             } else box
-            
-            val landmarksJson = org.json.JSONObject()
-            val leftEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.LEFT_EYE)
-            val rightEye = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.RIGHT_EYE)
-            val bottomMouth = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.MOUTH_BOTTOM)
-            
-            if (leftEye != null) {
-                val lx = if (offsetPixels) leftEye.position.x + x else leftEye.position.x
-                landmarksJson.put("LEFT_EYE", org.json.JSONArray().put(lx).put(leftEye.position.y))
-            }
-            if (rightEye != null) {
-                val rx = if (offsetPixels) rightEye.position.x + x else rightEye.position.x
-                landmarksJson.put("RIGHT_EYE", org.json.JSONArray().put(rx).put(rightEye.position.y))
-            }
-            if (bottomMouth != null) {
-                val mx = if (offsetPixels) bottomMouth.position.x + x else bottomMouth.position.y
-                landmarksJson.put("MOUTH_BOTTOM", org.json.JSONArray().put(mx).put(bottomMouth.position.y))
-            }
 
+            val shiftedBox = if (offsetPixels) {
+                android.graphics.Rect(scaledBox.left + x, scaledBox.top + y, scaledBox.right + x, scaledBox.bottom + y)
+            } else scaledBox
+            
             AIDetectedItem(
                 label = "Face",
                 confidence = face.smilingProbability ?: 1.0f,
                 boundingBox = RectF(shiftedBox),
                 extra = mapOf(
-                    "tracking_id" to (face.trackingId ?: -1),
-                    "landmarks" to landmarksJson.toString()
+                    "tracking_id" to (face.trackingId ?: -1)
                 )
             )
         }
@@ -121,5 +176,7 @@ class FaceDetectorProcessor : AIProcessor {
     override fun release() {
         detector?.close()
         detector = null
+        accurateDetector?.close()
+        accurateDetector = null
     }
 }

@@ -26,7 +26,7 @@ class SubjectSegmenterProcessor : AIProcessor {
         }
     }
 
-    override fun process(bitmap: Bitmap): AIResult {
+    override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         val start = System.currentTimeMillis()
         return try {
             val image = InputImage.fromBitmap(bitmap, 0)

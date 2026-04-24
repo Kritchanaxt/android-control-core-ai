@@ -28,7 +28,7 @@ class ObjectDetectorProcessor : AIProcessor {
         }
     }
 
-    override fun process(bitmap: Bitmap): AIResult {
+    override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         val currentDetector = detector ?: return AIResult(false, emptyList(), 0, "Not initialized")
         val startTime = System.currentTimeMillis()
         

@@ -12,7 +12,7 @@ import kotlin.concurrent.write
 interface AIProcessor {
     val name: String
     fun init(context: android.content.Context, config: AIConfig): Boolean
-    fun process(bitmap: Bitmap): AIResult
+    fun process(bitmap: Bitmap, options: Map<String, Any> = emptyMap()): AIResult
     fun release()
 }
 
@@ -128,14 +128,14 @@ object AIManager {
     /**
      * Thread-safe process call
      */
-    fun process(bitmap: Bitmap): AIResult? {
+    fun process(bitmap: Bitmap, options: Map<String, Any> = emptyMap()): AIResult? {
         if (isSwitching) return null
         
         val start = System.currentTimeMillis()
         
         // Use read lock to allow multiple detections in parallel but block switching
         val result = lock.read {
-            activeProcessor?.process(bitmap)
+            activeProcessor?.process(bitmap, options)
         }
         
         val end = System.currentTimeMillis()

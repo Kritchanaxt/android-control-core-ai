@@ -12,7 +12,7 @@ class FaceDetector : AIProcessor {
         return true
     }
 
-    override fun process(bitmap: Bitmap): AIResult {
+    override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         val start = System.currentTimeMillis()
         // Mock processing angle requirement
         val angleZ = 0.5f // Placeholder logic
