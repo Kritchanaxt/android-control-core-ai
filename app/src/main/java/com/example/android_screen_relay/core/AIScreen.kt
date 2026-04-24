@@ -366,169 +366,98 @@ fun AIScreen() {
                 onCameraIdChange = { selectedCameraId = it },
                 selectedAspectRatio = selectedAspectRatio,
                 onAspectRatioChange = { selectedAspectRatio = it },
-                onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
+                onStableDetection = { bitmap, _, _, _, _, _, _, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf("is_front" to isFront)
 
+                    // 1. Special Handling for Palmprint (Needs custom scaling)
                     if (currentAiMode == AiMode.PALMPRINT) {
                         try {
-                            if (previewPalm != null) {
+                            val processor = AIManager.getActiveProcessor() as? PalmprintProcessor
+                            if (processor != null) {
                                 val scale = 480f / maxOf(bitmap.width, bitmap.height)
                                 val processBitmap = if (scale < 1f) {
-                                    Bitmap.createScaledBitmap(
-                                        bitmap,
-                                        (bitmap.width * scale).toInt(),
-                                        (bitmap.height * scale).toInt(),
-                                        false
-                                    )
-                                } else {
-                                    bitmap
-                                }
-                                val result = previewPalm.process(processBitmap, options)
-                                if (processBitmap !== bitmap) processBitmap.recycle()
-                                val item = result.items.firstOrNull()
-                                val success = result.success && item?.extra?.get("hand")?.toString()
-                                    ?.equals(targetHand, ignoreCase = true) == true
+                                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                } else bitmap
                                 
+                                val result = processor.process(processBitmap, options)
+                                if (processBitmap !== bitmap) processBitmap.recycle()
+                                
+                                val item = result.items.firstOrNull()
+                                val success = result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
                                 val scaledItems = if (scale < 1f) {
                                     result.items.map {
                                         val rect = it.boundingBox
                                         it.copy(boundingBox = android.graphics.RectF(rect.left / scale, rect.top / scale, rect.right / scale, rect.bottom / scale))
                                     }
                                 } else result.items
-                                
                                 Pair(success, scaledItems)
-                            } else {
-                                Pair(false, emptyList())
-                            }
-                        } catch (e: Exception) {
-                            Pair(false, emptyList())
-                        }
-                    } else if (currentAiMode == AiMode.FACE) {
-                        try {
-                            if (previewFace != null) {
-                                val result = previewFace.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            } else {
-                                Pair(false, emptyList())
-                            }
-                        } catch (e: Exception) {
-                            Pair(false, emptyList())
-                        }
-                    } else if (currentAiMode == AiMode.POSE) {
-                        try {
-                            if (previewPose != null) {
-                                val result = previewPose.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
-                    } else if (currentAiMode == AiMode.OBJECT_DETECTION || currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
+                    } 
+                    // 2. Handling for OCR (Using centralized process and custom card check)
+                    else if (currentAiMode == AiMode.OCR) {
                         try {
-                            if (previewOcr is ObjectDetectorProcessor && currentAiMode == AiMode.OBJECT_DETECTION) {
-                                val result = previewOcr.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            } else if (previewOcr is CustomObjectDetectorProcessor && currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
-                                val result = previewOcr.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            } else {
-                                // AIManager should have switched it, but as fallback
-                                val processor = if (currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) CustomObjectDetectorProcessor() else ObjectDetectorProcessor()
-                                val result = processor.let { 
-                                    it.init(context, AIConfig())
-                                    val r = it.process(bitmap, options)
-                                    it.release()
-                                    r
-                                }
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            }
-                        } catch (e: Exception) { Pair(false, emptyList()) }
-                    } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
-                        try {
-                            if (previewSelfie != null) {
-                                val result = previewSelfie.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            } else Pair(false, emptyList())
-                        } catch (e: Exception) { Pair(false, emptyList()) }
-                    } else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
-                        try {
-                            if (previewSubject != null) {
-                                val result = previewSubject.process(bitmap, options)
-                                Pair(result.success && result.items.isNotEmpty(), result.items)
-                            } else Pair(false, emptyList())
-                        } catch (e: Exception) { Pair(false, emptyList()) }
-                    } else {
-                        // For OCR, detect card text before snap to prevent infinite snapping
-                        try {
-                            if (previewOcr != null) {
-                                val scale = 720f / maxOf(bitmap.width, bitmap.height)
-                                val w = (bitmap.width * scale).toInt()
-                                val h = (bitmap.height * scale).toInt()
-                                val scaled = Bitmap.createScaledBitmap(bitmap, w, h, false)
-                                val res = previewOcr.detect(scaled)
-                                if (scaled !== bitmap) scaled.recycle()
+                            val scale = 720f / maxOf(bitmap.width, bitmap.height)
+                            val scaled = if (scale < 1f) {
+                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                            } else bitmap
+                            
+                            val result = AIManager.process(scaled, options)
+                            if (scaled !== bitmap) scaled.recycle()
+                            
+                            if (result != null && result.success) {
+                                val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
+                                val idKeywords = listOf("เลขประจำตัว", "ประชาชน", "National", "Identification", "Thai National ID Card")
+                                
                                 var foundId = false
-                                val ocrItems = mutableListOf<AIDetectedItem>()
-                                try {
-                                    val jsonArray = org.json.JSONArray(res)
-                                    val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
-
-                                    for (i in 0 until jsonArray.length()) {
-                                        val obj = jsonArray.optJSONObject(i)
-                                        val lbl = obj?.optString("label", "") ?: ""
-                                        val rawText = lbl.replace(" ", "").replace("-", "")
-
-                                        // Parse box for drawing
-                                        val x0 = obj.optDouble("x0", 0.0).toFloat()
-                                        val y0 = obj.optDouble("y0", 0.0).toFloat()
-                                        val x1 = obj.optDouble("x1", 0.0).toFloat()
-                                        val y1 = obj.optDouble("y1", 0.0).toFloat()
-                                        val x2 = obj.optDouble("x2", 0.0).toFloat()
-                                        val y2 = obj.optDouble("y2", 0.0).toFloat()
-                                        val x3 = obj.optDouble("x3", 0.0).toFloat()
-                                        val y3 = obj.optDouble("y3", 0.0).toFloat()
-
-                                        val minX = min(min(x0, x1), min(x2, x3))
-                                        val maxX = max(max(x0, x1), max(x2, x3))
-                                        val minY = min(min(y0, y1), min(y2, y3))
-                                        val maxY = max(max(y0, y1), max(y2, y3))
-
-                                        ocrItems.add(AIDetectedItem(
-                                            label = lbl,
-                                            confidence = obj.optDouble("prob", 0.0).toFloat(),
-                                            boundingBox = android.graphics.RectF(minX / scale, minY / scale, maxX / scale, maxY / scale)
-                                        ))
-
-                                        // ✅ ผ่อนปรนเกณฑ์การตรวจจับบัตร (Relaxed criteria)
-                                        val isIdPattern =
-                                            strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(
-                                                Regex("""\d{5,}""")
-                                            ))
-                                        val idKeywords = listOf(
-                                            "เลขประจำตัว",
-                                            "ประชาชน",
-                                            "National",
-                                            "Identification",
-                                            "ชื่อตัว",
-                                            "เกิดวันที่",
-                                            "นาย",
-                                            "นางสาว",
-                                            "Thai National ID Card"
-                                        )
-                                        val isKeyword = idKeywords.any { lbl.contains(it) }
-
-                                        if (isIdPattern || isKeyword) {
-                                            foundId = true
-                                        }
+                                val scaledItems = result.items.map { item ->
+                                    val lbl = item.label
+                                    val rawText = lbl.replace(" ", "").replace("-", "")
+                                    
+                                    if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(Regex("""\d{5,}"""))) || 
+                                        idKeywords.any { lbl.contains(it) }) {
+                                        foundId = true
                                     }
-                                } catch (e: Exception) {
+                                    
+                                    if (scale < 1f) {
+                                        val r = item.boundingBox
+                                        item.copy(boundingBox = android.graphics.RectF(r.left / scale, r.top / scale, r.right / scale, r.bottom / scale))
+                                    } else item
                                 }
-                                Pair(foundId, ocrItems)
+                                Pair(foundId, scaledItems)
+                            } else Pair(false, emptyList())
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    }
+                    // 3. General Handling for other modes (FACE, POSE, SEGMENTATION, etc.)
+                    else {
+                        try {
+                            // 🌟 Smart Scaling for AI: ML Kit works best with reasonable sizes (e.g. max 720px)
+                            // This prevents ML Kit from failing or being too slow on high-res bitmaps
+                            val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+                            val aiBitmap = if (aiScale < 1f) {
+                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                            } else bitmap
+                            
+                            val result = AIManager.process(aiBitmap, options)
+                            if (aiBitmap !== bitmap) aiBitmap.recycle()
+                            
+                            if (result != null && result.success) {
+                                // Map items back to original bitmap coordinates
+                                val finalItems = if (aiScale < 1f) {
+                                    result.items.map { item ->
+                                        val r = item.boundingBox
+                                        item.copy(boundingBox = android.graphics.RectF(
+                                            r.left / aiScale, r.top / aiScale, 
+                                            r.right / aiScale, r.bottom / aiScale
+                                        ))
+                                    }
+                                } else result.items
+                                Pair(finalItems.isNotEmpty(), finalItems)
                             } else {
                                 Pair(false, emptyList())
                             }
-                        } catch (e: Exception) {
-                            Pair(false, emptyList())
-                        }
+                        } catch (e: Exception) { Pair(false, emptyList()) }
                     }
                 },
                 onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
@@ -1983,36 +1912,57 @@ fun CameraPreviewScreen(
                                 }
                             }
                         } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
-                            val maskBuffer = item.extra["mask_buffer"] as? java.nio.ByteBuffer
+                            val rawBuffer = item.extra["mask_buffer"]
                             val maskWidth = item.extra["width"] as? Int ?: 0
                             val maskHeight = item.extra["height"] as? Int ?: 0
                             
-                            if (maskBuffer != null && maskWidth > 0 && maskHeight > 0) {
-                                maskBuffer.rewind()
+                            val floatBuffer: java.nio.FloatBuffer? = if (rawBuffer is java.nio.ByteBuffer) {
+                                val b = rawBuffer as java.nio.ByteBuffer
+                                b.rewind()
+                                b.asFloatBuffer()
+                            } else if (rawBuffer is java.nio.FloatBuffer) {
+                                val f = rawBuffer as java.nio.FloatBuffer
+                                f.rewind()
+                                f
+                            } else null
+
+                            // 🌟 Draw bounding box as fallback/debug for Subject
+                            if (aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                                val boxPaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.WHITE
+                                    style = android.graphics.Paint.Style.STROKE
+                                    strokeWidth = 3f
+                                    pathEffect = android.graphics.DashPathEffect(floatArrayOf(15f, 10f), 0f)
+                                }
+                                drawContext.canvas.nativeCanvas.drawRect(mappedRect, boxPaint)
+                            }
+
+                            if (floatBuffer != null && maskWidth > 0 && maskHeight > 0) {
                                 val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ARGB_8888)
                                 
-                                // Color based on index or mode
+                                // Color based on index or mode - Increased Opacity to CC (80%)
                                 val tintColor = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
-                                    android.graphics.Color.parseColor("#80FF00FF") // Purple tint as requested
+                                    android.graphics.Color.parseColor("#CCFF00FF") 
                                 } else {
-                                    // Rotate colors for subjects
-                                    val colors = listOf("#80FF00FF", "#8000FFFF", "#80FFFF00", "#8000FF00")
-                                    val idx = latestDetections.indexOf(item) % colors.size
+                                    val colors = listOf("#CCFF00FF", "#CC00FFFF", "#CCFFFF00", "#CC00FF00")
+                                    val idx = latestDetections.indexOf(item).coerceAtLeast(0) % colors.size
                                     android.graphics.Color.parseColor(colors[idx])
                                 }
 
                                 val pixels = IntArray(maskWidth * maskHeight)
+                                val bufferCap = floatBuffer.capacity()
                                 for (i in 0 until maskWidth * maskHeight) {
-                                    val conf = maskBuffer.float
-                                    if (conf > 0.5f) {
-                                        pixels[i] = tintColor
-                                    } else {
-                                        pixels[i] = android.graphics.Color.TRANSPARENT
+                                    if (i < bufferCap) {
+                                        val conf = floatBuffer.get(i)
+                                        if (conf > 0.4f) { // Slightly lower threshold for better visibility
+                                            pixels[i] = tintColor
+                                        } else {
+                                            pixels[i] = android.graphics.Color.TRANSPARENT
+                                        }
                                     }
                                 }
                                 maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
                                 
-                                // Draw mask scaled to fit
                                 val destRect = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
                                     android.graphics.RectF(0f, 0f, size.width, size.height)
                                 } else {

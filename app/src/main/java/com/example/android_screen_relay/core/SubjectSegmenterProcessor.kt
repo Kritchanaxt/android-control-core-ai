@@ -33,13 +33,28 @@ class SubjectSegmenterProcessor : AIProcessor {
             val result = Tasks.await(segmenter!!.process(image))
             val duration = System.currentTimeMillis() - start
 
+            Log.d("Subject", "Detected ${result.subjects.size} subjects in ${duration}ms")
+
             val items = mutableListOf<AIDetectedItem>()
-            result.subjects.forEach { subject ->
+            result.subjects.forEachIndexed { index, subject ->
                 val extra = mutableMapOf<String, Any>()
-                subject.getConfidenceMask()?.let { mask ->
-                    extra["mask_buffer"] = mask
-                    extra["width"] = subject.getWidth()
-                    extra["height"] = subject.getHeight()
+                val mask = subject.getConfidenceMask()
+                if (mask != null) {
+                    // 🌟 FIX: Use full reflection to avoid 'Unresolved reference' at compile time
+                    try {
+                        val getBufferMethod = mask.javaClass.methods.find { it.name == "getBuffer" }
+                        val buffer = getBufferMethod?.invoke(mask)
+                        if (buffer != null) {
+                            extra["mask_buffer"] = buffer
+                            extra["width"] = subject.getWidth()
+                            extra["height"] = subject.getHeight()
+                            Log.d("Subject", "Subject #$index: mask buffer extracted successfully")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Subject", "Failed to extract buffer via reflection", e)
+                    }
+                } else {
+                    Log.d("Subject", "Subject #$index: NO mask found")
                 }
                 
                 items.add(
