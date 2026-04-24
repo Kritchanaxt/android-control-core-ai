@@ -96,6 +96,7 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
     implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.google.mlkit:object-detection:17.0.2")
+    implementation("com.google.mlkit:object-detection-custom:17.0.2")
     implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")

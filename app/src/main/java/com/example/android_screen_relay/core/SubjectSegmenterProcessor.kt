@@ -35,6 +35,13 @@ class SubjectSegmenterProcessor : AIProcessor {
 
             val items = mutableListOf<AIDetectedItem>()
             result.subjects.forEach { subject ->
+                val extra = mutableMapOf<String, Any>()
+                subject.getConfidenceMask()?.let { mask ->
+                    extra["mask_buffer"] = mask
+                    extra["width"] = subject.getWidth()
+                    extra["height"] = subject.getHeight()
+                }
+                
                 items.add(
                     AIDetectedItem(
                         label = "Subject",
@@ -44,7 +51,8 @@ class SubjectSegmenterProcessor : AIProcessor {
                             subject.getStartY().toFloat(),
                             (subject.getStartX() + subject.getWidth()).toFloat(),
                             (subject.getStartY() + subject.getHeight()).toFloat()
-                        )
+                        ),
+                        extra = extra
                     )
                 )
             }

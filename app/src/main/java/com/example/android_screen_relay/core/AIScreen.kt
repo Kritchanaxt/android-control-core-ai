@@ -83,7 +83,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION }
+enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -424,6 +424,47 @@ fun AIScreen() {
                         } catch (e: Exception) {
                             Pair(false, emptyList())
                         }
+                    } else if (currentAiMode == AiMode.POSE) {
+                        try {
+                            if (previewPose != null) {
+                                val result = previewPose.process(bitmap)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            } else Pair(false, emptyList())
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    } else if (currentAiMode == AiMode.OBJECT_DETECTION || currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
+                        try {
+                            if (previewOcr is ObjectDetectorProcessor && currentAiMode == AiMode.OBJECT_DETECTION) {
+                                val result = previewOcr.process(bitmap)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            } else if (previewOcr is CustomObjectDetectorProcessor && currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
+                                val result = previewOcr.process(bitmap)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            } else {
+                                // AIManager should have switched it, but as fallback
+                                val processor = if (currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION) CustomObjectDetectorProcessor() else ObjectDetectorProcessor()
+                                val result = processor.let { 
+                                    it.init(context, AIConfig())
+                                    val r = it.process(bitmap)
+                                    it.release()
+                                    r
+                                }
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            }
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
+                        try {
+                            if (previewSelfie != null) {
+                                val result = previewSelfie.process(bitmap)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            } else Pair(false, emptyList())
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    } else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
+                        try {
+                            if (previewSubject != null) {
+                                val result = previewSubject.process(bitmap)
+                                Pair(result.success && result.items.isNotEmpty(), result.items)
+                            } else Pair(false, emptyList())
+                        } catch (e: Exception) { Pair(false, emptyList()) }
                     } else {
                         // For OCR, detect card text before snap to prevent infinite snapping
                         try {
@@ -503,6 +544,16 @@ fun AIScreen() {
                     if (isProcessing) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
+                    }
+                    
+                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE || 
+                                            currentAiMode == AiMode.OBJECT_DETECTION || 
+                                            currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
+                                            currentAiMode == AiMode.SELFIE_SEGMENTATION || 
+                                            currentAiMode == AiMode.SUBJECT_SEGMENTATION
+                    if (isPreviewOnlyMode) {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                        return@CameraPreviewScreen
                     }
 
                     if (currentAiMode == AiMode.PALMPRINT) {
@@ -1509,7 +1560,14 @@ fun CameraPreviewScreen(
                         }
 
                         var passedToCapture = false
-                        if (criteriaMet) {
+                        // Disable Auto-Snap for specific preview-only modes as requested
+                        val isPreviewOnlyMode = aiMode == AiMode.POSE || 
+                                                aiMode == AiMode.OBJECT_DETECTION || 
+                                                aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
+                                                aiMode == AiMode.SELFIE_SEGMENTATION || 
+                                                aiMode == AiMode.SUBJECT_SEGMENTATION
+
+                        if (criteriaMet && !isPreviewOnlyMode) {
                             stableTime += 250
                             if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
                                 isCapturing = true
@@ -1521,6 +1579,9 @@ fun CameraPreviewScreen(
                                 kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
                                 isCapturing = false
                             }
+                        } else if (criteriaMet && isPreviewOnlyMode) {
+                            // Just update stable status but don't capture
+                            stableTime = 500 
                         } else {
                             stableTime = 0L
                         }
@@ -1593,55 +1654,65 @@ fun CameraPreviewScreen(
                     val cw = size.width
                     val ch = size.height
 
-                    // OCR matches bounds, PALMPRINT uses a smaller centered box
-                    val frameW = if (aiMode == AiMode.OCR) {
-                        val maxW = cw * 0.9f
-                        val idealH = ch * 0.6f
-                        if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                    } else if (aiMode == AiMode.FACE) {
-                        min(cw, ch) * 0.8f
-                    } else {
-                        min(cw, ch) * 0.6f
-                    }
-                    val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
+                    val isPreviewOnlyMode = aiMode == AiMode.POSE || 
+                                            aiMode == AiMode.OBJECT_DETECTION || 
+                                            aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
+                                            aiMode == AiMode.SELFIE_SEGMENTATION || 
+                                            aiMode == AiMode.SUBJECT_SEGMENTATION
 
-                    val left = (cw - frameW) / 2
-                    val top = (ch - frameH) / 2
-                    val right = left + frameW
-                    val bottom = top + frameH
+                    if (aiMode == AiMode.OCR || aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
+                        // OCR matches bounds, PALMPRINT uses a smaller centered box
+                        val frameW = if (aiMode == AiMode.OCR) {
+                            val maxW = cw * 0.9f
+                            val idealH = ch * 0.6f
+                            if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
+                        } else if (aiMode == AiMode.FACE) {
+                            min(cw, ch) * 0.8f
+                        } else {
+                            min(cw, ch) * 0.6f
+                        }
+                        val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
 
-                    val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
-                        style = android.graphics.Paint.Style.STROKE; strokeWidth = strokeW; color =
-                        frameColor; strokeCap = android.graphics.Paint.Cap.ROUND
-                    }
-                    val textPaint = android.graphics.Paint().apply {
-                        color = android.graphics.Color.WHITE
-                        textSize = 36f
-                        isAntiAlias = true
-                        typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    }
+                        val left = (cw - frameW) / 2
+                        val top = (ch - frameH) / 2
+                        val right = left + frameW
+                        val bottom = top + frameH
 
-                    if (aiMode == AiMode.OCR) {
-                        // Main ID card border (Landscape)
-                        val rect = android.graphics.RectF(left, top, right, bottom)
-                        drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
+                        val paint = androidx.compose.ui.graphics.Paint().asFrameworkPaint().apply {
+                            style = android.graphics.Paint.Style.STROKE; strokeWidth = strokeW; color =
+                            frameColor; strokeCap = android.graphics.Paint.Cap.ROUND
+                        }
+                        val textPaint = android.graphics.Paint().apply {
+                            color = android.graphics.Color.WHITE
+                            textSize = 36f
+                            isAntiAlias = true
+                            typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        }
 
-                        // Top Text
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
-                        val topText =
-                            if (stableTime >= 250L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
-                        val topTextWidth = textPaint.measureText(topText)
-                        drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
+                        if (aiMode == AiMode.OCR) {
+                            // Main ID card border (Landscape)
+                            val rect = android.graphics.RectF(left, top, right, bottom)
+                            drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
 
-                        // Bottom Text
-                        drawContext.canvas.nativeCanvas.save()
-                        drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, bottom + 80f)
-                        val bottomText = "สแกนบัตรประชาชนด้านหน้า"
-                        val bottomTextWidth = textPaint.measureText(bottomText)
-                        drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
-                        drawContext.canvas.nativeCanvas.restore()
+                            // Top Text
+                            drawContext.canvas.nativeCanvas.save()
+                            drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, top - 60f)
+                            val topText =
+                                if (stableTime >= 250L || isCapturing) "พบบัตรแล้ว กำลังทำการบันทึกภาพ..." else "กรุณาวางบัตรประชาชนในกรอบเพื่อรอสแกนอัตโนมัติ"
+                            val topTextWidth = textPaint.measureText(topText)
+                            drawContext.canvas.nativeCanvas.drawText(topText, -topTextWidth / 2f, 0f, textPaint)
+                            drawContext.canvas.nativeCanvas.restore()
+
+                            // Bottom Text
+                            drawContext.canvas.nativeCanvas.save()
+                            drawContext.canvas.nativeCanvas.translate(left + frameW / 2f, bottom + 80f)
+                            val bottomText = "สแกนบัตรประชาชนด้านหน้า"
+                            val bottomTextWidth = textPaint.measureText(bottomText)
+                            drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
+                            drawContext.canvas.nativeCanvas.restore()
+                        } else if (aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
+                             // Optional: Draw basic guide for Face/Palm if needed, currently just showing latestDetections
+                        }
                     }
 
                     // Dynamic Bounding Boxes from latestDetections
@@ -1694,6 +1765,155 @@ fun CameraPreviewScreen(
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 24f, 24f, palmPaint)
                         } else if (aiMode == AiMode.OCR) {
                             drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
+                            // White box as requested
+                            val objPaint = android.graphics.Paint().apply {
+                                color = android.graphics.Color.WHITE
+                                style = android.graphics.Paint.Style.STROKE
+                                strokeWidth = 4f
+                            }
+                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, objPaint)
+                            
+                            val tid = item.extra["tracking_id"] as? Int ?: -1
+                            val index = item.extra["index"] as? Int ?: -1
+                            
+                            val lines = mutableListOf<String>()
+                            if (tid != -1) lines.add("Tracking ID: $tid")
+                            
+                            if (aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
+                                lines.add("${item.label} (index: $index)")
+                                lines.add("${String.format("%.2f", item.confidence * 100)}% confidence (index: $index)")
+                            } else if (tid != -1) {
+                                // Already added tracking ID
+                            }
+
+                            if (lines.isNotEmpty()) {
+                                val tidPaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.BLACK
+                                    textSize = 32f
+                                    typeface = android.graphics.Typeface.DEFAULT
+                                }
+                                val bgPaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.LTGRAY
+                                    alpha = 180
+                                    style = android.graphics.Paint.Style.FILL
+                                }
+                                
+                                val lineHeight = 40f
+                                val padding = 10f
+                                var maxWidth = 0f
+                                lines.forEach { maxWidth = max(maxWidth, tidPaint.measureText(it)) }
+                                
+                                val bgRect = android.graphics.RectF(
+                                    mappedRect.left, 
+                                    mappedRect.top - (lines.size * lineHeight) - padding, 
+                                    mappedRect.left + maxWidth + (padding * 2), 
+                                    mappedRect.top
+                                )
+                                drawContext.canvas.nativeCanvas.drawRect(bgRect, bgPaint)
+                                
+                                lines.forEachIndexed { i, line ->
+                                    drawContext.canvas.nativeCanvas.drawText(
+                                        line, 
+                                        mappedRect.left + padding, 
+                                        mappedRect.top - ((lines.size - i - 1) * lineHeight) - padding - 8f, 
+                                        tidPaint
+                                    )
+                                }
+                            }
+                        } else if (aiMode == AiMode.POSE) {
+                            val landmarks = item.extra["landmarks_raw"] as? Map<Int, android.graphics.PointF>
+                            if (landmarks != null) {
+                                val posePaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.parseColor("#E91E63") // Pinkish red as requested
+                                    style = android.graphics.Paint.Style.STROKE
+                                    strokeWidth = 6f
+                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                }
+                                val dotPaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.WHITE
+                                    style = android.graphics.Paint.Style.FILL
+                                }
+                                val confPaint = android.graphics.Paint().apply {
+                                    color = android.graphics.Color.WHITE
+                                    textSize = 24f
+                                    setShadowLayer(2f, 0f, 0f, android.graphics.Color.BLACK)
+                                }
+
+                                fun drawLine(startType: Int, endType: Int) {
+                                    val s = landmarks[startType]
+                                    val e = landmarks[endType]
+                                    if (s != null && e != null) {
+                                        drawContext.canvas.nativeCanvas.drawLine(s.x * boxScaleX, s.y * boxScaleY, e.x * boxScaleX, e.y * boxScaleY, posePaint)
+                                    }
+                                }
+
+                                // Connections logic (ML Kit PoseLandmark)
+                                // Torso
+                                drawLine(11, 12); drawLine(11, 23); drawLine(12, 24); drawLine(23, 24)
+                                // Arms
+                                drawLine(11, 13); drawLine(13, 15); drawLine(12, 14); drawLine(14, 16)
+                                // Legs
+                                drawLine(23, 25); drawLine(25, 27); drawLine(24, 26); drawLine(26, 28)
+                                // Face
+                                drawLine(0, 1); drawLine(1, 2); drawLine(2, 3); drawLine(0, 4); drawLine(4, 5); drawLine(5, 6)
+                                drawLine(9, 10)
+
+                                landmarks.forEach { (type, pt) ->
+                                    val px = pt.x * boxScaleX
+                                    val py = pt.y * boxScaleY
+                                    drawContext.canvas.nativeCanvas.drawCircle(px, py, 6f, dotPaint)
+                                    
+                                    // Confidence score text if available
+                                    // Note: we don't have per-landmark confidence in 'landmarks_raw' yet, but PoseLandmark has inFrameLikelihood
+                                    // For simplicity and matching UI image, we'll draw 1.00 or similar if it exists in JSON
+                                    try {
+                                        val lJson = org.json.JSONObject(item.extra["landmarks"] as String)
+                                        val lObj = lJson.getJSONObject(type.toString())
+                                        val prob = lObj.getDouble("likelihood")
+                                        drawContext.canvas.nativeCanvas.drawText(String.format("%.2f", prob), px + 10f, py, confPaint)
+                                    } catch (e: Exception) {}
+                                }
+                            }
+                        } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                            val maskBuffer = item.extra["mask_buffer"] as? java.nio.ByteBuffer
+                            val maskWidth = item.extra["width"] as? Int ?: 0
+                            val maskHeight = item.extra["height"] as? Int ?: 0
+                            
+                            if (maskBuffer != null && maskWidth > 0 && maskHeight > 0) {
+                                maskBuffer.rewind()
+                                val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ARGB_8888)
+                                
+                                // Color based on index or mode
+                                val tintColor = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
+                                    android.graphics.Color.parseColor("#80FF00FF") // Purple tint as requested
+                                } else {
+                                    // Rotate colors for subjects
+                                    val colors = listOf("#80FF00FF", "#8000FFFF", "#80FFFF00", "#8000FF00")
+                                    val idx = latestDetections.indexOf(item) % colors.size
+                                    android.graphics.Color.parseColor(colors[idx])
+                                }
+
+                                val pixels = IntArray(maskWidth * maskHeight)
+                                for (i in 0 until maskWidth * maskHeight) {
+                                    val conf = maskBuffer.float
+                                    if (conf > 0.5f) {
+                                        pixels[i] = tintColor
+                                    } else {
+                                        pixels[i] = android.graphics.Color.TRANSPARENT
+                                    }
+                                }
+                                maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
+                                
+                                // Draw mask scaled to fit
+                                val destRect = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
+                                    android.graphics.RectF(0f, 0f, size.width, size.height)
+                                } else {
+                                    mappedRect
+                                }
+                                drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, null)
+                                maskBitmap.recycle()
+                            }
                         }
                     }
                 }
@@ -1866,6 +2086,13 @@ fun CameraPreviewScreen(
     }
 
     if (showSettingsDialog) {
+        // Hide overlay when sheet is visible to prevent UI overlap
+        DisposableEffect(Unit) {
+            RelayService.getInstance()?.overlayManager?.hideOverlay()
+            onDispose {
+                RelayService.getInstance()?.overlayManager?.showOverlayView()
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showSettingsDialog = false },
             containerColor = MaterialTheme.colorScheme.surface,
@@ -2068,6 +2295,13 @@ fun CameraPreviewScreen(
     }
 
     if (showAiModeSheet) {
+        // Hide overlay when sheet is visible to prevent UI overlap
+        DisposableEffect(Unit) {
+            RelayService.getInstance()?.overlayManager?.hideOverlay()
+            onDispose {
+                RelayService.getInstance()?.overlayManager?.showOverlayView()
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showAiModeSheet = false },
             containerColor = Color.White,
@@ -2077,8 +2311,9 @@ fun CameraPreviewScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 24.dp, vertical = 8.dp)
-                    .padding(bottom = 48.dp),
+                    .padding(bottom = 64.dp), // Increased padding to prevent cut-off
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
@@ -2090,6 +2325,7 @@ fun CameraPreviewScreen(
                         AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
                         AiMode.SUBJECT_SEGMENTATION -> "ML Kit - Subject Segmentation"
                         AiMode.OBJECT_DETECTION -> "ML Kit - Object detection"
+                        AiMode.CUSTOM_OBJECT_DETECTION -> "ML Kit - Custom Object detection"
                         else -> mode.name
                     }
                     

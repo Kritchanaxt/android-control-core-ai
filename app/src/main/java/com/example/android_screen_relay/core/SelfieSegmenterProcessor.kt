@@ -42,7 +42,8 @@ class SelfieSegmenterProcessor : AIProcessor {
                     boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
                     extra = mapOf(
                         "width" to mask.width,
-                        "height" to mask.height
+                        "height" to mask.height,
+                        "mask_buffer" to mask.buffer
                     )
                 )
             )

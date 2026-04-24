@@ -169,6 +169,14 @@ class OverlayManager(private val context: Context) {
         }
     }
 
+    fun hideOverlay() {
+        overlayView?.visibility = View.GONE
+    }
+
+    fun showOverlayView() {
+        overlayView?.visibility = View.VISIBLE
+    }
+
     fun removeOverlay() {
         overlayView?.let {
             try {
