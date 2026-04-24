@@ -45,13 +45,22 @@ class PalmprintProcessor : AIProcessor {
 
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         if (appContext == null || appConfig == null || handLandmarker == null) return AIResult(false, emptyList(), 0, "Not initialized")
+        val isFront = options["is_front"] as? Boolean ?: false
         val startTime = System.currentTimeMillis()
         
         return try {
-            val mpImage = BitmapImageBuilder(bitmap).build()
+            var processingBitmap = bitmap
+            if (isFront) {
+                val matrix = android.graphics.Matrix().apply { postScale(-1f, 1f, bitmap.width / 2f, bitmap.height / 2f) }
+                processingBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            }
+
+            val mpImage = BitmapImageBuilder(processingBitmap).build()
             val result = handLandmarker!!.detect(mpImage)
             val duration = System.currentTimeMillis() - startTime
             
+            if (isFront && processingBitmap !== bitmap) processingBitmap.recycle()
+
             if (result.landmarks().isEmpty()) {
                 return AIResult(true, emptyList(), duration, "No hand detected")
             }
@@ -62,6 +71,9 @@ class PalmprintProcessor : AIProcessor {
             val handedness = result.handednesses().getOrNull(0)?.getOrNull(0)
             
             val label = handedness?.categoryName() ?: "Unknown"
+            // No manual swap needed here because we already flipped the bitmap to natural orientation before processing.
+            // MediaPipe now correctly identifies the hand based on its true anatomical structure.
+
             val score = handedness?.score() ?: 0f
 
             val palmLandmarks = listOf(0, 1, 2, 5, 9, 13, 17)
@@ -80,17 +92,17 @@ class PalmprintProcessor : AIProcessor {
             val w = bitmap.width.toFloat()
             val h = bitmap.height.toFloat()
 
-            // Reference points based on KBY-AI algorithm
-            // v1: Valley between Ring (13) and Pinky (17)
-            // v2: Valley between Index (5) and Middle (9)
+            // Map coordinates back if we flipped for UI drawing
+            fun flipX(x: Float): Float = if (isFront) 1.0f - x else x
+
             val p5 = landmarks[5]; val p9 = landmarks[9]
             val p13 = landmarks[13]; val p17 = landmarks[17]
             val p0 = landmarks[0] // Wrist
 
-            val v1X = (p13.x() + p17.x()) / 2f * w
+            val v1X = flipX((p13.x() + p17.x()) / 2f) * w
             val v1Y = (p13.y() + p17.y()) / 2f * h
 
-            val v2X = (p5.x() + p9.x()) / 2f * w
+            val v2X = flipX((p5.x() + p9.x()) / 2f) * w
             val v2Y = (p5.y() + p9.y()) / 2f * h
 
             val dx = v2X - v1X
@@ -107,15 +119,16 @@ class PalmprintProcessor : AIProcessor {
             var ny = ux
 
             // Ensure normal points towards wrist
-            val wristDx = p0.x() * w - midX
-            val wristDy = p0.y() * h - midY
+            val wristX = flipX(p0.x()) * w
+            val wristY = p0.y() * h
+            val wristDx = wristX - midX
+            val wristDy = wristY - midY
             if (nx * wristDx + ny * wristDy < 0) {
                 nx = -nx
                 ny = -ny
             }
 
             // ROI Center is 0.9d away from mid point along normal vector
-            // (0.2d from mid to top edge, then + 0.7d to center)
             val cx = midX + nx * 0.9f * d
             val cy = midY + ny * 0.9f * d
             val roiSize = 1.4f * d
@@ -126,14 +139,17 @@ class PalmprintProcessor : AIProcessor {
             val rotationToUpright = 90f - angleDeg
 
             items.add(AIDetectedItem(
-                label = "Palm (\$label)",
+                label = "Palm ($label)",
                 confidence = score,
                 boundingBox = RectF(
                     minX * w,
                     minY * h,
                     maxX * w,
                     maxY * h
-                ),
+                ).let { rect ->
+                    // Map the bounding box back to screen space if flipped
+                    if (isFront) RectF(w - rect.right, rect.top, w - rect.left, rect.bottom) else rect
+                },
                 extra = mapOf(
                     "hand" to label,
                     "roi_dist_d" to d,
