@@ -1807,16 +1807,7 @@ fun CameraPreviewScreen(
                                      setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
                                  }
                                  drawContext.canvas.nativeCanvas.drawText("วางบัตรในกรอบ", cw / 2f, cardTop - 60f, textPaint)
-                                 
-                                 val subTextPaint = android.graphics.Paint().apply {
-                                     color = android.graphics.Color.WHITE
-                                     textSize = 30f
-                                     textAlign = android.graphics.Paint.Align.CENTER
-                                     setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
-                                 }
-                                 drawContext.canvas.nativeCanvas.drawText("จัดใบหน้าบนบัตรให้อยู่ในช่องขวา", cw / 2f, cardTop - 20f, subTextPaint)
-                             }
-                             
+                                 }                             
                              if (aiMode == AiMode.PALMPRINT) {
                                  val handText = if (targetHand.equals("Left", true)) "กรุณาใช้มือ [ซ้าย] ในการสแกน" else "กรุณาใช้มือ [ขวา] ในการสแกน"
                                  val handPaint = android.graphics.Paint().apply {
