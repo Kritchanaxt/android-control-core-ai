@@ -123,6 +123,17 @@ fun AIScreen() {
     // Camera Settings State (Moved up for Result Access)
     var selectedResolution by remember { mutableStateOf<android.util.Size?>(null) }
     var availableResolutions by remember { mutableStateOf<List<android.util.Size>>(emptyList()) }
+    
+    // Persistent Camera Settings
+    val availableCameras = remember {
+        (context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager).cameraIdList.toList()
+    }
+    var selectedCameraId by androidx.compose.runtime.saveable.rememberSaveable { 
+        mutableStateOf(availableCameras.firstOrNull() ?: "0") 
+    }
+    var selectedAspectRatio by androidx.compose.runtime.saveable.rememberSaveable { 
+        mutableStateOf(UiAspectRatio.RATIO_1_1) 
+    }
 
     // Models will be lazy-loaded on demand now
     DisposableEffect(Unit) {
@@ -351,6 +362,10 @@ fun AIScreen() {
                 onResolutionChange = { selectedResolution = it },
                 availableResolutions = availableResolutions,
                 onAvailableResolutionsChange = { availableResolutions = it },
+                selectedCameraId = selectedCameraId,
+                onCameraIdChange = { selectedCameraId = it },
+                selectedAspectRatio = selectedAspectRatio,
+                onAspectRatioChange = { selectedAspectRatio = it },
                 onStableDetection = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf("is_front" to isFront)
@@ -525,7 +540,6 @@ fun AIScreen() {
                     val isPreviewOnlyMode = currentAiMode == AiMode.POSE || 
                                             currentAiMode == AiMode.OBJECT_DETECTION || 
                                             currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
-                                            currentAiMode == AiMode.SELFIE_SEGMENTATION || 
                                             currentAiMode == AiMode.SUBJECT_SEGMENTATION
                     if (isPreviewOnlyMode) {
                         if (!bitmap.isRecycled) bitmap.recycle()
@@ -871,6 +885,83 @@ fun AIScreen() {
                                 tempFace?.release()
                             }
                         }
+                    } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            var tempSelfie: SelfieSegmenterProcessor? = null
+                            try {
+                                val options = mapOf("is_front" to isFront)
+                                val pbStartMs = System.currentTimeMillis()
+                                val result = if (previewSelfie != null) {
+                                    previewSelfie.process(bitmap, options)
+                                } else {
+                                    tempSelfie = SelfieSegmenterProcessor().apply { init(context, AIConfig()) }
+                                    tempSelfie.process(bitmap, options)
+                                }
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+
+                                val maskBuffer = result.items.firstOrNull()?.extra?.get("mask_buffer") as? java.nio.ByteBuffer
+                                val maskWidth = result.items.firstOrNull()?.extra?.get("width") as? Int ?: 0
+                                val maskHeight = result.items.firstOrNull()?.extra?.get("height") as? Int ?: 0
+
+                                val foreground = if (maskBuffer != null && maskWidth > 0 && maskHeight > 0) {
+                                    maskBuffer.rewind()
+                                    val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+                                    val pixels = IntArray(bitmap.width * bitmap.height)
+                                    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+                                    // Scale mask to bitmap size if needed
+                                    // ML Kit Selfie mask is usually 256x256. 
+                                    // For simplicity, we'll create a scaled mask bitmap and then read pixels.
+                                    val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ALPHA_8)
+                                    val maskPixels = ByteArray(maskWidth * maskHeight)
+                                    for (i in 0 until maskWidth * maskHeight) {
+                                        val conf = maskBuffer.float
+                                        maskPixels[i] = (conf * 255).toInt().toByte()
+                                    }
+                                    maskBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(maskPixels))
+                                    
+                                    val scaledMask = Bitmap.createScaledBitmap(maskBitmap, bitmap.width, bitmap.height, true)
+                                    val scaledMaskPixels = IntArray(bitmap.width * bitmap.height)
+                                    
+                                    // Use a temporary bitmap to get alpha values
+                                    val tempAlpha = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+                                    val canvas = android.graphics.Canvas(tempAlpha)
+                                    canvas.drawBitmap(scaledMask, 0f, 0f, null)
+                                    tempAlpha.getPixels(scaledMaskPixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+                                    for (i in pixels.indices) {
+                                        val alpha = (scaledMaskPixels[i] shr 24) and 0xFF
+                                        if (alpha < 128) { // 0.5 threshold
+                                            pixels[i] = android.graphics.Color.TRANSPARENT
+                                        }
+                                    }
+                                    out.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                                    
+                                    maskBitmap.recycle()
+                                    scaledMask.recycle()
+                                    tempAlpha.recycle()
+                                    out
+                                } else bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = "[\n  {\n    \"label\": \"Selfie Foreground\",\n    \"confidence\": 1.0\n  }\n]"
+                                    currentImage = foreground
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                }
+
+                                val payload = generateOCRPayload(context, foreground, ocrResultJson, ocrTimeMs, currentAiMode)
+                                RelayService.getInstance()?.broadcastMessage(payload.toString())
+
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } catch (e: Exception) {
+                                Log.e("Selfie", "Extraction error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } finally {
+                                tempSelfie?.release()
+                            }
+                        }
                     } else {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
@@ -1163,7 +1254,11 @@ fun CameraPreviewScreen(
     onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?, Boolean) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
-    processingResultMsg: String? = null
+    processingResultMsg: String? = null,
+    selectedCameraId: String,
+    onCameraIdChange: (String) -> Unit,
+    selectedAspectRatio: UiAspectRatio,
+    onAspectRatioChange: (UiAspectRatio) -> Unit
 ) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -1171,12 +1266,8 @@ fun CameraPreviewScreen(
 
     // State for Settings
     val availableCameras = remember {
-        (context.getSystemService(Context.CAMERA_SERVICE) as CameraManager).cameraIdList.toList()
+        (context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager).cameraIdList.toList()
     }
-    var selectedCameraId by remember { mutableStateOf(availableCameras.firstOrNull() ?: "0") }
-
-    // Aspect Ratio State (Default 1:1 for RAM 2GB Device)
-    var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_1_1) }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
@@ -1543,7 +1634,6 @@ fun CameraPreviewScreen(
                         val isPreviewOnlyMode = aiMode == AiMode.POSE || 
                                                 aiMode == AiMode.OBJECT_DETECTION || 
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
-                                                aiMode == AiMode.SELFIE_SEGMENTATION || 
                                                 aiMode == AiMode.SUBJECT_SEGMENTATION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
@@ -2168,13 +2258,13 @@ fun CameraPreviewScreen(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clickable { selectedCameraId = id }
+                                .clickable { onCameraIdChange(id) }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
                                 selected = (id == selectedCameraId),
-                                onClick = { selectedCameraId = id }
+                                onClick = { onCameraIdChange(id) }
                             )
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
@@ -2220,7 +2310,7 @@ fun CameraPreviewScreen(
                     supportedRatios.forEach { ratio ->
                         FilterChip(
                             selected = (ratio == selectedAspectRatio),
-                            onClick = { selectedAspectRatio = ratio },
+                            onClick = { onAspectRatioChange(ratio) },
                             label = {
                                 Text(
                                     ratio.displayName,
@@ -2439,12 +2529,14 @@ fun OCRResultScreen(
                         val title = when (aiMode) {
                             AiMode.PALMPRINT -> "Palmprint Result"
                             AiMode.FACE -> "Face Result"
+                            AiMode.SELFIE_SEGMENTATION -> "Selfie Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
                         val modelName = when (aiMode) {
                             AiMode.PALMPRINT -> "MediaPipe Hand Gesture"
                             AiMode.FACE -> "ML Kit Face Detection"
+                            AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
                             else -> "PaddleOCRv5"
                         }
                         Text(
@@ -2904,7 +2996,7 @@ fun OCRResultScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else "palmprint data"}",
+                    if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else if (aiMode == AiMode.SELFIE_SEGMENTATION) "selfie data" else "palmprint data"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )

@@ -33,20 +33,40 @@ class SelfieSegmenterProcessor : AIProcessor {
             val mask = Tasks.await(segmenter!!.process(image))
             val duration = System.currentTimeMillis() - start
 
-            // For segmentation, we return a success with metadata.
+            // ✅ Logic: ตรวจสอบว่ามี "คน" อยู่ในภาพจริงๆ หรือไม่ (Person Validation)
+            // นับพิกเซลที่มีค่าความมั่นใจสูงกว่า 0.5 (Background vs Foreground)
+            val maskBuffer = mask.buffer
+            maskBuffer.rewind()
+            val floatBuffer = maskBuffer.asFloatBuffer()
+            var foregroundPixels = 0
+            val totalPixels = mask.width * mask.height
+            
+            // สุ่มตรวจทุกๆ 10 พิกเซลเพื่อความรวดเร็ว (Sampling)
+            for (i in 0 until totalPixels step 10) {
+                if (floatBuffer.get(i) > 0.5f) {
+                    foregroundPixels++
+                }
+            }
+            
+            // คำนวณสัดส่วนคนในภาพ (ต้องมีอย่างน้อย 1% ของพิกเซลที่สุ่มตรวจ)
+            val personRatio = (foregroundPixels.toFloat() / (totalPixels / 10f))
+            val isPersonFound = personRatio > 0.015f // 1.5% threshold
+
             val items = mutableListOf<AIDetectedItem>()
-            items.add(
-                AIDetectedItem(
-                    label = "Selfie Mask",
-                    confidence = 1.0f,
-                    boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
-                    extra = mapOf(
-                        "width" to mask.width,
-                        "height" to mask.height,
-                        "mask_buffer" to mask.buffer
+            if (isPersonFound) {
+                items.add(
+                    AIDetectedItem(
+                        label = "Selfie Mask",
+                        confidence = personRatio.coerceAtMost(1.0f),
+                        boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
+                        extra = mapOf(
+                            "width" to mask.width,
+                            "height" to mask.height,
+                            "mask_buffer" to mask.buffer
+                        )
                     )
                 )
-            )
+            }
 
             AIResult(true, items, duration)
         } catch (e: Exception) {
