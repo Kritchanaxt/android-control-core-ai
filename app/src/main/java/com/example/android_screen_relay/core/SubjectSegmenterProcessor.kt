@@ -41,6 +41,11 @@ class SubjectSegmenterProcessor : AIProcessor {
 
             Log.d("Subject", "Detected ${result.subjects.size} subjects in ${duration}ms")
 
+            var unionLeft = bitmap.width
+            var unionTop = bitmap.height
+            var unionRight = 0
+            var unionBottom = 0
+
             val items = mutableListOf<AIDetectedItem>()
             result.subjects.forEachIndexed { index, subject ->
                 val extra = mutableMapOf<String, Any>()
@@ -98,6 +103,40 @@ class SubjectSegmenterProcessor : AIProcessor {
                         extra = extra
                     )
                 )
+
+                unionLeft = minOf(unionLeft, subject.startX)
+                unionTop = minOf(unionTop, subject.startY)
+                unionRight = maxOf(unionRight, subject.startX + subject.width)
+                unionBottom = maxOf(unionBottom, subject.startY + subject.height)
+            }
+
+            // Create combined cropped foreground bitmap for ALL subjects using subject.bitmaps to avoid ML Kit foregroundBitmap bug
+            if (result.subjects.isNotEmpty() && items.isNotEmpty()) {
+                val pad = 30
+                unionLeft = (unionLeft - pad).coerceAtLeast(0)
+                unionTop = (unionTop - pad).coerceAtLeast(0)
+                unionRight = (unionRight + pad).coerceAtMost(bitmap.width)
+                unionBottom = (unionBottom + pad).coerceAtMost(bitmap.height)
+                
+                val width = unionRight - unionLeft
+                val height = unionBottom - unionTop
+                if (width > 0 && height > 0) {
+                    // Create a transparent bitmap for the union area
+                    val combinedBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(combinedBitmap)
+                    
+                    // Draw each subject's bitmap onto the combined canvas
+                    result.subjects.forEach { subject ->
+                        val subBmp = subject.bitmap
+                        if (subBmp != null) {
+                            val drawX = (subject.startX - unionLeft).toFloat()
+                            val drawY = (subject.startY - unionTop).toFloat()
+                            canvas.drawBitmap(subBmp, drawX, drawY, null)
+                        }
+                    }
+                    
+                    (items[0].extra as MutableMap<String, Any>)["combined_subject_bitmap"] = combinedBitmap
+                }
             }
 
             AIResult(true, items, duration)

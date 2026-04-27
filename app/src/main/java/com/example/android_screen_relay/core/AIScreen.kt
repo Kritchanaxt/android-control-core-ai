@@ -906,7 +906,8 @@ fun AIScreen() {
                                 val result = processor.process(bitmap, mapOf("is_front" to isFront))
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
                                 
-                                val subjectBitmap = result.items.firstOrNull()?.extra?.get("subject_bitmap") as? Bitmap
+                                val subjectBitmap = result.items.firstOrNull()?.extra?.get("combined_subject_bitmap") as? Bitmap
+                                    ?: result.items.firstOrNull()?.extra?.get("subject_bitmap") as? Bitmap
                                 
                                 val foreground = if (subjectBitmap != null) {
                                     subjectBitmap.copy(Bitmap.Config.ARGB_8888, true)
