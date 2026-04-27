@@ -242,6 +242,7 @@ fun RealtimeCameraPreview(
     var imageCapture: ImageCapture? by remember { mutableStateOf(null) }
     val isProcessingFrame = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val consecutiveDetections = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+    val isAppInForeground = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
     var lastProcessTime = 0L
 
     // Results for drawing
@@ -251,6 +252,20 @@ fun RealtimeCameraPreview(
 
     val executor = remember { Executors.newSingleThreadExecutor() }
     val isLowSpecDevice = remember { SystemMonitor.isLowSpecDevice(context) }
+
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                isAppInForeground.set(false)
+            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isAppInForeground.set(true)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // FrameProcessingRunnable สำหรับเครื่องทั่วไป (จำลองตาม mlkit/vision-quickstart)
     val frameProcessingRunnable = remember(mode, targetHand) {
@@ -336,6 +351,11 @@ fun RealtimeCameraPreview(
                         .build()
                         .also {
                             it.setAnalyzer(executor) { image ->
+                                if (!isAppInForeground.get()) {
+                                    image.close()
+                                    return@setAnalyzer
+                                }
+
                                 previewWidth = image.width
                                 previewHeight = image.height
                                 
