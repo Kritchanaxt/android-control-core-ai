@@ -77,7 +77,8 @@ class SelfieSegmenterProcessor : AIProcessor {
                         extra = mapOf(
                             "width" to maskWidth,
                             "height" to maskHeight,
-                            "mask_bitmap" to maskBitmap
+                            "mask_bitmap" to maskBitmap,
+                            "mask_buffer" to mask.buffer
                         )
                     )
                 )

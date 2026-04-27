@@ -118,7 +118,7 @@ fun AIScreen() {
     
     var zoomScale by remember { mutableStateOf(1.0f) }
     val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
-    var useCropMode by remember { mutableStateOf(false) }
+    var useCropMode by remember { mutableStateOf(true) }
 
     // Camera Settings State (Moved up for Result Access)
     var selectedResolution by remember { mutableStateOf<android.util.Size?>(null) }
@@ -493,7 +493,7 @@ fun AIScreen() {
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val item = result.items.firstOrNull()
-                                val cropped = if (result.success && item != null) {
+                                val cropped = if (useCropMode && result.success && item != null) {
                                     val palmRoiMap = item.extra["palm_roi"] as? Map<*, *>
                                     val centerX = (palmRoiMap?.get("center_x") as? Float)
                                     val centerY = (palmRoiMap?.get("center_y") as? Float)
@@ -561,7 +561,10 @@ fun AIScreen() {
                                             } else cropped
                                         } else bitmap
                                     }
-                                } else bitmap
+                                } else {
+                                    // Full Image Mode: Use original bitmap as is
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                }
 
                                 val jsonStr = if (result.success && item != null) {
                                     "[\n  {\n    \"area_type\": \"${item.extra["area_type"] ?: "unknown"}\",\n    \"hand\": \"${item.extra["hand"] ?: "unknown"}\",\n    \"confidence\": ${item.confidence}\n  }\n]"
@@ -691,7 +694,7 @@ fun AIScreen() {
 
                                 // 🌟 Dynamic Portrait Crop Logic
                                 val bestFace = result.items.maxByOrNull { it.confidence }
-                                val finalFaceImage = if (bestFace != null) {
+                                val finalFaceImage = if (useCropMode && bestFace != null) {
                                     val b = bestFace.boundingBox
                                     // Map back to original bitmap (scaledFace was 3x ROI)
                                     val bLeft = (b.left / 3f) + roiLeft
@@ -724,6 +727,9 @@ fun AIScreen() {
                                             scaled
                                         } else cropped
                                     } else scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                } else if (!useCropMode) {
+                                    // Full Image Mode
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
                                     scaledFace.copy(Bitmap.Config.ARGB_8888, true)
                                 }
@@ -832,7 +838,7 @@ fun AIScreen() {
                                 val maskWidth = result.items.firstOrNull()?.extra?.get("width") as? Int ?: 0
                                 val maskHeight = result.items.firstOrNull()?.extra?.get("height") as? Int ?: 0
 
-                                val foreground = if (maskBuffer != null && maskWidth > 0 && maskHeight > 0) {
+                                val foreground = if (useCropMode && maskBuffer != null && maskWidth > 0 && maskHeight > 0) {
                                     maskBuffer.rewind()
                                     val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
                                     val pixels = IntArray(bitmap.width * bitmap.height)
@@ -844,7 +850,7 @@ fun AIScreen() {
                                     val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ALPHA_8)
                                     val maskPixels = ByteArray(maskWidth * maskHeight)
                                     for (i in 0 until maskWidth * maskHeight) {
-                                        val conf = maskBuffer.float
+                                        val conf = if (maskBuffer.remaining() >= 4) maskBuffer.getFloat() else 0f
                                         maskPixels[i] = (conf * 255).toInt().toByte()
                                     }
                                     maskBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(maskPixels))
@@ -870,6 +876,9 @@ fun AIScreen() {
                                     scaledMask.recycle()
                                     tempAlpha.recycle()
                                     out
+                                } else if (!useCropMode) {
+                                    // Full Image Mode: Use original bitmap
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
                                 withContext(Dispatchers.Main) {
@@ -909,8 +918,11 @@ fun AIScreen() {
                                 val subjectBitmap = result.items.firstOrNull()?.extra?.get("combined_subject_bitmap") as? Bitmap
                                     ?: result.items.firstOrNull()?.extra?.get("subject_bitmap") as? Bitmap
                                 
-                                val foreground = if (subjectBitmap != null) {
+                                val foreground = if (useCropMode && subjectBitmap != null) {
                                     subjectBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                } else if (!useCropMode) {
+                                    // Full Image Mode: Use original bitmap
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else bitmap.copy(Bitmap.Config.ARGB_8888, true)
 
                                 withContext(Dispatchers.Main) {
@@ -1105,7 +1117,7 @@ fun AIScreen() {
                                 }
 
                                 // Auto Crop without UI
-                                val croppedResult = if (calculatedRect != null) {
+                                val croppedResult = if (useCropMode && calculatedRect != null) {
                                     val w = bitmap.width
                                     val h = bitmap.height
                                     val l = (calculatedRect.left * w).toInt()
@@ -1124,14 +1136,21 @@ fun AIScreen() {
                                         if (initialCrop !== bitmap) initialCrop.recycle()
                                         scaled
                                     } else initialCrop
-                                } else bitmap
+                                } else {
+                                    // Full Image Mode: Use original bitmap but still respect zoom if applicable
+                                    if (!useCropMode && zoomScale > 1.0f) {
+                                        android.graphics.Bitmap.createScaledBitmap(bitmap, (bitmap.width * zoomScale).toInt(), (bitmap.height * zoomScale).toInt(), true)
+                                    } else {
+                                        bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                    }
+                                }
 
                                 val safeRes = computeMode.maxResolution
                                 val optimizedCrop = OCROptimizer.scaleDownToMaxDimension(croppedResult, safeRes)
 
                                 withContext(Dispatchers.Main) {
                                     processingResultMsg = "⏳ Running Auto OCR..."
-                                    currentImage = optimizedCrop
+                                    currentImage = if (useCropMode) optimizedCrop else croppedResult // Keep higher res for full image view if possible, or just use optimizedCrop to save RAM
                                 }
 
                                 // Auto OCR
