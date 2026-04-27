@@ -15,8 +15,13 @@ class SubjectSegmenterProcessor : AIProcessor {
 
     override fun init(context: Context, config: AIConfig): Boolean {
         return try {
+            val subjectResultOptions = SubjectSegmenterOptions.SubjectResultOptions.Builder()
+                .enableConfidenceMask()
+                .build()
+
             val options = SubjectSegmenterOptions.Builder()
                 .enableForegroundConfidenceMask()
+                .enableMultipleSubjects(subjectResultOptions)
                 .build()
             segmenter = SubjectSegmentation.getClient(options)
             true
@@ -38,21 +43,35 @@ class SubjectSegmenterProcessor : AIProcessor {
             val items = mutableListOf<AIDetectedItem>()
             result.subjects.forEachIndexed { index, subject ->
                 val extra = mutableMapOf<String, Any>()
-                val mask = subject.getConfidenceMask()
+                val mask = subject.confidenceMask
                 if (mask != null) {
-                    // 🌟 FIX: Use full reflection to avoid 'Unresolved reference' at compile time
-                    try {
-                        val getBufferMethod = mask.javaClass.methods.find { it.name == "getBuffer" }
-                        val buffer = getBufferMethod?.invoke(mask)
-                        if (buffer != null) {
-                            extra["mask_buffer"] = buffer
-                            extra["width"] = subject.getWidth()
-                            extra["height"] = subject.getHeight()
-                            Log.d("Subject", "Subject #$index: mask buffer extracted successfully")
+                    val width = subject.width
+                    val height = subject.height
+                    
+                    // Generate Bitmap in background thread to prevent UI thread OOM and concurrent access crashes
+                    val maskBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val pixels = IntArray(width * height)
+                    
+                    val colors = listOf(0xCCFF00FF.toInt(), 0xCC00FFFF.toInt(), 0xCCFFFF00.toInt(), 0xCC00FF00.toInt())
+                    val tintColor = colors[index % colors.size]
+                    
+                    val capacity = mask.capacity()
+                    for (i in 0 until width * height) {
+                        if (i < capacity) {
+                            val conf = mask.get(i)
+                            if (conf > 0.4f) {
+                                pixels[i] = tintColor
+                            } else {
+                                pixels[i] = android.graphics.Color.TRANSPARENT
+                            }
                         }
-                    } catch (e: Exception) {
-                        Log.e("Subject", "Failed to extract buffer via reflection", e)
                     }
+                    maskBitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+                    
+                    extra["mask_bitmap"] = maskBitmap
+                    extra["width"] = width
+                    extra["height"] = height
+                    Log.d("Subject", "Subject #$index: mask bitmap generated successfully")
                 } else {
                     Log.d("Subject", "Subject #$index: NO mask found")
                 }
@@ -62,10 +81,10 @@ class SubjectSegmenterProcessor : AIProcessor {
                         label = "Subject",
                         confidence = 1.0f,
                         boundingBox = android.graphics.RectF(
-                            subject.getStartX().toFloat(),
-                            subject.getStartY().toFloat(),
-                            (subject.getStartX() + subject.getWidth()).toFloat(),
-                            (subject.getStartY() + subject.getHeight()).toFloat()
+                            subject.startX.toFloat(),
+                            subject.startY.toFloat(),
+                            (subject.startX + subject.width).toFloat(),
+                            (subject.startY + subject.height).toFloat()
                         ),
                         extra = extra
                     )

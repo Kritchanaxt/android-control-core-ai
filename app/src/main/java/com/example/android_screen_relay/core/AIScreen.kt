@@ -1912,20 +1912,8 @@ fun CameraPreviewScreen(
                                 }
                             }
                         } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
-                            val rawBuffer = item.extra["mask_buffer"]
-                            val maskWidth = item.extra["width"] as? Int ?: 0
-                            val maskHeight = item.extra["height"] as? Int ?: 0
+                            val maskBitmap = item.extra["mask_bitmap"] as? Bitmap
                             
-                            val floatBuffer: java.nio.FloatBuffer? = if (rawBuffer is java.nio.ByteBuffer) {
-                                val b = rawBuffer as java.nio.ByteBuffer
-                                b.rewind()
-                                b.asFloatBuffer()
-                            } else if (rawBuffer is java.nio.FloatBuffer) {
-                                val f = rawBuffer as java.nio.FloatBuffer
-                                f.rewind()
-                                f
-                            } else null
-
                             // 🌟 Draw bounding box as fallback/debug for Subject
                             if (aiMode == AiMode.SUBJECT_SEGMENTATION) {
                                 val boxPaint = android.graphics.Paint().apply {
@@ -1937,39 +1925,13 @@ fun CameraPreviewScreen(
                                 drawContext.canvas.nativeCanvas.drawRect(mappedRect, boxPaint)
                             }
 
-                            if (floatBuffer != null && maskWidth > 0 && maskHeight > 0) {
-                                val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ARGB_8888)
-                                
-                                // Color based on index or mode - Increased Opacity to CC (80%)
-                                val tintColor = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
-                                    android.graphics.Color.parseColor("#CCFF00FF") 
-                                } else {
-                                    val colors = listOf("#CCFF00FF", "#CC00FFFF", "#CCFFFF00", "#CC00FF00")
-                                    val idx = latestDetections.indexOf(item).coerceAtLeast(0) % colors.size
-                                    android.graphics.Color.parseColor(colors[idx])
-                                }
-
-                                val pixels = IntArray(maskWidth * maskHeight)
-                                val bufferCap = floatBuffer.capacity()
-                                for (i in 0 until maskWidth * maskHeight) {
-                                    if (i < bufferCap) {
-                                        val conf = floatBuffer.get(i)
-                                        if (conf > 0.4f) { // Slightly lower threshold for better visibility
-                                            pixels[i] = tintColor
-                                        } else {
-                                            pixels[i] = android.graphics.Color.TRANSPARENT
-                                        }
-                                    }
-                                }
-                                maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
-                                
+                            if (maskBitmap != null && !maskBitmap.isRecycled) {
                                 val destRect = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
                                     android.graphics.RectF(0f, 0f, size.width, size.height)
                                 } else {
                                     mappedRect
                                 }
                                 drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, null)
-                                maskBitmap.recycle()
                             }
                         }
                     }

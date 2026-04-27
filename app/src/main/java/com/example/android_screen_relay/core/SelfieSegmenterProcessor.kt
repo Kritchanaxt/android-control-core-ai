@@ -36,20 +36,35 @@ class SelfieSegmenterProcessor : AIProcessor {
             // ✅ Logic: ตรวจสอบว่ามี "คน" อยู่ในภาพจริงๆ หรือไม่ (Person Validation)
             // นับพิกเซลที่มีค่าความมั่นใจสูงกว่า 0.5 (Background vs Foreground)
             val maskBuffer = mask.buffer
+            val maskWidth = mask.width
+            val maskHeight = mask.height
+            val totalPixels = maskWidth * maskHeight
+            
             maskBuffer.rewind()
             val floatBuffer = maskBuffer.asFloatBuffer()
             var foregroundPixels = 0
-            val totalPixels = mask.width * mask.height
             
-            // สุ่มตรวจทุกๆ 10 พิกเซลเพื่อความรวดเร็ว (Sampling)
-            for (i in 0 until totalPixels step 10) {
-                if (floatBuffer.get(i) > 0.5f) {
-                    foregroundPixels++
+            // Generate Bitmap in background thread to prevent UI thread OOM and concurrent access crashes
+            val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(totalPixels)
+            val tintColor = 0xCCFF00FF.toInt()
+
+            val capacity = floatBuffer.capacity()
+            for (i in 0 until totalPixels) {
+                if (i < capacity) {
+                    val conf = floatBuffer.get(i)
+                    if (conf > 0.4f) {
+                        pixels[i] = tintColor
+                        foregroundPixels++
+                    } else {
+                        pixels[i] = android.graphics.Color.TRANSPARENT
+                    }
                 }
             }
+            maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
             
-            // คำนวณสัดส่วนคนในภาพ (ต้องมีอย่างน้อย 1% ของพิกเซลที่สุ่มตรวจ)
-            val personRatio = (foregroundPixels.toFloat() / (totalPixels / 10f))
+            // คำนวณสัดส่วนคนในภาพ
+            val personRatio = (foregroundPixels.toFloat() / totalPixels.toFloat())
             val isPersonFound = personRatio > 0.015f // 1.5% threshold
 
             val items = mutableListOf<AIDetectedItem>()
@@ -60,9 +75,9 @@ class SelfieSegmenterProcessor : AIProcessor {
                         confidence = personRatio.coerceAtMost(1.0f),
                         boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
                         extra = mapOf(
-                            "width" to mask.width,
-                            "height" to mask.height,
-                            "mask_buffer" to mask.buffer
+                            "width" to maskWidth,
+                            "height" to maskHeight,
+                            "mask_bitmap" to maskBitmap
                         )
                     )
                 )
