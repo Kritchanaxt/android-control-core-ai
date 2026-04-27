@@ -468,8 +468,7 @@ fun AIScreen() {
                     
                     val isPreviewOnlyMode = currentAiMode == AiMode.POSE || 
                                             currentAiMode == AiMode.OBJECT_DETECTION || 
-                                            currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
-                                            currentAiMode == AiMode.SUBJECT_SEGMENTATION
+                                            currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION
                     if (isPreviewOnlyMode) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen
@@ -889,6 +888,46 @@ fun AIScreen() {
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             } finally {
                                 tempSelfie?.release()
+                            }
+                        }
+                    } else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            var tempSubject: com.example.android_screen_relay.core.SubjectSegmenterProcessor? = null
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                val processor = previewSubject ?: SystemMonitor.trackMemoryAction(context, "Subject Manual Init") {
+                                    val p = com.example.android_screen_relay.core.SubjectSegmenterProcessor()
+                                    p.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
+                                    tempSubject = p
+                                    p
+                                }
+                                
+                                val result = processor.process(bitmap, mapOf("is_front" to isFront))
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+                                
+                                val subjectBitmap = result.items.firstOrNull()?.extra?.get("subject_bitmap") as? Bitmap
+                                
+                                val foreground = if (subjectBitmap != null) {
+                                    subjectBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                } else bitmap.copy(Bitmap.Config.ARGB_8888, true)
+
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = "[\n  {\n    \"label\": \"Subject Extracted\",\n    \"confidence\": 1.0\n  }\n]"
+                                    currentImage = foreground
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                }
+
+                                val payload = generateOCRPayload(context, foreground, ocrResultJson, ocrTimeMs, currentAiMode)
+                                RelayService.getInstance()?.broadcastMessage(payload.toString())
+
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } catch (e: Exception) {
+                                Log.e("Subject", "Extraction error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } finally {
+                                tempSubject?.release()
                             }
                         }
                     } else {
@@ -1562,8 +1601,7 @@ fun CameraPreviewScreen(
                         // Disable Auto-Snap for specific preview-only modes as requested
                         val isPreviewOnlyMode = aiMode == AiMode.POSE || 
                                                 aiMode == AiMode.OBJECT_DETECTION || 
-                                                aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
-                                                aiMode == AiMode.SUBJECT_SEGMENTATION
+                                                aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
                             stableTime += 250
@@ -2433,6 +2471,7 @@ fun OCRResultScreen(
                             AiMode.PALMPRINT -> "Palmprint Result"
                             AiMode.FACE -> "Face Result"
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Result"
+                            AiMode.SUBJECT_SEGMENTATION -> "Subject Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
@@ -2440,6 +2479,7 @@ fun OCRResultScreen(
                             AiMode.PALMPRINT -> "MediaPipe Hand Gesture"
                             AiMode.FACE -> "ML Kit Face Detection"
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
+                            AiMode.SUBJECT_SEGMENTATION -> "ML Kit Subject Segmentation"
                             else -> "PaddleOCRv5"
                         }
                         Text(
@@ -2899,7 +2939,7 @@ fun OCRResultScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else if (aiMode == AiMode.SELFIE_SEGMENTATION) "selfie data" else "palmprint data"}",
+                    if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else if (aiMode == AiMode.SELFIE_SEGMENTATION) "selfie data" else if (aiMode == AiMode.SUBJECT_SEGMENTATION) "subject data" else "palmprint data"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )

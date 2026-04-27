@@ -17,6 +17,7 @@ class SubjectSegmenterProcessor : AIProcessor {
         return try {
             val subjectResultOptions = SubjectSegmenterOptions.SubjectResultOptions.Builder()
                 .enableConfidenceMask()
+                .enableSubjectBitmap()
                 .build()
 
             val options = SubjectSegmenterOptions.Builder()
@@ -44,6 +45,14 @@ class SubjectSegmenterProcessor : AIProcessor {
             result.subjects.forEachIndexed { index, subject ->
                 val extra = mutableMapOf<String, Any>()
                 val mask = subject.confidenceMask
+                
+                // Extract the actual image of the subject with background removed
+                val subjectBitmap = subject.bitmap
+                if (subjectBitmap != null) {
+                    // Copy to prevent ML Kit from recycling the buffer when moving to next frame
+                    extra["subject_bitmap"] = subjectBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                }
+
                 if (mask != null) {
                     val width = subject.width
                     val height = subject.height
