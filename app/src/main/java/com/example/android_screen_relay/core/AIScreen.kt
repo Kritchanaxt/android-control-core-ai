@@ -1662,7 +1662,7 @@ fun CameraPreviewScreen(
     Scaffold(
         containerColor = Color.Black
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(modifier = Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
 
             // Container for Preview + Overlay that respects Aspect Ratio
             val ratioVal = if (selectedResolution != null && selectedResolution!!.width == selectedResolution!!.height) {
@@ -2055,63 +2055,89 @@ fun CameraPreviewScreen(
                 }
             }
 
-            // Bottom Bar Overlay (Floating Design)
+            // Bottom Bar Overlay (Console Design - Highly Refined & Compact)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 12.dp, vertical = 8.dp) // ชิดล่างมากขึ้น
-                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(32.dp))
-                    .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(32.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(start = 8.dp, end = 8.dp, top = 12.dp, bottom = 8.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(100.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(100.dp))
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Auto-Snap Indicator
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                // Left Column: Auto-Snap Status + Crop Toggle (Centered Alignment)
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(start = 4.dp)
                 ) {
-                    if (isCapturing) {
-                        CircularProgressIndicator(
-                            color = Color(0xFF007AFF),
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    } else {
-                        // Green if detecting/stabilizing, Gray if not (based on current logic it's always running in this screen)
-                        // But we'll use stableTime > 0 or a similar signal to show "activity"
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(
-                                    if (stableTime > 0) Color.Yellow 
-                                    else if (!isProcessingBusy) Color.Green 
-                                    else Color.Gray, 
-                                    CircleShape
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
+                    // Auto-Snap Indicator
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (isCapturing) {
+                            CircularProgressIndicator(
+                                color = Color(0xFF007AFF),
+                                strokeWidth = 1.2.dp,
+                                modifier = Modifier.size(10.dp)
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(
+                                        if (stableTime > 0) Color.Yellow 
+                                        else if (!isProcessingBusy) Color.Green 
+                                        else Color.Gray, 
+                                        CircleShape
+                                    )
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             "AUTO-SNAP",
-                            color = Color.White,
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
                             letterSpacing = 0.5.sp
                         )
                     }
+
+                    // Full/Crop Toggle Button
+                    Surface(
+                        onClick = { onUseCropModeChange(!useCropMode) },
+                        color = if (useCropMode) Color(0xFF007AFF) else Color.White.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(100.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                if (useCropMode) "CROP IMAGE" else "FULL IMAGE",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                    }
                 }
 
-                // AI Mode Selector
+                // Right: AI Mode Selector
                 Surface(
                     onClick = { showAiModeSheet = true },
-                    color = Color.White.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.height(36.dp)
+                    color = Color.White.copy(alpha = 0.08f),
+                    shape = RoundedCornerShape(100.dp),
+                    modifier = Modifier.height(38.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val displayName = when (aiMode) {
                             AiMode.OCR -> "PaddleOCR"
@@ -2121,39 +2147,20 @@ fun CameraPreviewScreen(
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
                             AiMode.OBJECT_DETECTION -> "Object Detect"
+                            AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
                             else -> aiMode.name
                         }
                         Text(
                             text = displayName,
                             color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.sp
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
                         )
                         Icon(
                             Icons.Default.KeyboardArrowUp,
                             null,
-                            tint = Color.White.copy(alpha = 0.7f),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                }
-
-                // Full/Crop Toggle
-                Surface(
-                    onClick = { onUseCropModeChange(!useCropMode) },
-                    color = if (useCropMode) Color(0xFF007AFF) else Color.White.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(20.dp),
-                    modifier = Modifier.height(36.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.padding(horizontal = 14.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            if (useCropMode) "CROP" else "FULL",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.ExtraBold
+                            tint = Color.White.copy(alpha = 0.6f),
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
