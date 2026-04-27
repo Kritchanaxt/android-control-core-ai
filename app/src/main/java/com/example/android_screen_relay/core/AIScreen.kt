@@ -1458,8 +1458,11 @@ fun CameraPreviewScreen(
             var lastFrameTime = System.currentTimeMillis()
 
             while (isActive && !isProcessingBusy) {
-                kotlinx.coroutines.delay(250) // ลดเวลาตรวจจับ (จาก 500ms เป็น 250ms) ให้สแกนถี่ยิ่งขึ้น
-                if (isPreviewPaused) continue // ข้ามการตรวจจับถ้า preview ถูก pause
+                val iterationStart = System.currentTimeMillis()
+                if (isPreviewPaused) {
+                    kotlinx.coroutines.delay(500)
+                    continue
+                }
 
                 if (!isCapturing && cameraController?.textureView != null) {
                     val rawBitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -1624,8 +1627,9 @@ fun CameraPreviewScreen(
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
-                            stableTime += 250
-                            if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย (2 consecutive frames)
+                            val elapsedSinceStart = System.currentTimeMillis() - iterationStart
+                            stableTime += elapsedSinceStart
+                            if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย
                                 isCapturing = true
                                 passedToCapture = true
 
@@ -1645,6 +1649,9 @@ fun CameraPreviewScreen(
                         if (!passedToCapture && !bitmap.isRecycled) {
                             bitmap.recycle()
                         }
+                        
+                        // Dynamic Polling: พักเครื่อง 30ms ตาม feedback ของ Founder
+                        kotlinx.coroutines.delay(30)
                     }
                 }
             }
