@@ -42,6 +42,7 @@ class FaceDetectorProcessor : AIProcessor {
 
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         val isFront = options["is_front"] as? Boolean ?: false
+        val faceMode = options["face_mode"] as? String ?: "card" // "card" or "normal"
         val currentDetector = if (isFront) accurateDetector ?: detector else detector
         if (currentDetector == null) return AIResult(false, emptyList(), 0, "Not initialized")
         
@@ -61,28 +62,35 @@ class FaceDetectorProcessor : AIProcessor {
             val width = processingBitmap.width
             val height = processingBitmap.height
             
-            // Strategy: Thai ID cards have faces on the Right side (60% to 95% of card width)
-            // Focus on a specific ROI that matches the yellow UI guide
-            val roiLeft = (width * 0.60f).toInt()
-            val roiTop = (height * 0.25f).toInt()
-            val roiWidth = (width * 0.35f).toInt()
-            val roiHeight = (height * 0.50f).toInt()
+            var result: AIResult
+            
+            if (faceMode == "card") {
+                // Strategy: Thai ID cards have faces on the Right side (60% to 95% of card width)
+                // Focus on a specific ROI that matches the yellow UI guide
+                val roiLeft = (width * 0.60f).toInt()
+                val roiTop = (height * 0.25f).toInt()
+                val roiWidth = (width * 0.35f).toInt()
+                val roiHeight = (height * 0.50f).toInt()
 
-            var result = processROI(processingBitmap, currentDetector, roiLeft, roiTop, roiWidth, roiHeight, offsetPixels = true)
-            
-            // If not found in primary ROI, expand slightly
-            if (result.items.isEmpty()) {
-                result = processROI(processingBitmap, currentDetector, width / 2, 0, width / 2, height, offsetPixels = true)
-            }
-            
-            // Fallback: Full Image
-            if (result.items.isEmpty()) {
+                result = processROI(processingBitmap, currentDetector, roiLeft, roiTop, roiWidth, roiHeight, offsetPixels = true)
+                
+                // If not found in primary ROI, expand slightly
+                if (result.items.isEmpty()) {
+                    result = processROI(processingBitmap, currentDetector, width / 2, 0, width / 2, height, offsetPixels = true)
+                }
+                
+                // Fallback: Full Image
+                if (result.items.isEmpty()) {
+                    result = processROI(processingBitmap, currentDetector, 0, 0, width, height, offsetPixels = false)
+                }
+            } else {
+                // "normal" mode: just process the full image
                 result = processROI(processingBitmap, currentDetector, 0, 0, width, height, offsetPixels = false)
             }
 
-            // Filter: In front-camera mode, we only want small faces (on cards), 
+            // Filter: In "card" mode with front-camera, we only want small faces (on cards), 
             // so ignore faces that take up too much of the frame (likely the user's face)
-            val filteredItems = if (isFront) {
+            val filteredItems = if (isFront && faceMode == "card") {
                 result.items.filter { 
                     val b = it.boundingBox
                     val ratio = (b.width() * b.height()) / (width * height)
@@ -120,7 +128,7 @@ class FaceDetectorProcessor : AIProcessor {
             if (processingBitmap !== bitmap) processingBitmap.recycle()
 
             AIResult(true, finalItems, System.currentTimeMillis() - startTime)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
             AIResult(false, emptyList(), 0, e.message)
         }

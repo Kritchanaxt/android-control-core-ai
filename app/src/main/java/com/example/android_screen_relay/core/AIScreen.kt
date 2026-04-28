@@ -115,7 +115,8 @@ fun AIScreen() {
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
     var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
     var targetHand by remember { mutableStateOf("Left") }
-    
+    var targetFaceMode by remember { mutableStateOf("card") } // "card" or "normal"
+
     var zoomScale by remember { mutableStateOf(1.0f) }
     val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
     var useCropMode by remember { mutableStateOf(true) }
@@ -354,6 +355,8 @@ fun AIScreen() {
                 onAiModeChange = { currentAiMode = it },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
+                targetFaceMode = targetFaceMode,
+                onTargetFaceModeChange = { targetFaceMode = it },
                 zoomScale = zoomScale,
                 onZoomScaleChange = { zoomScale = it },
                 useCropMode = useCropMode,
@@ -368,7 +371,10 @@ fun AIScreen() {
                 onAspectRatioChange = { selectedAspectRatio = it },
                 onStableDetection = { bitmap, _, _, _, _, _, _, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
-                    val options = mapOf("is_front" to isFront)
+                    val options = mapOf(
+                        "is_front" to isFront,
+                        "face_mode" to targetFaceMode
+                    )
 
                     // 1. Special Handling for Palmprint (Needs custom scaling)
                     if (currentAiMode == AiMode.PALMPRINT) {
@@ -457,7 +463,7 @@ fun AIScreen() {
                             } else {
                                 Pair(false, emptyList())
                             }
-                        } catch (e: Exception) { Pair(false, emptyList()) }
+                        } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                 },
                 onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
@@ -670,25 +676,44 @@ fun AIScreen() {
                             var tempFace: FaceDetectorProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
+                                val options = mapOf("is_front" to isFront, "face_mode" to targetFaceMode)
                                 
-                                // 🌟 Improved Face Extraction for ID Card
-                                val roiLeft = (bitmap.width * 0.65f).toInt()
-                                val roiTop = (bitmap.height * 0.2f).toInt()
-                                val roiWidth = (bitmap.width * 0.3f).toInt()
-                                val roiHeight = (bitmap.height * 0.6f).toInt()
+                                var processingBitmap = bitmap
+                                var roiLeftOffset = 0f
+                                var roiTopOffset = 0f
+                                var scaleFactor = 1f
                                 
-                                val faceCrop = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
-                                val scaledFace = Bitmap.createScaledBitmap(faceCrop, roiWidth * 3, roiHeight * 3, true)
+                                if (targetFaceMode == "card") {
+                                    // 🌟 Improved Face Extraction for ID Card
+                                    val roiLeft = (bitmap.width * 0.65f).toInt()
+                                    val roiTop = (bitmap.height * 0.2f).toInt()
+                                    val roiWidth = (bitmap.width * 0.3f).toInt()
+                                    val roiHeight = (bitmap.height * 0.6f).toInt()
+                                    
+                                    val faceCrop = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
+                                    processingBitmap = Bitmap.createScaledBitmap(faceCrop, roiWidth * 3, roiHeight * 3, true)
+                                    roiLeftOffset = roiLeft.toFloat()
+                                    roiTopOffset = roiTop.toFloat()
+                                    scaleFactor = 3f
+                                } else {
+                                    // 🌟 Safe scaling for normal face mode to prevent ML Kit OOM on 12MP+ cameras
+                                    val maxDim = 1200f
+                                    val currentMax = maxOf(bitmap.width, bitmap.height).toFloat()
+                                    if (currentMax > maxDim) {
+                                        scaleFactor = maxDim / currentMax
+                                        processingBitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scaleFactor).toInt(), (bitmap.height * scaleFactor).toInt(), true)
+                                    }
+                                }
 
                                 val result = if (previewFace != null) {
-                                    previewFace.process(scaledFace)
+                                    previewFace.process(processingBitmap, options)
                                 } else {
                                     tempFace = SystemMonitor.trackMemoryAction(context, "Face Manual Init") {
                                         val f = FaceDetectorProcessor()
                                         f.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
                                         f
                                     }
-                                    tempFace!!.process(scaledFace)
+                                    tempFace!!.process(processingBitmap, options)
                                 }
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
@@ -696,19 +721,19 @@ fun AIScreen() {
                                 val bestFace = result.items.maxByOrNull { it.confidence }
                                 val finalFaceImage = if (useCropMode && bestFace != null) {
                                     val b = bestFace.boundingBox
-                                    // Map back to original bitmap (scaledFace was 3x ROI)
-                                    val bLeft = (b.left / 3f) + roiLeft
-                                    val bTop = (b.top / 3f) + roiTop
-                                    val bRight = (b.right / 3f) + roiLeft
-                                    val bBottom = (b.bottom / 3f) + roiTop
+                                    // Map back to original bitmap
+                                    val bLeft = (b.left / scaleFactor) + roiLeftOffset
+                                    val bTop = (b.top / scaleFactor) + roiTopOffset
+                                    val bRight = (b.right / scaleFactor) + roiLeftOffset
+                                    val bBottom = (b.bottom / scaleFactor) + roiTopOffset
                                     
                                     val faceWidth = bRight - bLeft
                                     val faceHeight = bBottom - bTop
                                     
-                                    // Padding for "Portrait" look: 70% width padding, 100% top padding, 50% bottom padding
-                                    val padW = faceWidth * 0.7f
-                                    val padT = faceHeight * 1.0f 
-                                    val padB = faceHeight * 0.6f
+                                    // 🌟 Requested Padding: 25 pixels uniform expansion
+                                    val padW = 25f
+                                    val padT = 25f 
+                                    val padB = 25f
                                     
                                     val cropL = (bLeft - padW).toInt().coerceAtLeast(0)
                                     val cropT = (bTop - padT).toInt().coerceAtLeast(0)
@@ -721,17 +746,25 @@ fun AIScreen() {
                                     if (finalH > 0 && finalW > 0) {
                                         val cropped = Bitmap.createBitmap(bitmap, cropL, cropT, finalW, finalH)
                                         // 🌟 Apply zoomScale to final crop
-                                        if (zoomScale > 1.0f) {
+                                        val finalResult = if (zoomScale > 1.0f) {
                                             val scaled = Bitmap.createScaledBitmap(cropped, (finalW * zoomScale).toInt(), (finalH * zoomScale).toInt(), true)
-                                            cropped.recycle()
+                                            if (scaled !== cropped) cropped.recycle()
                                             scaled
                                         } else cropped
-                                    } else scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                        
+                                        // 🌟 CRITICAL: Ensure we return a COPY if it happens to be the same instance as source
+                                        // to avoid "Canvas: trying to use a recycled bitmap" crash when 'bitmap' is recycled below.
+                                        if (finalResult === bitmap) {
+                                            finalResult.copy(Bitmap.Config.ARGB_8888, true)
+                                        } else {
+                                            finalResult
+                                        }
+                                    } else processingBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else if (!useCropMode) {
                                     // Full Image Mode
                                     bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
-                                    scaledFace.copy(Bitmap.Config.ARGB_8888, true)
+                                    processingBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
 
                                 val jsonStr = if (result.success && result.items.isNotEmpty()) {
@@ -751,19 +784,17 @@ fun AIScreen() {
                                         // Map BBox back to the NEW finalFaceImage coordinates
                                         if (bestFace != null) {
                                             val b = item.boundingBox
-                                            val bL = (b.left / 3f) + roiLeft
-                                            val bT = (b.top / 3f) + roiTop
-                                            val bR = (b.right / 3f) + roiLeft
-                                            val bB = (b.bottom / 3f) + roiTop
+                                            val bL = (b.left / scaleFactor) + roiLeftOffset
+                                            val bT = (b.top / scaleFactor) + roiTopOffset
+                                            val bR = (b.right / scaleFactor) + roiLeftOffset
+                                            val bB = (b.bottom / scaleFactor) + roiTopOffset
                                             
-                                            // Find offsets used for finalFaceImage
-                                            val faceWidth = bestFace.boundingBox.width() / 3f
-                                            val faceHeight = bestFace.boundingBox.height() / 3f
-                                            val padW = faceWidth * 0.7f
-                                            val padT = faceHeight * 1.0f
+                                            // Find offsets used for finalFaceImage (matching the 25px padding above)
+                                            val padW = 25f
+                                            val padT = 25f
                                             
-                                            val cropL = ((bestFace.boundingBox.left / 3f) + roiLeft - padW).toInt().coerceAtLeast(0)
-                                            val cropT = ((bestFace.boundingBox.top / 3f) + roiTop - padT).toInt().coerceAtLeast(0)
+                                            val cropL = ((bestFace.boundingBox.left / scaleFactor) + roiLeftOffset - padW).toInt().coerceAtLeast(0)
+                                            val cropT = ((bestFace.boundingBox.top / scaleFactor) + roiTopOffset - padT).toInt().coerceAtLeast(0)
 
                                             val box = org.json.JSONArray()
                                             box.put(bL - cropL)
@@ -789,12 +820,17 @@ fun AIScreen() {
                                 withContext(Dispatchers.Main) {
                                     ocrTimeMs = pbElapsedMs
                                     ocrResultJson = jsonStr
-                                    // Use the dynamically cropped face image
+                                    
+                                    // 🌟 Set currentImage BEFORE recycling components
                                     currentImage = finalFaceImage
 
-                                    if (!bitmap.isRecycled) bitmap.recycle()
-                                    if (!faceCrop.isRecycled) faceCrop.recycle()
-                                    if (finalFaceImage !== scaledFace && !scaledFace.isRecycled) scaledFace.recycle()
+                                    // 🌟 SAFETY CHECK: Only recycle if NOT the same instance as the one being displayed
+                                    if (bitmap !== finalFaceImage && !bitmap.isRecycled) {
+                                        bitmap.recycle()
+                                    }
+                                    if (processingBitmap !== finalFaceImage && processingBitmap !== bitmap && !processingBitmap.isRecycled) {
+                                        processingBitmap.recycle()
+                                    }
                                 }
 
                                 // ✅ Generate and send payload off the Main thread
@@ -1230,6 +1266,8 @@ fun CameraPreviewScreen(
     onAiModeChange: (AiMode) -> Unit,
     targetHand: String,
     onTargetHandChange: (String) -> Unit,
+    targetFaceMode: String,
+    onTargetFaceModeChange: (String) -> Unit,
     zoomScale: Float,
     onZoomScaleChange: (Float) -> Unit,
     useCropMode: Boolean,
@@ -1775,7 +1813,7 @@ fun CameraPreviewScreen(
                             drawContext.canvas.nativeCanvas.restore()
                         } else if (aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
                              // Optional: Draw basic guide for Face/Palm if needed, currently just showing latestDetections
-                             if (aiMode == AiMode.FACE && isFrontCamera) {
+                             if (aiMode == AiMode.FACE && isFrontCamera && targetFaceMode == "card") {
                                  val guideColor = android.graphics.Color.YELLOW
                                  val cardPaint = android.graphics.Paint().apply {
                                      color = guideColor
@@ -1870,23 +1908,8 @@ fun CameraPreviewScreen(
                             r.right * boxScaleX, r.bottom * boxScaleY
                         )
                         if (aiMode == AiMode.FACE) {
-                            // Apply Smoothing (Lerp) for Magnetic Box effect
-                            val tension = 0.3f // 0.0 - 1.0 (Higher = Faster/Stiffer)
-                            val smoothed = smoothedFaceRect
-                            val target = mappedRect
-                            
-                            val nextRect = if (smoothed == null) target else {
-                                android.graphics.RectF(
-                                    (smoothed.left + (target.left - smoothed.left) * tension).toFloat(),
-                                    (smoothed.top + (target.top - smoothed.top) * tension).toFloat(),
-                                    (smoothed.right + (target.right - smoothed.right) * tension).toFloat(),
-                                    (smoothed.bottom + (target.bottom - smoothed.bottom) * tension).toFloat()
-                                )
-                            }
-                            smoothedFaceRect = nextRect
-                            drawContext.canvas.nativeCanvas.drawRoundRect(nextRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.OCR) {
-                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                            drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
+                        } else if (aiMode == AiMode.OCR) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                             // White box as requested
                             val objPaint = android.graphics.Paint().apply {
@@ -2151,6 +2174,30 @@ fun CameraPreviewScreen(
                                 fontWeight = FontWeight.Black,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
+                        }
+                    }
+
+                    if (aiMode == AiMode.FACE) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        // Face Mode Toggle Button
+                        Surface(
+                            onClick = { onTargetFaceModeChange(if (targetFaceMode == "card") "normal" else "card") },
+                            color = if (targetFaceMode == "card") Color(0xFFFF9500) else Color(0xFF34C759),
+                            shape = RoundedCornerShape(100.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (targetFaceMode == "card") "CARD FACE" else "NORMAL FACE",
+                                    color = Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Black,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
                         }
                     }
                 }
@@ -2746,12 +2793,14 @@ fun OCRResultScreen(
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Image(
-                                bitmap = leftPalmImage.asImageBitmap(),
-                                contentDescription = "Left Palm",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
+                            if (!leftPalmImage.isRecycled) {
+                                Image(
+                                    bitmap = leftPalmImage.asImageBitmap(),
+                                    contentDescription = "Left Palm",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                             Text(
                                 text = "Hand Left",
                                 color = Color.White,
@@ -2773,12 +2822,14 @@ fun OCRResultScreen(
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Image(
-                                bitmap = rightPalmImage.asImageBitmap(),
-                                contentDescription = "Right Palm",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
+                            if (!rightPalmImage.isRecycled) {
+                                Image(
+                                    bitmap = rightPalmImage.asImageBitmap(),
+                                    contentDescription = "Right Palm",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                             Text(
                                 text = "Hand Right",
                                 color = Color.White,
@@ -2795,12 +2846,14 @@ fun OCRResultScreen(
                 }
             } else {
                 // Default OCR view
-                Image(
-                    bitmap = image.asImageBitmap(),
-                    contentDescription = "Target Image",
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
-                    contentScale = ContentScale.Fit
-                )
+                if (!image.isRecycled) {
+                    Image(
+                        bitmap = image.asImageBitmap(),
+                        contentDescription = "Target Image",
+                        modifier = Modifier.fillMaxSize().padding(16.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                }
 
                 // Pre-calculated data for Overlay to avoid heavy parsing in DrawScope
                 val drawingBoxes = remember(jsonResult) {
