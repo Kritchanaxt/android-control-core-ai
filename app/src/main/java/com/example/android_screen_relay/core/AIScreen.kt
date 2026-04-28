@@ -1811,7 +1811,30 @@ fun CameraPreviewScreen(
                                      textAlign = android.graphics.Paint.Align.CENTER
                                      setShadowLayer(6f, 3f, 3f, android.graphics.Color.BLACK)
                                  }
-                                 drawContext.canvas.nativeCanvas.drawText(handText, cw / 2f, ch * 0.15f, handPaint)
+
+                                 // Visual Guides for Palm
+                                 val guidePaint = android.graphics.Paint().apply {
+                                     color = android.graphics.Color.argb(200, 0, 255, 255) // Cyan
+                                     style = android.graphics.Paint.Style.STROKE
+                                     strokeWidth = 6f
+                                     pathEffect = android.graphics.DashPathEffect(floatArrayOf(30f, 20f), 0f)
+                                 }
+                                 val guideTextPaint = android.graphics.Paint().apply {
+                                     color = android.graphics.Color.WHITE
+                                     textSize = 36f
+                                     typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                     textAlign = android.graphics.Paint.Align.CENTER
+                                     setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                 }
+
+                                 // 1. Palm area (Circle)
+                                 val palmRadius = cw * 0.38f
+                                 val palmCenterY = ch * 0.45f
+                                 drawContext.canvas.nativeCanvas.drawCircle(cw / 2f, palmCenterY, palmRadius, guidePaint)
+                                 // Move text down below the circle center to avoid overlapping with the palm center too much
+                                 val instructionY = palmCenterY + palmRadius + 60f
+                                 drawContext.canvas.nativeCanvas.drawText("จัดฝ่ามือให้อยู่ในวงกลม", cw / 2f, instructionY, guideTextPaint)
+                                 drawContext.canvas.nativeCanvas.drawText(handText, cw / 2f, instructionY + 60f, handPaint)
                              }
                         }
                     }
@@ -1862,8 +1885,6 @@ fun CameraPreviewScreen(
                             }
                             smoothedFaceRect = nextRect
                             drawContext.canvas.nativeCanvas.drawRoundRect(nextRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.PALMPRINT) {
-                            drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 24f, 24f, palmPaint)
                         } else if (aiMode == AiMode.OCR) {
                             drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
