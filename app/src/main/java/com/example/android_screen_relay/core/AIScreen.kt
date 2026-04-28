@@ -113,7 +113,7 @@ fun AIScreen() {
     var isProcessing by remember { mutableStateOf(false) }
     var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
-    var currentAiMode by remember { mutableStateOf(AiMode.OCR) }
+    var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
     var targetHand by remember { mutableStateOf("Left") }
     
     var zoomScale by remember { mutableStateOf(1.0f) }
