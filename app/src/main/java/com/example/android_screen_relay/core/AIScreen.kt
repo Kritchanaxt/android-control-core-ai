@@ -18,7 +18,18 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,9 +71,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import com.example.android_screen_relay.RelayService
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.pointerInput
@@ -83,57 +91,62 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, OCR, PALMPRINT, FACE, POSE, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION }
+enum class AiMode { PREVIEW, PADDLE_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AIScreen() {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasPermission by remember { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted -> hasPermission = granted }
+    )
+    LaunchedEffect(Unit) {
+        launcher.launch(Manifest.permission.CAMERA)
+        ComputeModeManager.initByDeviceSpec(context)
+    }
+
+    if (hasPermission) {
+        AIScreenLayout()
+    } else {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Camera Permission Required", color = Color.White)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AIScreenLayout() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // States
-    var isInitialized by remember { mutableStateOf(true) } // true by default since we init on demand
+    var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
+    var isProcessing by remember { mutableStateOf(false) }
+    var showAiModeSheet by remember { mutableStateOf(false) }
     var currentImage by remember { mutableStateOf<Bitmap?>(null) }
     var leftPalmImage by remember { mutableStateOf<Bitmap?>(null) }
     var rightPalmImage by remember { mutableStateOf<Bitmap?>(null) }
-    var cropImage by remember { mutableStateOf<Bitmap?>(null) }
-    var suggestedCropRect by remember { mutableStateOf<Rect?>(null) }
-
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose {
-            currentImage?.recycle()
-            leftPalmImage?.recycle()
-            rightPalmImage?.recycle()
-            cropImage?.recycle()
-        }
-    }
     var ocrResultJson by remember { mutableStateOf("[]") }
     var ocrTimeMs by remember { mutableStateOf(0L) }
-    var isProcessing by remember { mutableStateOf(false) }
-    var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var computeMode by remember { mutableStateOf(ComputeModeManager.getMode()) }
-    var currentAiMode by remember { mutableStateOf(AiMode.PREVIEW) }
     var targetHand by remember { mutableStateOf("Left") }
-    var targetFaceMode by remember { mutableStateOf("card") } // "card" or "normal"
-
+    var targetFaceMode by remember { mutableStateOf("card") }
     var zoomScale by remember { mutableStateOf(1.0f) }
-    val zoomOptions = listOf(1.0f, 1.5f, 2.0f, 3.0f)
     var useCropMode by remember { mutableStateOf(true) }
-
-    // Camera Settings State (Moved up for Result Access)
     var selectedResolution by remember { mutableStateOf<android.util.Size?>(null) }
     var availableResolutions by remember { mutableStateOf<List<android.util.Size>>(emptyList()) }
-    
-    // Persistent Camera Settings
-    val availableCameras = remember {
-        (context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager).cameraIdList.toList()
-    }
-    var selectedCameraId by androidx.compose.runtime.saveable.rememberSaveable { 
-        mutableStateOf(availableCameras.firstOrNull() ?: "0") 
-    }
-    var selectedAspectRatio by androidx.compose.runtime.saveable.rememberSaveable { 
-        mutableStateOf(UiAspectRatio.RATIO_1_1) 
+    var selectedCameraId by remember { mutableStateOf("0") }
+    var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_1_1) }
+    var cropImage by remember { mutableStateOf<Bitmap?>(null) }
+    var processingResultMsg by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(currentAiMode) {
+        scope.launch(Dispatchers.IO) {
+            AIManager.switchProcessor(context, currentAiMode.name)
+        }
     }
 
     // Models will be lazy-loaded on demand now
@@ -377,7 +390,7 @@ fun AIScreen() {
                     )
 
                     // 1. Special Handling for Palmprint (Needs custom scaling)
-                    if (currentAiMode == AiMode.PALMPRINT) {
+                    if (currentAiMode == AiMode.HAND_DETECTION) {
                         try {
                             val processor = AIManager.getActiveProcessor() as? PalmprintProcessor
                             if (processor != null) {
@@ -402,7 +415,7 @@ fun AIScreen() {
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     } 
                     // 2. Handling for OCR (Using centralized process and custom card check)
-                    else if (currentAiMode == AiMode.OCR) {
+                    else if (currentAiMode == AiMode.PADDLE_OCR) {
                         try {
                             val scale = 720f / maxOf(bitmap.width, bitmap.height)
                             val scaled = if (scale < 1f) {
@@ -435,7 +448,32 @@ fun AIScreen() {
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     }
-                    // 3. General Handling for other modes (FACE, POSE, SEGMENTATION, etc.)
+                    // 3. Handling for  Recognition
+                    else if (currentAiMode == AiMode.TEXT_RECOGNITION) {
+                        try {
+                            val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+                            val aiBitmap = if (aiScale < 1f) {
+                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                            } else bitmap
+                            
+                            val result = AIManager.process(aiBitmap, options)
+                            if (aiBitmap !== bitmap) aiBitmap.recycle()
+                            
+                            if (result != null && result.success) {
+                                val finalItems = if (aiScale < 1f) {
+                                    result.items.map { item ->
+                                        val r = item.boundingBox
+                                        item.copy(boundingBox = android.graphics.RectF(
+                                            r.left / aiScale, r.top / aiScale, 
+                                            r.right / aiScale, r.bottom / aiScale
+                                        ))
+                                    }
+                                } else result.items
+                                Pair(finalItems.isNotEmpty(), finalItems)
+                            } else Pair(false, emptyList())
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    }
+                    // 4. General Handling for other modes (FACE, POSE, SEGMENTATION, etc.)
                     else {
                         try {
                             // 🌟 Smart Scaling for AI: ML Kit works best with reasonable sizes (e.g. max 720px)
@@ -472,7 +510,7 @@ fun AIScreen() {
                         return@CameraPreviewScreen // Double check Busy State Lock
                     }
                     
-                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE || 
+                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE_DETECTION || 
                                             currentAiMode == AiMode.OBJECT_DETECTION || 
                                             currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION
                     if (isPreviewOnlyMode) {
@@ -480,7 +518,7 @@ fun AIScreen() {
                         return@CameraPreviewScreen
                     }
 
-                    if (currentAiMode == AiMode.PALMPRINT) {
+                    if (currentAiMode == AiMode.HAND_DETECTION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             var tempPalm: com.example.android_screen_relay.core.PalmprintProcessor? = null
@@ -670,7 +708,7 @@ fun AIScreen() {
                                 if (!bitmap.isRecycled) bitmap.recycle()
                             }
                         }
-                    } else if (currentAiMode == AiMode.FACE) {
+                    } else if (currentAiMode == AiMode.FACE_DETECTION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             var tempFace: FaceDetectorProcessor? = null
@@ -977,6 +1015,58 @@ fun AIScreen() {
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             } finally {
                                 tempSubject?.release()
+                            }
+                        }
+                    } else if (currentAiMode == AiMode.TEXT_RECOGNITION) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            var tempText: TextRecognitionProcessor? = null
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                val result = if (previewOcr is TextRecognitionProcessor) {
+                                    previewOcr.process(bitmap)
+                                } else {
+                                    tempText = TextRecognitionProcessor().apply { init(context, AIConfig()) }
+                                    tempText.process(bitmap)
+                                }
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+                                
+                                val jsonArr = org.json.JSONArray()
+                                result.items.forEach { item ->
+                                    val obj = org.json.JSONObject()
+                                    obj.put("label", item.label)
+                                    obj.put("confidence", item.confidence)
+                                    val box = org.json.JSONArray()
+                                    // p0: top-left
+                                    box.put(org.json.JSONArray().put(item.boundingBox.left.toInt()).put(item.boundingBox.top.toInt()))
+                                    // p1: top-right
+                                    box.put(org.json.JSONArray().put(item.boundingBox.right.toInt()).put(item.boundingBox.top.toInt()))
+                                    // p2: bottom-right
+                                    box.put(org.json.JSONArray().put(item.boundingBox.right.toInt()).put(item.boundingBox.bottom.toInt()))
+                                    // p3: bottom-left
+                                    box.put(org.json.JSONArray().put(item.boundingBox.left.toInt()).put(item.boundingBox.bottom.toInt()))
+                                    
+                                    obj.put("box", box)
+                                    jsonArr.put(obj)
+                                }
+                                val jsonStr = jsonArr.toString()
+
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = jsonStr
+                                    currentImage = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                }
+
+                                val payload = generateOCRPayload(context, currentImage!!, ocrResultJson, ocrTimeMs, currentAiMode)
+                                RelayService.getInstance()?.broadcastMessage(payload.toString())
+
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } catch (e: Exception) {
+                                Log.e("MLKitText", "Processing error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } finally {
+                                tempText?.release()
                             }
                         }
                     } else {
@@ -1297,6 +1387,7 @@ fun CameraPreviewScreen(
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
+    var showAiModeSheet by remember { mutableStateOf(false) }
     var isPreviewPaused by remember { mutableStateOf(false) }
     var stableTime by remember { mutableStateOf(0L) }
     var lastInferenceTimeMs by remember { mutableStateOf(0L) }
@@ -1371,19 +1462,19 @@ fun CameraPreviewScreen(
 
             // Then initialize the active one (Limit cores to 1 or 2 for preview stability)
             val config = AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2))
-            if (aiMode == AiMode.OCR) {
+            if (aiMode == AiMode.PADDLE_OCR) {
                 val ocr = PaddleOCR()
                 val success = ocr.initModel(context, config.threads, config.useGpu)
                 if (success) previewOcr = ocr
-            } else if (aiMode == AiMode.PALMPRINT) {
+            } else if (aiMode == AiMode.HAND_DETECTION) {
                 val palm = PalmprintProcessor()
                 val success = palm.init(context, config)
                 if (success) previewPalm = palm
-            } else if (aiMode == AiMode.FACE) {
+            } else if (aiMode == AiMode.FACE_DETECTION) {
                 val face = FaceDetectorProcessor()
                 val success = face.init(context, config)
                 if (success) previewFace = face
-            } else if (aiMode == AiMode.POSE) {
+            } else if (aiMode == AiMode.POSE_DETECTION) {
                 val pose = PoseDetectorProcessor()
                 val success = pose.init(context, config)
                 if (success) previewPose = pose
@@ -1426,7 +1517,7 @@ fun CameraPreviewScreen(
         }
 
         // Force Flash for PALMPRINT mode and normal for OCR
-        cameraController?.setFlashMode(aiMode == AiMode.PALMPRINT)
+        cameraController?.setFlashMode(aiMode == AiMode.HAND_DETECTION)
 
         // Fetch raw sizes directly mapping orientation manually to prevent waiting for preview initialization
         val hardwareSizes = cameraController!!.getCameraResolutions(selectedCameraId)
@@ -1520,16 +1611,16 @@ fun CameraPreviewScreen(
                         val bitmap = if (useCropMode) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
-                            val frameW = if (aiMode == AiMode.OCR) {
+                            val frameW = if (aiMode == AiMode.PADDLE_OCR) {
                                 val maxW = cw * 0.9f
                                 val idealH = ch * 0.6f
                                 if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                            } else if (aiMode == AiMode.FACE) {
+                            } else if (aiMode == AiMode.FACE_DETECTION) {
                                 min(cw, ch) * 0.8f
                             } else {
                                 min(cw, ch) * 0.6f
                             }
-                            val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
+                            val frameH = if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
                             val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                             val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                             val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -1581,17 +1672,17 @@ fun CameraPreviewScreen(
                                 val ch = baseBitmap.height.toFloat()
                                 // Expand frame by 20%
                                 val expansion = 1.20f
-                                val frameW = (if (aiMode == AiMode.OCR) {
+                                val frameW = (if (aiMode == AiMode.PADDLE_OCR) {
                                     val maxW = cw * 0.9f
                                     val idealH = ch * 0.6f
                                     if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                                } else if (aiMode == AiMode.FACE) {
+                                } else if (aiMode == AiMode.FACE_DETECTION) {
                                     min(cw, ch) * 0.8f
                                 } else {
                                     min(cw, ch) * 0.6f
                                 }) * expansion
                                 
-                                val frameH = (if (aiMode == AiMode.OCR) frameW / (1.58f * expansion) else frameW) * expansion
+                                val frameH = (if (aiMode == AiMode.PADDLE_OCR) frameW / (1.58f * expansion) else frameW) * expansion
                                 val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                                 val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                                 val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -1660,7 +1751,7 @@ fun CameraPreviewScreen(
 
                         var passedToCapture = false
                         // Disable Auto-Snap for specific preview-only modes as requested
-                        val isPreviewOnlyMode = aiMode == AiMode.POSE || 
+                        val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION || 
                                                 aiMode == AiMode.OBJECT_DETECTION || 
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
@@ -1702,7 +1793,7 @@ fun CameraPreviewScreen(
         }
     }
 
-    var showAiModeSheet by remember { mutableStateOf(false) }
+    // Ready to Scaffold
 
     Scaffold(
         containerColor = Color.Black
@@ -1755,24 +1846,24 @@ fun CameraPreviewScreen(
                     val cw = size.width
                     val ch = size.height
 
-                    val isPreviewOnlyMode = aiMode == AiMode.POSE || 
+                    val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION || 
                                             aiMode == AiMode.OBJECT_DETECTION || 
                                             aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
                                             aiMode == AiMode.SELFIE_SEGMENTATION || 
                                             aiMode == AiMode.SUBJECT_SEGMENTATION
 
-                    if (aiMode == AiMode.OCR || aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
+                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
                         // OCR matches bounds, PALMPRINT uses a smaller centered box
-                        val frameW = if (aiMode == AiMode.OCR) {
+                        val frameW = if (aiMode == AiMode.PADDLE_OCR) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                        } else if (aiMode == AiMode.FACE) {
+                        } else if (aiMode == AiMode.FACE_DETECTION) {
                             min(cw, ch) * 0.8f
                         } else {
                             min(cw, ch) * 0.6f
                         }
-                        val frameH = if (aiMode == AiMode.OCR) frameW / 1.58f else frameW
+                        val frameH = if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
 
                         val left = (cw - frameW) / 2
                         val top = (ch - frameH) / 2
@@ -1790,7 +1881,7 @@ fun CameraPreviewScreen(
                             typeface = android.graphics.Typeface.DEFAULT_BOLD
                         }
 
-                        if (aiMode == AiMode.OCR) {
+                        if (aiMode == AiMode.PADDLE_OCR) {
                             // Main ID card border (Landscape)
                             val rect = android.graphics.RectF(left, top, right, bottom)
                             drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
@@ -1811,9 +1902,9 @@ fun CameraPreviewScreen(
                             val bottomTextWidth = textPaint.measureText(bottomText)
                             drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
                             drawContext.canvas.nativeCanvas.restore()
-                        } else if (aiMode == AiMode.FACE || aiMode == AiMode.PALMPRINT) {
+                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
                              // Optional: Draw basic guide for Face/Palm if needed, currently just showing latestDetections
-                             if (aiMode == AiMode.FACE && isFrontCamera && targetFaceMode == "card") {
+                             if (aiMode == AiMode.FACE_DETECTION && isFrontCamera && targetFaceMode == "card") {
                                  val guideColor = android.graphics.Color.YELLOW
                                  val cardPaint = android.graphics.Paint().apply {
                                      color = guideColor
@@ -1840,7 +1931,7 @@ fun CameraPreviewScreen(
                                  }
                                  drawContext.canvas.nativeCanvas.drawText("วางบัตรในกรอบ", cw / 2f, cardTop - 60f, textPaint)
                                  }                             
-                             if (aiMode == AiMode.PALMPRINT) {
+                             if (aiMode == AiMode.HAND_DETECTION) {
                                  val handText = if (targetHand.equals("Left", true)) "กรุณาใช้มือ [ซ้าย] ในการสแกน" else "กรุณาใช้มือ [ขวา] ในการสแกน"
                                  val handPaint = android.graphics.Paint().apply {
                                      color = android.graphics.Color.YELLOW
@@ -1907,9 +1998,9 @@ fun CameraPreviewScreen(
                             r.left * boxScaleX, r.top * boxScaleY, 
                             r.right * boxScaleX, r.bottom * boxScaleY
                         )
-                        if (aiMode == AiMode.FACE) {
+                        if (aiMode == AiMode.FACE_DETECTION) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.OCR) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        } else if (aiMode == AiMode.PADDLE_OCR) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                             // White box as requested
                             val objPaint = android.graphics.Paint().apply {
@@ -1966,7 +2057,7 @@ fun CameraPreviewScreen(
                                     )
                                 }
                             }
-                        } else if (aiMode == AiMode.POSE) {
+                        } else if (aiMode == AiMode.POSE_DETECTION) {
                             val landmarks = item.extra["landmarks_raw"] as? Map<Int, android.graphics.PointF>
                             if (landmarks != null) {
                                 val posePaint = android.graphics.Paint().apply {
@@ -2177,7 +2268,7 @@ fun CameraPreviewScreen(
                         }
                     }
 
-                    if (aiMode == AiMode.FACE) {
+                    if (aiMode == AiMode.FACE_DETECTION) {
                         Spacer(modifier = Modifier.width(8.dp))
                         // Face Mode Toggle Button
                         Surface(
@@ -2215,14 +2306,15 @@ fun CameraPreviewScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val displayName = when (aiMode) {
-                            AiMode.OCR -> "PaddleOCR"
-                            AiMode.PALMPRINT -> "Hand Detect"
-                            AiMode.FACE -> "Face Detect"
-                            AiMode.POSE -> "Pose Detect"
+                            AiMode.PADDLE_OCR -> "PaddleOCR"
+                            AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
+                            AiMode.FACE_DETECTION -> "Face Detection"
+                            AiMode.POSE_DETECTION -> "Pose Detection"
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
                             AiMode.OBJECT_DETECTION -> "Object Detect"
                             AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
+                            AiMode.TEXT_RECOGNITION -> "Text Recognition"
                             else -> aiMode.name
                         }
                         Text(
@@ -2454,77 +2546,121 @@ fun CameraPreviewScreen(
     }
 
     if (showAiModeSheet) {
-        // Hide overlay when sheet is visible to prevent UI overlap
-        DisposableEffect(Unit) {
-            RelayService.getInstance()?.overlayManager?.hideOverlay()
-            onDispose {
-                RelayService.getInstance()?.overlayManager?.showOverlayView()
-            }
+        AiModeBottomSheet(
+            currentAiMode = aiMode,
+            onAiModeChange = { onAiModeChange(it) },
+            onDismiss = { showAiModeSheet = false }
+        )
+    }
+}
+
+@Composable
+fun AiModeSelector(
+    showAiModeSheet: Boolean,
+    currentAiMode: AiMode,
+    onAiModeChange: (AiMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (showAiModeSheet) {
+        AiModeBottomSheet(
+            currentAiMode = currentAiMode,
+            onAiModeChange = onAiModeChange,
+            onDismiss = onDismiss
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AiModeBottomSheet(
+    currentAiMode: AiMode,
+    onAiModeChange: (AiMode) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val isSwitching = remember { mutableStateOf(false) }
+    val switchingJob = remember { mutableStateOf<Job?>(null) }
+
+    DisposableEffect(Unit) {
+        RelayService.getInstance()?.overlayManager?.hideOverlay()
+        onDispose {
+            RelayService.getInstance()?.overlayManager?.showOverlayView()
         }
-        ModalBottomSheet(
-            onDismissRequest = { showAiModeSheet = false },
-            containerColor = Color.White,
-            dragHandle = { BottomSheetDefaults.DragHandle() },
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        dragHandle = { BottomSheetDefaults.DragHandle() },
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 8.dp)
+                .padding(bottom = 64.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 8.dp)
-                    .padding(bottom = 64.dp), // Increased padding to prevent cut-off
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
-                    val label = when (mode) {
-                        AiMode.OCR -> "PaddleOCRv5"
-                        AiMode.PALMPRINT -> "MediaPipe - Hand landmarks detection"
-                        AiMode.FACE -> "ML Kit - Face detection"
-                        AiMode.POSE -> "ML Kit - Pose detection"
-                        AiMode.SELFIE_SEGMENTATION -> "ML Kit - Selfie segmentation"
-                        AiMode.SUBJECT_SEGMENTATION -> "ML Kit - Subject Segmentation"
-                        AiMode.OBJECT_DETECTION -> "ML Kit - Object detection"
-                        AiMode.CUSTOM_OBJECT_DETECTION -> "ML Kit - Custom Object detection"
-                        else -> mode.name
+            AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
+                val label = when (mode) {
+                    AiMode.PADDLE_OCR -> "PaddleOCRv5"
+                    AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
+                    AiMode.FACE_DETECTION -> "Face Detection"
+                    AiMode.POSE_DETECTION -> "Pose Detection"
+                    AiMode.SELFIE_SEGMENTATION -> "Selfie Segmentation"
+                    AiMode.SUBJECT_SEGMENTATION -> "Subject Segmentation"
+                    AiMode.OBJECT_DETECTION -> "Object Detection"
+                    AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object Detection"
+                    AiMode.TEXT_RECOGNITION -> "Text Recognition"
+                    else -> mode.name
+                }
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !isSwitching.value) {
+                            if (isSwitching.value) return@clickable
+                            onAiModeChange(mode)
+                            switchingJob.value?.cancel()
+                            switchingJob.value = scope.launch(Dispatchers.Default) {
+                                isSwitching.value = true
+                                try {
+                                    AIManager.switchProcessor(context, mode.name)
+                                } catch (e: Exception) {
+                                    Log.e("AIScreen", "Switch AI Error", e)
+                                } finally {
+                                    isSwitching.value = false
+                                }
+                            }
+                            onDismiss()
+                        }
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .border(3.dp, if (currentAiMode == mode) Color(0xFF008080) else Color.Gray, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (currentAiMode == mode) {
+                            Box(
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .background(Color(0xFF008080), CircleShape)
+                            )
+                        }
                     }
                     
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                onAiModeChange(mode)
-                                scope.launch(Dispatchers.Default) {
-                                    AIManager.switchProcessor(context, mode.name)
-                                }
-                                showAiModeSheet = false
-                            }
-                            .padding(vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // Radio button style icon (circular with dot)
-                        Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .border(3.dp, if (aiMode == mode) Color(0xFF008080) else Color.Gray, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (aiMode == mode) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(14.dp)
-                                        .background(Color(0xFF008080), CircleShape)
-                                )
-                            }
-                        }
-                        
-                        Text(
-                            text = label,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
-                        )
-                    }
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black
+                    )
                 }
             }
         }
@@ -2570,18 +2706,20 @@ fun OCRResultScreen(
                 title = {
                     Column {
                         val title = when (aiMode) {
-                            AiMode.PALMPRINT -> "Palmprint Result"
-                            AiMode.FACE -> "Face Result"
+                            AiMode.HAND_DETECTION -> "Palmprint Result"
+                            AiMode.FACE_DETECTION -> "Face Result"
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Result"
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Result"
+                            AiMode.TEXT_RECOGNITION -> "ML Kit Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
                         val modelName = when (aiMode) {
-                            AiMode.PALMPRINT -> "MediaPipe Hand Gesture"
-                            AiMode.FACE -> "ML Kit Face Detection"
+                            AiMode.HAND_DETECTION -> "MediaPipe Hand Gesture"
+                            AiMode.FACE_DETECTION -> "ML Kit Face Detection"
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
                             AiMode.SUBJECT_SEGMENTATION -> "ML Kit Subject Segmentation"
+                            AiMode.TEXT_RECOGNITION -> "ML Kit Text Recognition"
                             else -> "PaddleOCRv5"
                         }
                         Text(
@@ -2617,7 +2755,7 @@ fun OCRResultScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (aiMode == AiMode.OCR) {
+                    if (aiMode == AiMode.PADDLE_OCR) {
                         // Compute Mode Selector only for OCR
                         Row(
                             modifier = Modifier
@@ -2657,7 +2795,12 @@ fun OCRResultScreen(
                                 if (jsonResult == "[]" || jsonResult.isEmpty()) {
                                     Toast.makeText(
                                         context,
-                                        if (aiMode == AiMode.OCR) "Please run OCR first" else "No Palmprint result",
+                                        when (aiMode) {
+                                            AiMode.PADDLE_OCR -> "Please run OCR first"
+                                            AiMode.TEXT_RECOGNITION -> "No text found"
+                                            AiMode.FACE_DETECTION -> "No face result"
+                                            else -> "No result"
+                                        },
                                         Toast.LENGTH_SHORT
                                     ).show()
                                     return@OutlinedButton
@@ -2694,7 +2837,12 @@ fun OCRResultScreen(
                                 if (jsonResult == "[]" || jsonResult.isEmpty()) {
                                     Toast.makeText(
                                         context,
-                                        if (aiMode == AiMode.OCR) "Please run OCR first" else "No Palmprint result",
+                                        when (aiMode) {
+                                            AiMode.PADDLE_OCR -> "Please run OCR first"
+                                            AiMode.TEXT_RECOGNITION -> "No text found"
+                                            AiMode.FACE_DETECTION -> "No face result"
+                                            else -> "No result"
+                                        },
                                         Toast.LENGTH_SHORT
                                     ).show()
                                     return@Button
@@ -2730,10 +2878,16 @@ fun OCRResultScreen(
                                                     "compute_mode" to computeMode.displayName,
                                                     "chosen_resolution" to "Pre-Crop/Selected",
                                                     "final_ai_resolution" to "${image.width}x${image.height}",
-                                                    "type" to if (aiMode == AiMode.PALMPRINT) "PalmPrint" else "OCR",
+                                                    "type" to when(aiMode) {
+                                                        AiMode.HAND_DETECTION -> "PalmPrint"
+                                                        AiMode.TEXT_RECOGNITION -> "MLKitText"
+                                                        AiMode.FACE_DETECTION -> "FaceDetection"
+                                                        else -> "OCR"
+                                                    },
                                                     "use_gpu" to computeMode.useGpu,
-                                                    "model_paddle_loaded" to (aiMode == AiMode.OCR),
-                                                    "model_mediapipe_loaded" to (aiMode == AiMode.PALMPRINT),
+                                                    "model_paddle_loaded" to (aiMode == AiMode.PADDLE_OCR),
+                                                    "model_mlkit_text_loaded" to (aiMode == AiMode.TEXT_RECOGNITION),
+                                                    "model_mediapipe_loaded" to (aiMode == AiMode.HAND_DETECTION),
                                                     "snap_image_active" to true,
                                                     "avg_confidence" to 1.0,
                                                     "cropped_ms" to 0L
@@ -2779,7 +2933,7 @@ fun OCRResultScreen(
                 .padding(padding)
                 .background(Color(0xFFF5F5F5))
         ) {
-            if (aiMode == AiMode.PALMPRINT && leftPalmImage != null && rightPalmImage != null) {
+            if (aiMode == AiMode.HAND_DETECTION && leftPalmImage != null && rightPalmImage != null) {
                 // Show both palms for PALMPRINT mode
                 Column(
                     modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -2933,7 +3087,7 @@ fun OCRResultScreen(
                                         drawContext.canvas.nativeCanvas.drawText(label, x, y - (5f / scale), textPaint)
                                     }
                                 }
-                            } else if (aiMode == AiMode.FACE && boxObj.has("bbox")) {
+                            } else if (aiMode == AiMode.FACE_DETECTION && boxObj.has("bbox")) {
                                 // Draw BBox for face
                                 val bArr = boxObj.getJSONArray("bbox")
                                 val l = bArr.getDouble(0).toFloat()
@@ -3047,7 +3201,17 @@ fun OCRResultScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    if (showPayload) "Review the generated data structure" else "Review the processed ${if (aiMode == AiMode.OCR) "OCR text" else if (aiMode == AiMode.FACE) "face data" else if (aiMode == AiMode.SELFIE_SEGMENTATION) "selfie data" else if (aiMode == AiMode.SUBJECT_SEGMENTATION) "subject data" else "palmprint data"}",
+                    if (showPayload) "Review the generated data structure" else "Review the processed ${
+                        when (aiMode) {
+                            AiMode.PADDLE_OCR -> "OCR text"
+                            AiMode.FACE_DETECTION -> "face data"
+                            AiMode.SELFIE_SEGMENTATION -> "selfie data"
+                            AiMode.SUBJECT_SEGMENTATION -> "subject data"
+                            AiMode.TEXT_RECOGNITION -> "text recognition data"
+                            AiMode.HAND_DETECTION -> "palmprint data"
+                            else -> "data"
+                        }
+                    }",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )
@@ -3125,7 +3289,7 @@ fun OCRResultScreen(
 
                             // Calculate FullText
                             var rawText = ""
-                            if (aiMode == AiMode.FACE) {
+                            if (aiMode == AiMode.FACE_DETECTION) {
                                 val smiling = obj.optDouble("smiling_prob", -1.0)
                                 val leftEye = obj.optDouble("left_eye_open_prob", -1.0)
                                 val rightEye = obj.optDouble("right_eye_open_prob", -1.0)
@@ -3195,9 +3359,9 @@ fun OCRResultScreen(
                             } catch (e: Exception) { false }
 
                             val statusText = when {
-                                aiMode == AiMode.FACE && isSuccess -> "Face Detected"
-                                aiMode == AiMode.PALMPRINT && isSuccess -> "Palmprint Detected"
-                                aiMode == AiMode.OCR && isSuccess -> "Text Extracted"
+                                aiMode == AiMode.FACE_DETECTION && isSuccess -> "Face Detected"
+                                aiMode == AiMode.HAND_DETECTION && isSuccess -> "Palmprint Detected"
+                                (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
                                 !isSuccess -> "No Object Detected"
                                 else -> "Inference Completed"
                             }
@@ -3534,7 +3698,7 @@ private suspend fun generateOCRPayload(
     image: Bitmap,
     jsonResult: String,
     timeMs: Long,
-    aiMode: AiMode = AiMode.OCR
+    aiMode: AiMode = AiMode.PADDLE_OCR
 ): JSONObject = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
     val device = SystemMonitor.getDeviceInfo(context)
     val resource = SystemMonitor.getCurrentResourceUsage(context)
@@ -3542,18 +3706,18 @@ private suspend fun generateOCRPayload(
     val payload = JSONObject()
     payload.put(
         "type",
-        if (aiMode == AiMode.PALMPRINT) "palmprint_result" else if (aiMode == AiMode.FACE) "face_result" else "ocr_result"
+        if (aiMode == AiMode.HAND_DETECTION) "palmprint_result" else if (aiMode == AiMode.FACE_DETECTION) "face_result" else "ocr_result"
     )
     payload.put("timestamp", System.currentTimeMillis())
 
     // engine_info (new format)
     val engineInfo = JSONObject().apply {
-        if (aiMode == AiMode.PALMPRINT) {
+        if (aiMode == AiMode.HAND_DETECTION) {
             put("engine", "mediapipe")
             put("version", "tasks-vision")
             put("runtime", "tflite")
             put("model", "hand_landmarker.task")
-        } else if (aiMode == AiMode.FACE) {
+        } else if (aiMode == AiMode.FACE_DETECTION) {
             put("engine", "mlkit")
             put("version", "face-detection")
             put("runtime", "gms")
@@ -3589,16 +3753,16 @@ private suspend fun generateOCRPayload(
     try {
         val benchmarkArr = JSONArray(jsonResult)
 
-        if (aiMode == AiMode.PALMPRINT || aiMode == AiMode.FACE) {
+        if (aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.FACE_DETECTION) {
             // Palmprint/Face structure
             payload.put("result", JSONObject().apply {
-                put(if (aiMode == AiMode.PALMPRINT) "palms" else "faces", benchmarkArr)
+                put(if (aiMode == AiMode.HAND_DETECTION) "palms" else "faces", benchmarkArr)
             })
 
             // add resource info directly to palmprint summary so the google script logs it properly
             val resourceStats = resource.toJson()
             payload.put("summary", JSONObject().apply {
-                put(if (aiMode == AiMode.PALMPRINT) "palms_detected" else "faces_detected", benchmarkArr.length())
+                put(if (aiMode == AiMode.HAND_DETECTION) "palms_detected" else "faces_detected", benchmarkArr.length())
                 put("total_latency_ms", timeMs)
             })
 

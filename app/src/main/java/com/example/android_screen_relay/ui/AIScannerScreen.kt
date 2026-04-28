@@ -54,7 +54,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 enum class ScanMode {
-    OCR, PALM, FACE, POSE, SELFIE, SUBJECT
+    PADDLE_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE, SUBJECT
 }
 
 enum class HandSide {
@@ -70,7 +70,7 @@ fun AIScannerScreen() {
 
     // States
     var hasCameraPermission by remember { mutableStateOf(false) }
-    var currentMode by remember { mutableStateOf(ScanMode.PALM) }
+    var currentMode by remember { mutableStateOf(ScanMode.HAND_DETECTION) }
     var targetHand by remember { mutableStateOf(HandSide.ANY) }
     var isDetected by remember { mutableStateOf(false) }
     var snappedImage by remember { mutableStateOf<Bitmap?>(null) }
@@ -165,7 +165,7 @@ fun AIScannerScreen() {
             ) {
                 // Mode Toggle
                 SegmentedButtonUI(
-                    options = listOf("OCR", "Palm", "Face", "Pose", "Selfie", "Subj"),
+                    options = listOf("OCR", "Hand", "Face", "Pose", "Selfie", "Subj"),
                     selectedIndex = currentMode.ordinal,
                     onSelect = { index ->
                         currentMode = ScanMode.values()[index]
@@ -187,7 +187,7 @@ fun AIScannerScreen() {
             }
 
             // Hand Targeting Toggle
-            if (currentMode == ScanMode.PALM) {
+            if (currentMode == ScanMode.HAND_DETECTION) {
                 Row(
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 100.dp),
                     horizontalArrangement = Arrangement.Center
@@ -277,7 +277,7 @@ fun RealtimeCameraPreview(
                     var criteriaMet = false
                     var metaStr = "{}"
 
-                    if (mode == ScanMode.PALM) {
+                    if (mode == ScanMode.HAND_DETECTION) {
                         val handMatch = result.items.find { item ->
                             val sideStr = item.extra["side"] as? String ?: ""
                             targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase = true)
@@ -289,7 +289,7 @@ fun RealtimeCameraPreview(
                                 put("side", handMatch.extra["side"])
                             }.toString()
                         }
-                    } else if (mode != ScanMode.OCR) {
+                    } else if (mode != ScanMode.PADDLE_OCR) {
                         if (result.success && result.items.isNotEmpty()) {
                             criteriaMet = true
                             metaStr = JSONObject().apply {
@@ -404,7 +404,7 @@ fun RealtimeCameraPreview(
                                             var criteriaMet = false
                                             var metaStr = "{}"
 
-                                            if (mode == ScanMode.PALM) {
+                                            if (mode == ScanMode.HAND_DETECTION) {
                                                 val handMatch = result.items.find { item ->
                                                     val sideStr = item.extra["side"] as? String ?: ""
                                                     targetHand == HandSide.ANY || sideStr.equals(targetHand.name, ignoreCase = true)
@@ -416,7 +416,7 @@ fun RealtimeCameraPreview(
                                                         put("side", handMatch.extra["side"])
                                                     }.toString()
                                                 }
-                                            } else if (mode != ScanMode.OCR) {
+                                            } else if (mode != ScanMode.PADDLE_OCR) {
                                                 if (result.success && result.items.isNotEmpty()) {
                                                     criteriaMet = true
                                                     metaStr = JSONObject().apply {
@@ -475,7 +475,7 @@ fun RealtimeCameraPreview(
 
             latestDetections.forEach { item ->
                 when (mode) {
-                    ScanMode.POSE -> {
+                    ScanMode.POSE_DETECTION -> {
                         val rawLandmarks = item.extra["landmarks_raw"] as? Map<Int, android.graphics.PointF>
                         if (rawLandmarks != null) {
                             // 1. Draw Points
@@ -506,7 +506,7 @@ fun RealtimeCameraPreview(
                             }
                         }
                     }
-                    ScanMode.FACE -> {
+                    ScanMode.FACE_DETECTION -> {
                         val rect = item.boundingBox
                         drawRoundRect(
                             color = Color.Red,
@@ -516,7 +516,7 @@ fun RealtimeCameraPreview(
                             style = Stroke(width = 3.dp.toPx())
                         )
                     }
-                    ScanMode.PALM -> {
+                    ScanMode.HAND_DETECTION -> {
                         val rect = item.boundingBox
                         drawRoundRect(
                             color = Color.Yellow,
@@ -526,7 +526,7 @@ fun RealtimeCameraPreview(
                             style = Stroke(width = 4.dp.toPx())
                         )
                     }
-                    ScanMode.OCR -> {
+                    ScanMode.PADDLE_OCR -> {
                         val rect = item.boundingBox
                         drawRect(
                             color = Color.Cyan.copy(alpha = 0.8f),
@@ -560,16 +560,16 @@ fun RealtimeCameraPreview(
                 drawText("Latency: ${AIManager.getLastLatency()}ms", 40f, yStart + 50f, paint)
                 drawText("Mode: ${mode.name}", 40f, yStart + 100f, paint)
                 
-                if (latestDetections.isEmpty() && mode != ScanMode.OCR) {
+                if (latestDetections.isEmpty() && mode != ScanMode.PADDLE_OCR) {
                     paint.color = android.graphics.Color.RED
                     drawText("No Object Detected", 40f, yStart + 150f, paint)
                 }
             }
 
             // Default UI Guide Box (For OCR/Palm)
-            if (mode == ScanMode.OCR || mode == ScanMode.PALM) {
-                val boxWidth = if (mode == ScanMode.OCR) size.width * 0.85f else size.width * 0.7f
-                val boxHeight = if (mode == ScanMode.OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
+            if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.HAND_DETECTION) {
+                val boxWidth = if (mode == ScanMode.PADDLE_OCR) size.width * 0.85f else size.width * 0.7f
+                val boxHeight = if (mode == ScanMode.PADDLE_OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
                 val left = (size.width - boxWidth) / 2
                 val top = (size.height - boxHeight) / 2
                 drawRoundRect(

@@ -2,6 +2,7 @@ package com.example.android_screen_relay.core
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Log
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -50,39 +51,60 @@ object AIManager {
     
     fun switchProcessor(processor: AIProcessor, context: android.content.Context, config: AIConfig): Boolean {
         // Use write lock to ensure no one is processing or reading while we switch
-        lock.write {
+        // Use tryLock to prevent hanging if something goes wrong
+        val writeLock = lock.writeLock()
+        if (!writeLock.tryLock(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            Log.e("AIManager", "Failed to acquire write lock for ${processor.name}")
+            return false
+        }
+        
+        try {
             isSwitching = true
-            try {
-                // 1. Release old with tracking
-                activeProcessor?.let { old ->
+            
+            // 1. Release old with tracking
+            activeProcessor?.let { old ->
+                try {
                     SystemMonitor.trackMemoryAction(context, "Release ${old.name}") {
                         old.release()
                     }
                     sendPerformanceNotification(context, "Released ${old.name}")
+                } catch (e: Exception) {
+                    Log.e("AIManager", "Error releasing ${old.name}", e)
                 }
-                
-                // 2. Clear first to ensure no one uses the stale processor
-                activeProcessor = null
-                
-                // 3. Init new with tracking
-                val newProcessor = SystemMonitor.trackMemoryAction(context, "Init ${processor.name}") {
+            }
+            
+            // 2. Clear first to ensure no one uses the stale processor
+            activeProcessor = null
+            
+            // 3. Force GC to help memory on low-end devices during switch
+            System.gc()
+            System.runFinalization()
+            
+            // 4. Init new with tracking
+            val newProcessor = try {
+                SystemMonitor.trackMemoryAction(context, "Init ${processor.name}") {
                     if (processor.init(context, config)) {
                         processor
                     } else {
+                        Log.e("AIManager", "Init failed for ${processor.name}")
                         null
                     }
                 }
-                
-                activeProcessor = newProcessor
-                
-                activeProcessor?.let {
-                    sendPerformanceNotification(context, "Loaded ${it.name}")
-                }
-                
-                return activeProcessor != null
-            } finally {
-                isSwitching = false
+            } catch (e: Exception) {
+                Log.e("AIManager", "Exception during init for ${processor.name}", e)
+                null
             }
+            
+            activeProcessor = newProcessor
+            
+            activeProcessor?.let {
+                sendPerformanceNotification(context, "Loaded ${it.name}")
+            }
+            
+            return activeProcessor != null
+        } finally {
+            isSwitching = false
+            writeLock.unlock()
         }
     }
 
@@ -98,13 +120,14 @@ object AIManager {
         )
         val processor: AIProcessor = when {
             modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()
-            modeName.contains("PALM", ignoreCase = true) -> PalmprintProcessor()
+            modeName.contains("HAND", ignoreCase = true) -> PalmprintProcessor()
             modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()
             modeName.contains("POSE", ignoreCase = true) -> PoseDetectorProcessor()
             modeName.contains("SELFIE", ignoreCase = true) -> SelfieSegmenterProcessor()
             modeName.contains("SUBJECT", ignoreCase = true) -> SubjectSegmenterProcessor()
             modeName.contains("CUSTOM_OBJECT", ignoreCase = true) -> CustomObjectDetectorProcessor()
             modeName.contains("OBJECT", ignoreCase = true) -> ObjectDetectorProcessor()
+            modeName.contains("TEXT", ignoreCase = true) -> TextRecognitionProcessor()
             else -> return false
         }
         return switchProcessor(processor, context, config)
@@ -134,8 +157,15 @@ object AIManager {
         val start = System.currentTimeMillis()
         
         // Use read lock to allow multiple detections in parallel but block switching
-        val result = lock.read {
+        val readLock = lock.readLock()
+        if (!readLock.tryLock(2, java.util.concurrent.TimeUnit.SECONDS)) {
+            return null
+        }
+        
+        val result = try {
             activeProcessor?.process(bitmap, options)
+        } finally {
+            readLock.unlock()
         }
         
         val end = System.currentTimeMillis()
