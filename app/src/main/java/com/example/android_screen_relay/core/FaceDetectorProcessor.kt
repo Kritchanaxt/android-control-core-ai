@@ -174,7 +174,10 @@ class FaceDetectorProcessor : AIProcessor {
                 confidence = face.smilingProbability ?: 1.0f,
                 boundingBox = RectF(shiftedBox),
                 extra = mapOf(
-                    "tracking_id" to (face.trackingId ?: -1)
+                    "tracking_id" to (face.trackingId ?: -1),
+                    "head_euler_x" to face.headEulerAngleX, // Pitch
+                    "head_euler_y" to face.headEulerAngleY, // Yaw
+                    "head_euler_z" to face.headEulerAngleZ  // Roll
                 )
             )
         }

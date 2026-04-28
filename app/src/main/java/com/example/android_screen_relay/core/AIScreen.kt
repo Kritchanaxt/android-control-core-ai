@@ -142,6 +142,8 @@ fun AIScreenLayout() {
     var selectedAspectRatio by remember { mutableStateOf(UiAspectRatio.RATIO_1_1) }
     var cropImage by remember { mutableStateOf<Bitmap?>(null) }
     var processingResultMsg by remember { mutableStateOf<String?>(null) }
+    var horizontalFlip by remember { mutableStateOf(false) }
+    var verticalFlip by remember { mutableStateOf(false) }
 
     LaunchedEffect(currentAiMode) {
         scope.launch(Dispatchers.IO) {
@@ -382,6 +384,10 @@ fun AIScreenLayout() {
                 onCameraIdChange = { selectedCameraId = it },
                 selectedAspectRatio = selectedAspectRatio,
                 onAspectRatioChange = { selectedAspectRatio = it },
+                horizontalFlip = horizontalFlip,
+                onHorizontalFlipChange = { horizontalFlip = it },
+                verticalFlip = verticalFlip,
+                onVerticalFlipChange = { verticalFlip = it },
                 onStableDetection = { bitmap, _, _, _, _, _, _, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf(
@@ -473,7 +479,51 @@ fun AIScreenLayout() {
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     }
-                    // 4. General Handling for other modes (FACE, POSE, SEGMENTATION, etc.)
+                    // 4. Special Handling for Face Detection (Rules: Center, Size, Angle)
+                    else if (currentAiMode == AiMode.FACE_DETECTION) {
+                        try {
+                            val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+                            val aiBitmap = if (aiScale < 1f) {
+                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                            } else bitmap
+                            
+                            val result = AIManager.process(aiBitmap, options)
+                            if (aiBitmap !== bitmap) aiBitmap.recycle()
+                            
+                            if (result != null && result.success && result.items.isNotEmpty()) {
+                                val face = result.items.maxByOrNull { it.confidence }!!
+                                val box = face.boundingBox
+                                
+                                // Map back to original resolution
+                                val originalBox = if (aiScale < 1f) {
+                                    android.graphics.RectF(box.left / aiScale, box.top / aiScale, box.right / aiScale, box.bottom / aiScale)
+                                } else box
+
+                                // Rule 1: Position centered & Rule 2: Size fit (roughly > 15% of frame)
+                                val centerX = originalBox.centerX()
+                                val centerY = originalBox.centerY()
+                                val frameCenterX = bitmap.width / 2f
+                                val frameCenterY = bitmap.height / 2f
+                                val isCentered = kotlin.math.abs(centerX - frameCenterX) < (bitmap.width * 0.15f) &&
+                                                kotlin.math.abs(centerY - frameCenterY) < (bitmap.height * 0.15f)
+                                val isProperSize = (originalBox.width() * originalBox.height()) > (bitmap.width * bitmap.height * 0.15f)
+                                
+                                // Rule 3: Face angles <= 25 degrees
+                                val yaw = (face.extra["head_euler_y"] as? Float) ?: 0f
+                                val pitch = (face.extra["head_euler_x"] as? Float) ?: 0f
+                                val roll = (face.extra["head_euler_z"] as? Float) ?: 0f
+                                val isStraight = kotlin.math.abs(yaw) < 25f && 
+                                                kotlin.math.abs(pitch) < 25f && 
+                                                kotlin.math.abs(roll) < 25f
+                                
+                                val finalSuccess = isCentered && isProperSize && isStraight
+                                Pair(finalSuccess, listOf(face.copy(boundingBox = originalBox)))
+                            } else {
+                                Pair(false, emptyList())
+                            }
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    }
+                    // 5. General Handling for other modes (POSE, SEGMENTATION, etc.)
                     else {
                         try {
                             // 🌟 Smart Scaling for AI: ML Kit works best with reasonable sizes (e.g. max 720px)
@@ -782,21 +832,36 @@ fun AIScreenLayout() {
                                     val finalH = cropB - cropT
                                     
                                     if (finalH > 0 && finalW > 0) {
-                                        val cropped = Bitmap.createBitmap(bitmap, cropL, cropT, finalW, finalH)
-                                        // 🌟 Apply zoomScale to final crop
-                                        val finalResult = if (zoomScale > 1.0f) {
-                                            val scaled = Bitmap.createScaledBitmap(cropped, (finalW * zoomScale).toInt(), (finalH * zoomScale).toInt(), true)
-                                            if (scaled !== cropped) cropped.recycle()
-                                            scaled
-                                        } else cropped
+                                        // 🌟 CREATE BLURRED BACKGROUND 🌟
+                                        // 1. Create a blurred version of the full original bitmap
+                                        val blurredFull = applyBlur(context, bitmap, 25f)
                                         
-                                        // 🌟 CRITICAL: Ensure we return a COPY if it happens to be the same instance as source
-                                        // to avoid "Canvas: trying to use a recycled bitmap" crash when 'bitmap' is recycled below.
-                                        if (finalResult === bitmap) {
-                                            finalResult.copy(Bitmap.Config.ARGB_8888, true)
-                                        } else {
-                                            finalResult
-                                        }
+                                        // 2. Prepare result canvas (based on blurred)
+                                        val outputBitmap = blurredFull.copy(Bitmap.Config.ARGB_8888, true)
+                                        blurredFull.recycle()
+                                        
+                                        val canvas = android.graphics.Canvas(outputBitmap)
+                                        
+                                        // 3. Draw the un-blurred face region (the 25px padded box) back onto the output
+                                        val srcRect = android.graphics.Rect(cropL, cropT, cropR, cropB)
+                                        val dstRect = android.graphics.Rect(cropL, cropT, cropR, cropB)
+                                        canvas.drawBitmap(bitmap, srcRect, dstRect, null)
+
+                                        // 4. Crop to the padded box if useCropMode is enabled
+                                        val finalResult = if (useCropMode) {
+                                            val cropped = Bitmap.createBitmap(outputBitmap, cropL, cropT, finalW, finalH)
+                                            outputBitmap.recycle()
+                                            cropped
+                                        } else outputBitmap
+
+                                        // 🌟 Apply zoomScale to final crop
+                                        val scaledResult = if (zoomScale > 1.0f) {
+                                            val scaled = Bitmap.createScaledBitmap(finalResult, (finalResult.width * zoomScale).toInt(), (finalResult.height * zoomScale).toInt(), true)
+                                            if (scaled !== finalResult) finalResult.recycle()
+                                            scaled
+                                        } else finalResult
+                                        
+                                        scaledResult
                                     } else processingBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else if (!useCropMode) {
                                     // Full Image Mode
@@ -1374,7 +1439,11 @@ fun CameraPreviewScreen(
     selectedCameraId: String,
     onCameraIdChange: (String) -> Unit,
     selectedAspectRatio: UiAspectRatio,
-    onAspectRatioChange: (UiAspectRatio) -> Unit
+    onAspectRatioChange: (UiAspectRatio) -> Unit,
+    horizontalFlip: Boolean = false,
+    onHorizontalFlipChange: (Boolean) -> Unit = {},
+    verticalFlip: Boolean = false,
+    onVerticalFlipChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -1392,6 +1461,7 @@ fun CameraPreviewScreen(
     var stableTime by remember { mutableStateOf(0L) }
     var lastInferenceTimeMs by remember { mutableStateOf(0L) }
     var smoothedFaceRect by remember { mutableStateOf<android.graphics.RectF?>(null) }
+    var faceBuffer2s by remember { mutableStateOf<Bitmap?>(null) }
 
     // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
@@ -1599,12 +1669,24 @@ fun CameraPreviewScreen(
                     }
                     if (rawBitmap != null) {
                         // 🌟 FIX: Scale bitmap to target resolution if it doesn't match
-                        val baseBitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
+                        var baseBitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
                             Bitmap.createScaledBitmap(rawBitmap, selectedResolution!!.width, selectedResolution!!.height, true).also {
                                 rawBitmap.recycle()
                             }
                         } else {
                             rawBitmap
+                        }
+
+                        // 🌟 MANUAL FLIP LOGIC: Separate View (what user sees) from Analysis (what AI sees)
+                        // This handles hardware orientation quirks
+                        if (horizontalFlip || verticalFlip) {
+                            val flipMatrix = android.graphics.Matrix()
+                            val hScale = if (horizontalFlip) -1f else 1f
+                            val vScale = if (verticalFlip) -1f else 1f
+                            flipMatrix.postScale(hScale, vScale, baseBitmap.width / 2f, baseBitmap.height / 2f)
+                            val flipped = Bitmap.createBitmap(baseBitmap, 0, 0, baseBitmap.width, baseBitmap.height, flipMatrix, true)
+                            if (baseBitmap !== rawBitmap) baseBitmap.recycle()
+                            baseBitmap = flipped
                         }
 
                         // 🌟 CROP MODE: If enabled, crop to the centered frame area
@@ -1758,21 +1840,51 @@ fun CameraPreviewScreen(
                         if (criteriaMet && !isPreviewOnlyMode) {
                             val elapsedSinceStart = System.currentTimeMillis() - iterationStart
                             stableTime += elapsedSinceStart
-                            if (stableTime >= 500) { // ถือบัตรนิ่งแค่ 0.5 วินาทีก็กดถ่ายเลย
-                                isCapturing = true
-                                passedToCapture = true
 
-                                cameraController?.takePhoto()
+                            // Rule 4: Buffer at 2s for Face Detection
+                            if (aiMode == AiMode.FACE_DETECTION && stableTime in 1900..2100) {
+                                if (faceBuffer2s == null) {
+                                    faceBuffer2s = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                }
+                            }
+
+                            val targetStableTime = if (aiMode == AiMode.FACE_DETECTION) 3000L else 500L
+                            
+                            if (stableTime >= targetStableTime) {
+                                isCapturing = true
+                                isPreviewPaused = true
+                                passedToCapture = true
+                                
+                                val captureBitmap = if (aiMode == AiMode.FACE_DETECTION && faceBuffer2s != null) {
+                                    faceBuffer2s!!
+                                } else {
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                }
+                                
+                                // Free buffer if we used a fresh copy
+                                if (faceBuffer2s != null && faceBuffer2s !== captureBitmap) {
+                                    faceBuffer2s?.recycle()
+                                    faceBuffer2s = null
+                                }
+
+                                currentOnImageCaptured.value(
+                                    captureBitmap,
+                                    currentPreviewOcr.value,
+                                    currentPreviewPalm.value,
+                                    currentPreviewFace.value,
+                                    currentPreviewPose.value,
+                                    currentPreviewSelfie.value,
+                                    currentPreviewSubject.value,
+                                    isFront
+                                )
 
                                 stableTime = 0L
-                                kotlinx.coroutines.delay(1000) // Wait before resuming (ลดลงมาจาก 2000)
-                                isCapturing = false
+                                faceBuffer2s = null
                             }
-                        } else if (criteriaMet && isPreviewOnlyMode) {
-                            // Just update stable status but don't capture
-                            stableTime = 500 
                         } else {
                             stableTime = 0L
+                            faceBuffer2s?.recycle()
+                            faceBuffer2s = null
                         }
 
                         if (!passedToCapture && !bitmap.isRecycled) {
@@ -1903,34 +2015,64 @@ fun CameraPreviewScreen(
                             drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
                             drawContext.canvas.nativeCanvas.restore()
                         } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
-                             // Optional: Draw basic guide for Face/Palm if needed, currently just showing latestDetections
-                             if (aiMode == AiMode.FACE_DETECTION && isFrontCamera && targetFaceMode == "card") {
-                                 val guideColor = android.graphics.Color.YELLOW
-                                 val cardPaint = android.graphics.Paint().apply {
+                             // 🌟 Guide for Face/Palm
+                             if (aiMode == AiMode.FACE_DETECTION) {
+                                 val guideColor = if (stableTime >= 250L) android.graphics.Color.parseColor("#4CAF50") else android.graphics.Color.YELLOW
+                                 val guidePaint = android.graphics.Paint().apply {
                                      color = guideColor
                                      style = android.graphics.Paint.Style.STROKE
-                                     strokeWidth = 4f
-                                     pathEffect = android.graphics.DashPathEffect(floatArrayOf(20f, 10f), 0f)
+                                     strokeWidth = 6f
+                                     pathEffect = android.graphics.DashPathEffect(floatArrayOf(30f, 20f), 0f)
+                                     isAntiAlias = true
                                  }
                                  
-                                 // 1. Draw ID Card Frame (Landscape aspect 1.58:1)
-                                 val cardW = cw * 0.85f
-                                 val cardH = cardW / 1.58f
-                                 val cardLeft = (cw - cardW) / 2f
-                                 val cardTop = (ch - cardH) / 2f
-                                 val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
-                                 drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, cardPaint)
+                                 if (isFrontCamera && targetFaceMode == "card") {
+                                     // 1. Draw ID Card Frame (Landscape aspect 1.58:1)
+                                     val cardW = cw * 0.85f
+                                     val cardH = cardW / 1.58f
+                                     val cardLeft = (cw - cardW) / 2f
+                                     val cardTop = (ch - cardH) / 2f
+                                     val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
+                                     drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, guidePaint)
 
-                                 // 3. Instructions
-                                 val textPaint = android.graphics.Paint().apply {
-                                     color = guideColor
-                                     textSize = 36f
-                                     typeface = android.graphics.Typeface.DEFAULT_BOLD
-                                     textAlign = android.graphics.Paint.Align.CENTER
-                                     setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                     // 2. Face position inside card (Thai ID has face on Right side)
+                                     val faceGuideW = cardW * 0.35f
+                                     val faceGuideH = cardH * 0.65f
+                                     val faceGuideLeft = cardLeft + (cardW * 0.60f)
+                                     val faceGuideTop = cardTop + (cardH * 0.20f)
+                                     val faceRect = android.graphics.RectF(faceGuideLeft, faceGuideTop, faceGuideLeft + faceGuideW, faceGuideTop + faceGuideH)
+                                     drawContext.canvas.nativeCanvas.drawOval(faceRect, guidePaint)
+
+                                     // Instructions
+                                     val textPaint = android.graphics.Paint().apply {
+                                         color = guideColor
+                                         textSize = 36f
+                                         typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                         textAlign = android.graphics.Paint.Align.CENTER
+                                         setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                     }
+                                     drawContext.canvas.nativeCanvas.drawText("วางบัตรและใบหน้าให้ตรงกรอบ", cw / 2f, cardTop - 60f, textPaint)
+                                 } else {
+                                     // 🌟 FULL FACE MODE: Draw large centered ellipse
+                                     val ellipseW = cw * 0.75f
+                                     val ellipseH = ellipseW * 1.35f
+                                     val ellipseLeft = (cw - ellipseW) / 2f
+                                     val ellipseTop = (ch - ellipseH) / 2.2f // Slightly above center
+                                     val ellipseRect = android.graphics.RectF(ellipseLeft, ellipseTop, ellipseLeft + ellipseW, ellipseTop + ellipseH)
+                                     
+                                     drawContext.canvas.nativeCanvas.drawOval(ellipseRect, guidePaint)
+                                     
+                                     val textPaint = android.graphics.Paint().apply {
+                                         color = guideColor
+                                         textSize = 40f
+                                         typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                         textAlign = android.graphics.Paint.Align.CENTER
+                                         setShadowLayer(4f, 2f, 2f, android.graphics.Color.BLACK)
+                                     }
+                                     drawContext.canvas.nativeCanvas.drawText("วางใบหน้าในกรอบวงรี", cw / 2f, ellipseTop - 60f, textPaint)
                                  }
-                                 drawContext.canvas.nativeCanvas.drawText("วางบัตรในกรอบ", cw / 2f, cardTop - 60f, textPaint)
-                                 }                             
+                             }
+                             
                              if (aiMode == AiMode.HAND_DETECTION) {
                                  val handText = if (targetHand.equals("Left", true)) "กรุณาใช้มือ [ซ้าย] ในการสแกน" else "กรุณาใช้มือ [ขวา] ในการสแกน"
                                  val handPaint = android.graphics.Paint().apply {
@@ -2177,6 +2319,39 @@ fun CameraPreviewScreen(
                             )
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Manual Flip Toggles
+                IconButton(
+                    onClick = { onHorizontalFlipChange(!horizontalFlip) },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(if (horizontalFlip) Color(0xFF4CAF50).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Repeat,
+                        contentDescription = "Flip Horizontal",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(4.dp))
+
+                IconButton(
+                    onClick = { onVerticalFlipChange(!verticalFlip) },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(if (verticalFlip) Color(0xFF4CAF50).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SwapVert,
+                        contentDescription = "Flip Vertical",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -4073,4 +4248,21 @@ fun MetricRow(label: String, value: String, icon: ImageVector? = null) {
             color = Color.Black
         )
     }
+}
+
+/**
+ * 🌟 Blurs a bitmap using RenderScript (Fast Gaussian Blur)
+ */
+fun applyBlur(context: Context, bitmap: Bitmap, radius: Float = 25f): Bitmap {
+    val outBitmap = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+    val rs = android.renderscript.RenderScript.create(context)
+    val blurScript = android.renderscript.ScriptIntrinsicBlur.create(rs, android.renderscript.Element.U8_4(rs))
+    val allIn = android.renderscript.Allocation.createFromBitmap(rs, bitmap)
+    val allOut = android.renderscript.Allocation.createFromBitmap(rs, outBitmap)
+    blurScript.setRadius(radius.coerceIn(0f, 25f))
+    blurScript.setInput(allIn)
+    blurScript.forEach(allOut)
+    allOut.copyTo(outBitmap)
+    rs.destroy()
+    return outBitmap
 }
