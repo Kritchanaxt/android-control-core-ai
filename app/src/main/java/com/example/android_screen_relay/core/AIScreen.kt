@@ -193,11 +193,6 @@ fun AIScreenLayout() {
         launcher.launch(Manifest.permission.CAMERA)
         // เตรียมระบบคำนวณตามสเปคเครื่องทันทีที่เปิดหน้า AI
         ComputeModeManager.initByDeviceSpec(context)
-        
-        // Fix IDLE bug: Initialize global AIManager with the default mode on startup
-        scope.launch(Dispatchers.IO) {
-            com.example.android_screen_relay.core.AIManager.switchProcessor(context, currentAiMode.name)
-        }
     }
 
     // Gallery Launcher
@@ -394,7 +389,7 @@ fun AIScreenLayout() {
                 onHorizontalFlipChange = { horizontalFlip = it },
                 verticalFlip = verticalFlip,
                 onVerticalFlipChange = { verticalFlip = it },
-                onStableDetection = { bitmap, _, _, _, _, _, _, isFront ->
+                onStableDetection = { bitmap, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf(
                         "is_front" to isFront,
@@ -529,7 +524,60 @@ fun AIScreenLayout() {
                             }
                         } catch (e: Exception) { Pair(false, emptyList()) }
                     }
-                    // 5. General Handling for other modes (POSE, SEGMENTATION, etc.)
+                    // 5. Special Handling for Subject Segmentation (Full Detection Rule)
+                    else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
+                        try {
+                            val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+                            val aiBitmap = if (aiScale < 1f) {
+                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                            } else bitmap
+                            
+                            val result = AIManager.process(aiBitmap, options)
+                            if (aiBitmap !== bitmap) aiBitmap.recycle()
+                            
+                            if (result != null && result.success && result.items.isNotEmpty()) {
+                                // Rule: Full Detection (Centered, proper size, not touching edges)
+                                val items = result.items
+                                val unionRect = android.graphics.RectF(items[0].boundingBox)
+                                items.forEach { unionRect.union(it.boundingBox) }
+
+                                val frameW = aiBitmap.width.toFloat()
+                                val frameH = aiBitmap.height.toFloat()
+                                
+                                // Margin check: at least 2% from edges in AI resolution
+                                val marginW = frameW * 0.02f
+                                val marginH = frameH * 0.02f
+                                
+                                val isFullyInside = unionRect.left > marginW && 
+                                                   unionRect.top > marginH && 
+                                                   unionRect.right < (frameW - marginW) && 
+                                                   unionRect.bottom < (frameH - marginH)
+                                
+                                // Centering check
+                                val centerX = unionRect.centerX()
+                                val centerY = unionRect.centerY()
+                                val isCentered = kotlin.math.abs(centerX - frameW / 2f) < (frameW * 0.20f) &&
+                                                kotlin.math.abs(centerY - frameH / 2f) < (frameH * 0.20f)
+
+                                // Size check: at least 10% area
+                                val isProperSize = (unionRect.width() * unionRect.height()) > (frameW * frameH * 0.10f)
+                                
+                                val finalSuccess = isFullyInside && isCentered && isProperSize
+                                
+                                val finalItems = items.map { item ->
+                                    val r = item.boundingBox
+                                    item.copy(boundingBox = android.graphics.RectF(
+                                        r.left / aiScale, r.top / aiScale, 
+                                        r.right / aiScale, r.bottom / aiScale
+                                    ))
+                                }
+                                Pair(finalSuccess, finalItems)
+                            } else {
+                                Pair(false, emptyList())
+                            }
+                        } catch (e: Exception) { Pair(false, emptyList()) }
+                    }
+                    // 6. General Handling for other modes (POSE, etc.)
                     else {
                         try {
                             // 🌟 Smart Scaling for AI: ML Kit works best with reasonable sizes (e.g. max 720px)
@@ -560,7 +608,7 @@ fun AIScreenLayout() {
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                 },
-                onImageCaptured = { bitmap, previewOcr, previewPalm, previewFace, previewPose, previewSelfie, previewSubject, isFront ->
+                onImageCaptured = { bitmap, isFront ->
                     if (isProcessing) {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
@@ -577,22 +625,36 @@ fun AIScreenLayout() {
                     if (currentAiMode == AiMode.HAND_DETECTION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempPalm: com.example.android_screen_relay.core.PalmprintProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val result = if (previewPalm != null) {
-                                    previewPalm.process(bitmap)
-                                } else {
-                                    tempPalm = SystemMonitor.trackMemoryAction(context, "Palmprint Manual Init") {
-                                        val p = com.example.android_screen_relay.core.PalmprintProcessor()
-                                        p.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                        p
+                                val processor = AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.PalmprintProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.PalmprintProcessor
                                     }
-                                    tempPalm!!.process(bitmap)
-                                }
+                                val result = processor?.process(bitmap, mapOf("target_hand" to targetHand))
+                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val item = result.items.firstOrNull()
+                                val detectedHand = item?.extra?.get("hand")?.toString() ?: "Unknown"
+                                val isFallback = item?.extra?.get("area_type")?.toString() == "fallback"
+                                
+                                // Rule: If landmarks are found, hand MUST match. 
+                                // If it's a fallback (close-up), we allow it to pass since it inherits targetHand.
+                                val isCorrectHand = detectedHand.equals(targetHand, ignoreCase = true) || isFallback
+                                
+                                if (!result.success || item == null || !isCorrectHand) {
+                                    withContext(Dispatchers.Main) {
+                                        if (item != null && !isCorrectHand) {
+                                            processingResultMsg = "❌ กรุณาใช้มือ ${if (targetHand == "Left") "[ซ้าย]" else "[ขวา]"} ให้ถูกต้อง"
+                                        }
+                                        isProcessing = false
+                                    }
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                    return@launch
+                                }
+
                                 val cropped = if (useCropMode && result.success && item != null) {
                                     val palmRoiMap = item.extra["palm_roi"] as? Map<*, *>
                                     val centerX = (palmRoiMap?.get("center_x") as? Float)
@@ -622,11 +684,11 @@ fun AIScreenLayout() {
                                         val newCX = cPts[0] - minX
                                         val newCY = cPts[1] - minY
 
-                                        val halfSize = size / 2f
+                                        val halfSize = (size / 2f) + 50f // Add 50px padding to the half-size for a wider crop
                                         val left = (newCX - halfSize).toInt().coerceAtLeast(0)
                                         val top = (newCY - halfSize).toInt().coerceAtLeast(0)
-                                        var w = size.toInt()
-                                        var h = size.toInt()
+                                        var w = (halfSize * 2).toInt()
+                                        var h = (halfSize * 2).toInt()
 
                                         // Bound checks
                                         if (left + w > rotatedBitmap.width) w = rotatedBitmap.width - left
@@ -645,10 +707,11 @@ fun AIScreenLayout() {
                                             scaled
                                         } else resultBmp
                                     } else {
-                                        val left = item.boundingBox.left.toInt().coerceAtLeast(0)
-                                        val top = item.boundingBox.top.toInt().coerceAtLeast(0)
-                                        val right = item.boundingBox.right.toInt().coerceAtMost(bitmap.width)
-                                        val bottom = item.boundingBox.bottom.toInt().coerceAtMost(bitmap.height)
+                                        val padding = 50 // 50px padding for standard BBox crop
+                                        val left = (item.boundingBox.left - padding).toInt().coerceAtLeast(0)
+                                        val top = (item.boundingBox.top - padding).toInt().coerceAtLeast(0)
+                                        val right = (item.boundingBox.right + padding).toInt().coerceAtMost(bitmap.width)
+                                        val bottom = (item.boundingBox.bottom + padding).toInt().coerceAtMost(bitmap.height)
                                         val width = right - left
                                         val height = bottom - top
                                         if (width > 0 && height > 0) {
@@ -679,8 +742,13 @@ fun AIScreenLayout() {
                                         // Now switch to right hand
                                         targetHand = "Right"
                                         ocrResultJson = jsonStr // store intermediate
-                                        // Delay to let UI show "right hand" properly before unlocking camera
-                                        kotlinx.coroutines.delay(1500)
+                                        Toast.makeText(context, "บันทึกมือซ้ายสำเร็จ! กรุณาใช้มือ [ขวา] ต่อ", Toast.LENGTH_SHORT).show()
+                                        
+                                        // 🌟 Mandatory Delay: Keep isProcessing = true for 2 seconds 
+                                        // to prevent immediate double-snap of the same hand.
+                                        processingResultMsg = "✅ บันทึกมือซ้ายแล้ว... กรุณาสลับเป็น [มือขวา]"
+                                        kotlinx.coroutines.delay(2000)
+                                        processingResultMsg = null
                                         isProcessing = false
                                     } else if (targetHand.equals("Right", ignoreCase = true)) {
                                         ocrTimeMs += pbElapsedMs
@@ -699,7 +767,7 @@ fun AIScreenLayout() {
                                     }
                                 }
 
-                                if (targetHand.equals("Right", ignoreCase = true)) {
+                                if (targetHand.equals("Right", ignoreCase = true) && rightPalmImage != null) {
                                     // ✅ Generate and send payload off the Main thread
                                     val payload = generateOCRPayload(
                                         context,
@@ -759,7 +827,6 @@ fun AIScreenLayout() {
                                     isProcessing = false
                                 }
                             } finally {
-                                tempPalm?.release()
                                 // The original bitmap given by Camera2Controller must be recycled when we are done extracting
                                 if (!bitmap.isRecycled) bitmap.recycle()
                             }
@@ -779,7 +846,8 @@ fun AIScreenLayout() {
                                 
                                 if (targetFaceMode == "card") {
                                     // 🌟 Improved Face Extraction for ID Card
-                                    val roiLeft = (bitmap.width * 0.65f).toInt()
+                                    // Mirror effect: Front camera has face on LEFT (0.05-0.35), Back camera on RIGHT (0.65-0.95)
+                                    val roiLeft = if (isFront) (bitmap.width * 0.05f).toInt() else (bitmap.width * 0.65f).toInt()
                                     val roiTop = (bitmap.height * 0.2f).toInt()
                                     val roiWidth = (bitmap.width * 0.3f).toInt()
                                     val roiHeight = (bitmap.height * 0.6f).toInt()
@@ -799,16 +867,13 @@ fun AIScreenLayout() {
                                     }
                                 }
 
-                                val result = if (previewFace != null) {
-                                    previewFace.process(processingBitmap, options)
-                                } else {
-                                    tempFace = SystemMonitor.trackMemoryAction(context, "Face Manual Init") {
-                                        val f = FaceDetectorProcessor()
-                                        f.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                        f
+                                val processor = AIManager.getActiveProcessor() as? FaceDetectorProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? FaceDetectorProcessor
                                     }
-                                    tempFace!!.process(processingBitmap, options)
-                                }
+                                val result = processor?.process(processingBitmap, options) 
+                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 // 🌟 Dynamic Portrait Crop Logic
@@ -960,23 +1025,21 @@ fun AIScreenLayout() {
                             } catch (e: Throwable) {
                                 Log.e("Face", "Face error", e)
                                 withContext(Dispatchers.Main) { isProcessing = false }
-                            } finally {
-                                tempFace?.release()
                             }
                         }
                     } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempSelfie: SelfieSegmenterProcessor? = null
                             try {
                                 val options = mapOf("is_front" to isFront)
                                 val pbStartMs = System.currentTimeMillis()
-                                val result = if (previewSelfie != null) {
-                                    previewSelfie.process(bitmap, options)
-                                } else {
-                                    tempSelfie = SelfieSegmenterProcessor().apply { init(context, AIConfig()) }
-                                    tempSelfie.process(bitmap, options)
-                                }
+                                val processor = AIManager.getActiveProcessor() as? SelfieSegmenterProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? SelfieSegmenterProcessor
+                                    }
+                                val result = processor?.process(bitmap, options)
+                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val maskBuffer = result.items.firstOrNull()?.extra?.get("mask_buffer") as? java.nio.ByteBuffer
@@ -1036,28 +1099,30 @@ fun AIScreenLayout() {
                                 val payload = generateOCRPayload(context, foreground, ocrResultJson, ocrTimeMs, currentAiMode)
                                 RelayService.getInstance()?.broadcastMessage(payload.toString())
 
+                                // 🌟 FIX: Free memory from intermediate ML Kit Selfie bitmaps
+                                result.items.forEach { item ->
+                                    (item.extra["mask_bitmap"] as? Bitmap)?.recycle()
+                                }
+
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             } catch (e: Exception) {
                                 Log.e("Selfie", "Extraction error", e)
                                 withContext(Dispatchers.Main) { isProcessing = false }
-                            } finally {
-                                tempSelfie?.release()
                             }
                         }
                     } else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempSubject: com.example.android_screen_relay.core.SubjectSegmenterProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = previewSubject ?: SystemMonitor.trackMemoryAction(context, "Subject Manual Init") {
-                                    val p = com.example.android_screen_relay.core.SubjectSegmenterProcessor()
-                                    p.init(context, AIConfig(computeMode.useGpu, computeMode.coreCount))
-                                    tempSubject = p
-                                    p
-                                }
+                                val processor = AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.SubjectSegmenterProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.SubjectSegmenterProcessor
+                                    }
                                 
-                                val result = processor.process(bitmap, mapOf("is_front" to isFront))
+                                val result = processor?.process(bitmap, mapOf("is_front" to isFront))
+                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
                                 
                                 val subjectBitmap = result.items.firstOrNull()?.extra?.get("combined_subject_bitmap") as? Bitmap
@@ -1080,26 +1145,31 @@ fun AIScreenLayout() {
                                 val payload = generateOCRPayload(context, foreground, ocrResultJson, ocrTimeMs, currentAiMode)
                                 RelayService.getInstance()?.broadcastMessage(payload.toString())
 
+                                // 🌟 FIX: Free memory from intermediate ML Kit Subject bitmaps
+                                result.items.forEach { item ->
+                                    (item.extra["mask_bitmap"] as? Bitmap)?.recycle()
+                                    (item.extra["subject_bitmap"] as? Bitmap)?.recycle()
+                                    (item.extra["combined_subject_bitmap"] as? Bitmap)?.recycle()
+                                }
+
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             } catch (e: Exception) {
                                 Log.e("Subject", "Extraction error", e)
                                 withContext(Dispatchers.Main) { isProcessing = false }
-                            } finally {
-                                tempSubject?.release()
                             }
                         }
                     } else if (currentAiMode == AiMode.TEXT_RECOGNITION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempText: TextRecognitionProcessor? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val result = if (previewOcr is TextRecognitionProcessor) {
-                                    previewOcr.process(bitmap)
-                                } else {
-                                    tempText = TextRecognitionProcessor().apply { init(context, AIConfig()) }
-                                    tempText.process(bitmap)
-                                }
+                                val processor = AIManager.getActiveProcessor() as? TextRecognitionProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? TextRecognitionProcessor
+                                    }
+                                val result = processor?.process(bitmap)
+                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
                                 
                                 val jsonArr = org.json.JSONArray()
@@ -1136,23 +1206,19 @@ fun AIScreenLayout() {
                             } catch (e: Exception) {
                                 Log.e("MLKitText", "Processing error", e)
                                 withContext(Dispatchers.Main) { isProcessing = false }
-                            } finally {
-                                tempText?.release()
                             }
                         }
                     } else {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
-                            var tempOcr: PaddleOCR? = null
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val resultJsonStr = if (previewOcr != null) {
-                                    previewOcr.detect(bitmap)
-                                } else {
-                                    tempOcr = PaddleOCR()
-                                    tempOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-                                    tempOcr.detect(bitmap)
-                                }
+                                val processor = AIManager.getActiveProcessor() as? OCRProcessor
+                                    ?: run {
+                                        AIManager.switchProcessor(context, currentAiMode.name)
+                                        AIManager.getActiveProcessor() as? OCRProcessor
+                                    }
+                                val resultJsonStr = processor?.getRawJson(bitmap) ?: "[]"
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
@@ -1357,16 +1423,13 @@ fun AIScreenLayout() {
                                 var localOcr: PaddleOCR? = null
                                 try {
                                     val st = System.currentTimeMillis()
-                                    val rawOcrRes = if (previewOcr != null) {
-                                        previewOcr.detect(optimizedCrop)
-                                    } else {
-                                        localOcr = PaddleOCR()
-                                        if (localOcr.initModel(context, computeMode.coreCount, computeMode.useGpu)) {
-                                            localOcr.detect(optimizedCrop)
-                                        } else {
-                                            "[]"
+                                    val processor = AIManager.getActiveProcessor() as? OCRProcessor
+                                        ?: run {
+                                            AIManager.switchProcessor(context, currentAiMode.name)
+                                            AIManager.getActiveProcessor() as? OCRProcessor
                                         }
-                                    }
+                                    val rawOcrRes = processor?.getRawJson(optimizedCrop) ?: "[]"
+                                    
                                     if (rawOcrRes != "[]") {
                                         finalJsonStr = OCRFormatter.formatLabelsInJsonArray(rawOcrRes)
                                         val en = System.currentTimeMillis()
@@ -1375,8 +1438,6 @@ fun AIScreenLayout() {
                                     }
                                 } catch (e: Exception) {
                                     Log.e("OCR", "Auto processing error", e)
-                                } finally {
-                                    localOcr?.release()
                                 }
 
                                 withContext(Dispatchers.Main) {
@@ -1396,7 +1457,6 @@ fun AIScreenLayout() {
                                     isProcessing = false
                                 }
                             } finally {
-                                tempOcr?.release()
                                 withContext(Dispatchers.Main) {
                                     if (currentImage !== bitmap && !bitmap.isRecycled) {
                                         bitmap.recycle()
@@ -1437,8 +1497,8 @@ fun CameraPreviewScreen(
     onResolutionChange: (android.util.Size) -> Unit,
     availableResolutions: List<android.util.Size>,
     onAvailableResolutionsChange: (List<android.util.Size>) -> Unit,
-    onStableDetection: suspend (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?, Boolean) -> Pair<Boolean, List<AIDetectedItem>>,
-    onImageCaptured: (Bitmap, PaddleOCR?, PalmprintProcessor?, FaceDetectorProcessor?, PoseDetectorProcessor?, SelfieSegmenterProcessor?, SubjectSegmenterProcessor?, Boolean) -> Unit,
+    onStableDetection: suspend (Bitmap, Boolean) -> Pair<Boolean, List<AIDetectedItem>>,
+    onImageCaptured: (Bitmap, Boolean) -> Unit,
     onGalleryClick: () -> Unit,
     isProcessingBusy: Boolean = false,
     processingResultMsg: String? = null,
@@ -1470,14 +1530,6 @@ fun CameraPreviewScreen(
     var faceBuffer2s by remember { mutableStateOf<Bitmap?>(null) }
     val blurredFrame = remember { mutableStateOf<Bitmap?>(null) }
 
-    // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
-    var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
-    var previewPalm by remember { mutableStateOf<PalmprintProcessor?>(null) }
-    var previewFace by remember { mutableStateOf<FaceDetectorProcessor?>(null) }
-    var previewPose by remember { mutableStateOf<PoseDetectorProcessor?>(null) }
-    var previewSelfie by remember { mutableStateOf<SelfieSegmenterProcessor?>(null) }
-    var previewSubject by remember { mutableStateOf<SubjectSegmenterProcessor?>(null) }
-    
     // Result states for UI drawing (latest detected items)
     val latestItemsOcr = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
     val latestItemsPalm = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
@@ -1520,72 +1572,8 @@ fun CameraPreviewScreen(
         }
     }
 
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose {
-            previewOcr?.release()
-            previewPalm?.release()
-            previewFace?.release()
-            previewPose?.release()
-            previewSelfie?.release()
-            previewSubject?.release()
-        }
-    }
-
-    // Initialize or release preview models when the mode changes
-    LaunchedEffect(aiMode) {
-        withContext(Dispatchers.IO) {
-            // First release both
-            previewOcr?.release()
-            previewPalm?.release()
-            previewFace?.release()
-            previewPose?.release()
-            previewSelfie?.release()
-            previewSubject?.release()
-            previewOcr = null
-            previewPalm = null
-            previewFace = null
-            previewPose = null
-            previewSelfie = null
-            previewSubject = null
-
-            // Then initialize the active one (Limit cores to 1 or 2 for preview stability)
-            val config = AIConfig(computeMode.useGpu, maxOf(1, computeMode.coreCount - 2))
-            if (aiMode == AiMode.PADDLE_OCR) {
-                val ocr = PaddleOCR()
-                val success = ocr.initModel(context, config.threads, config.useGpu)
-                if (success) previewOcr = ocr
-            } else if (aiMode == AiMode.HAND_DETECTION) {
-                val palm = PalmprintProcessor()
-                val success = palm.init(context, config)
-                if (success) previewPalm = palm
-            } else if (aiMode == AiMode.FACE_DETECTION) {
-                val face = FaceDetectorProcessor()
-                val success = face.init(context, config)
-                if (success) previewFace = face
-            } else if (aiMode == AiMode.POSE_DETECTION) {
-                val pose = PoseDetectorProcessor()
-                val success = pose.init(context, config)
-                if (success) previewPose = pose
-            } else if (aiMode == AiMode.SELFIE_SEGMENTATION) {
-                val selfie = SelfieSegmenterProcessor()
-                val success = selfie.init(context, config)
-                if (success) previewSelfie = selfie
-            } else if (aiMode == AiMode.SUBJECT_SEGMENTATION) {
-                val subject = SubjectSegmenterProcessor()
-                val success = subject.init(context, config)
-                if (success) previewSubject = subject
-            }
-        }
-    }
-
     val currentOnStableDetection = androidx.compose.runtime.rememberUpdatedState(onStableDetection)
     val currentOnImageCaptured = androidx.compose.runtime.rememberUpdatedState(onImageCaptured)
-    val currentPreviewOcr = androidx.compose.runtime.rememberUpdatedState(previewOcr)
-    val currentPreviewPalm = androidx.compose.runtime.rememberUpdatedState(previewPalm)
-    val currentPreviewFace = androidx.compose.runtime.rememberUpdatedState(previewFace)
-    val currentPreviewPose = androidx.compose.runtime.rememberUpdatedState(previewPose)
-    val currentPreviewSelfie = androidx.compose.runtime.rememberUpdatedState(previewSelfie)
-    val currentPreviewSubject = androidx.compose.runtime.rememberUpdatedState(previewSubject)
 
     // Update resolutions when camera or aspect ratio changes
     LaunchedEffect(selectedCameraId, selectedAspectRatio, aiMode) {
@@ -1593,12 +1581,6 @@ fun CameraPreviewScreen(
             cameraController = Camera2Controller(context) { bitmap, isFront ->
                 currentOnImageCaptured.value(
                     bitmap,
-                    currentPreviewOcr.value,
-                    currentPreviewPalm.value,
-                    currentPreviewFace.value,
-                    currentPreviewPose.value,
-                    currentPreviewSelfie.value,
-                    currentPreviewSubject.value,
                     isFront
                 )
             }
@@ -1650,7 +1632,8 @@ fun CameraPreviewScreen(
     }
 
     LaunchedEffect(isPreviewPaused, isProcessingBusy) {
-        if (isPreviewPaused || isProcessingBusy) {
+        // 🌟 Fix for Hand Detection: Don't pause preview even if busy, so user can see Right hand immediately after Left hand snap
+        if (isPreviewPaused || (isProcessingBusy && aiMode != AiMode.HAND_DETECTION)) {
             cameraController?.pausePreview()
         } else {
             cameraController?.resumePreview()
@@ -1798,12 +1781,6 @@ fun CameraPreviewScreen(
                         var (success, items) = try {
                             currentOnStableDetection.value(
                                 bitmap,
-                                currentPreviewOcr.value,
-                                currentPreviewPalm.value,
-                                currentPreviewFace.value,
-                                currentPreviewPose.value,
-                                currentPreviewSelfie.value,
-                                currentPreviewSubject.value,
                                 isFront
                             )
                         } catch (e: Exception) {
@@ -1830,8 +1807,20 @@ fun CameraPreviewScreen(
                             AiMode.HAND_DETECTION -> latestItemsPalm.value = items
                             AiMode.FACE_DETECTION -> latestItemsFace.value = items
                             AiMode.POSE_DETECTION -> latestItemsPose.value = items
-                            AiMode.SELFIE_SEGMENTATION -> latestItemsSelfie.value = items
-                            AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value = items
+                            AiMode.SELFIE_SEGMENTATION -> {
+                                latestItemsSelfie.value.forEach { old ->
+                                    (old.extra["mask_bitmap"] as? Bitmap)?.recycle()
+                                }
+                                latestItemsSelfie.value = items
+                            }
+                            AiMode.SUBJECT_SEGMENTATION -> {
+                                latestItemsSubject.value.forEach { old ->
+                                    (old.extra["mask_bitmap"] as? Bitmap)?.recycle()
+                                    (old.extra["subject_bitmap"] as? Bitmap)?.recycle()
+                                    (old.extra["combined_subject_bitmap"] as? Bitmap)?.recycle()
+                                }
+                                latestItemsSubject.value = items
+                            }
                             AiMode.OBJECT_DETECTION -> latestItemsObject.value = items
                             AiMode.CUSTOM_OBJECT_DETECTION -> latestItemsCustomObject.value = items
                             else -> {}
@@ -1872,12 +1861,6 @@ fun CameraPreviewScreen(
                                 try {
                                     val (retrySuccess, retryItems) = currentOnStableDetection.value(
                                         expandedBitmap,
-                                        currentPreviewOcr.value,
-                                        currentPreviewPalm.value,
-                                        currentPreviewFace.value,
-                                        currentPreviewPose.value,
-                                        currentPreviewSelfie.value,
-                                        currentPreviewSubject.value,
                                         isFront
                                     )
                                     if (retrySuccess) {
@@ -1935,21 +1918,26 @@ fun CameraPreviewScreen(
                             val elapsedSinceStart = System.currentTimeMillis() - iterationStart
                             stableTime += elapsedSinceStart
 
-                            // Rule 4: Buffer at 2s for Face Detection
-                            if (aiMode == AiMode.FACE_DETECTION && stableTime in 1900..2100) {
+                            // Rule 4: Buffer at 2s for Face and Hand Detection
+                            if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) && stableTime in 1900..2100) {
                                 if (faceBuffer2s == null) {
                                     faceBuffer2s = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
                             }
 
-                            val targetStableTime = if (aiMode == AiMode.FACE_DETECTION) 3000L else 500L
+                            val targetStableTime = when(aiMode) {
+                                AiMode.FACE_DETECTION -> 3000L
+                                AiMode.HAND_DETECTION -> 3000L
+                                AiMode.SUBJECT_SEGMENTATION -> 1000L
+                                else -> 500L
+                            }
                             
                             if (stableTime >= targetStableTime) {
                                 isCapturing = true
                                 isPreviewPaused = true
                                 passedToCapture = true
                                 
-                                var captureBitmap = if (aiMode == AiMode.FACE_DETECTION && faceBuffer2s != null) {
+                                var captureBitmap = if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) && faceBuffer2s != null) {
                                     // Always copy from buffer to leave buffer intact for potential recycle check
                                     faceBuffer2s!!.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
@@ -1969,14 +1957,14 @@ fun CameraPreviewScreen(
 
                                 currentOnImageCaptured.value(
                                     captureBitmap,
-                                    currentPreviewOcr.value,
-                                    currentPreviewPalm.value,
-                                    currentPreviewFace.value,
-                                    currentPreviewPose.value,
-                                    currentPreviewSelfie.value,
-                                    currentPreviewSubject.value,
                                     isFront
                                 )
+
+                                // 🌟 HAND DETECTION FIX: Auto-resume preview for the second hand scan
+                                if (aiMode == AiMode.HAND_DETECTION) {
+                                    isPreviewPaused = false
+                                    isCapturing = false
+                                }
 
                                 stableTime = 0L
                                 faceBuffer2s?.recycle()
@@ -2136,6 +2124,26 @@ fun CameraPreviewScreen(
                                      val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
                                      drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, guidePaint)
 
+                                     // 2. Draw Face Area Guide within the card based on camera
+                                     // (Matches logic in onImageCaptured: left if front, right if back)
+                                     val faceAreaW = cardW * 0.35f
+                                     val faceAreaH = cardH * 0.8f
+                                     val faceAreaLeft = if (isFrontCamera) {
+                                         cardLeft + (cardW * 0.05f)
+                                     } else {
+                                         cardLeft + (cardW * 0.60f)
+                                     }
+                                     val faceAreaTop = cardTop + (cardH * 0.1f)
+                                     val faceAreaRect = android.graphics.RectF(faceAreaLeft, faceAreaTop, faceAreaLeft + faceAreaW, faceAreaTop + faceAreaH)
+                                     
+                                     val faceAreaPaint = android.graphics.Paint(guidePaint).apply {
+                                         pathEffect = null
+                                         alpha = 100
+                                         style = android.graphics.Paint.Style.STROKE
+                                         strokeWidth = 4f
+                                     }
+                                     drawContext.canvas.nativeCanvas.drawRoundRect(faceAreaRect, 15f, 15f, faceAreaPaint)
+
                                      // Instructions
                                      val textPaint = android.graphics.Paint().apply {
                                          color = guideColor
@@ -2247,8 +2255,29 @@ fun CameraPreviewScreen(
                     }
 
                     // Dynamic Bounding Boxes from latestDetections
-                    val boxScaleX = if (bitmapWidth > 0) size.width / bitmapWidth else 1f
-                    val boxScaleY = if (bitmapHeight > 0) size.height / bitmapHeight else 1f
+                    val frameW = if (useCropMode) {
+                        val cw = size.width
+                        val ch = size.height
+                        if (aiMode == AiMode.PADDLE_OCR) {
+                            val maxW = cw * 0.9f
+                            val idealH = ch * 0.6f
+                            if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
+                        } else if (aiMode == AiMode.FACE_DETECTION) {
+                            min(cw, ch) * 0.8f
+                        } else {
+                            min(cw, ch) * 0.6f
+                        }
+                    } else size.width
+
+                    val frameH = if (useCropMode) {
+                        if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
+                    } else size.height
+
+                    val leftOffset = if (useCropMode) (size.width - frameW) / 2f else 0f
+                    val topOffset = if (useCropMode) (size.height - frameH) / 2f else 0f
+
+                    val boxScaleX = if (bitmapWidth > 0) frameW / bitmapWidth else 1f
+                    val boxScaleY = if (bitmapHeight > 0) frameH / bitmapHeight else 1f
                     
                     val facePaint = android.graphics.Paint().apply {
                         color = android.graphics.Color.RED
@@ -2273,12 +2302,12 @@ fun CameraPreviewScreen(
                     latestDetections.forEach { item ->
                         val r = item.boundingBox
                         val mappedRect = android.graphics.RectF(
-                            r.left * boxScaleX, r.top * boxScaleY, 
-                            r.right * boxScaleX, r.bottom * boxScaleY
+                            leftOffset + r.left * boxScaleX, topOffset + r.top * boxScaleY, 
+                            leftOffset + r.right * boxScaleX, topOffset + r.bottom * boxScaleY
                         )
                         if (aiMode == AiMode.FACE_DETECTION) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.PADDLE_OCR) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                             // White box as requested
                             val objPaint = android.graphics.Paint().apply {
@@ -3618,7 +3647,9 @@ fun OCRResultScreen(
                                 } else if (obj.has("text")) {
                                     rawText = obj.getString("text")
                                 } else if (obj.has("hand")) {
-                                    rawText = "Hand: ${obj.getString("hand")} (${obj.optString("area_type")})"
+                                    val handValue = obj.getString("hand")
+                                    val areaType = obj.optString("area_type", "")
+                                    rawText = "Hand: $handValue" + if (areaType.isNotEmpty()) " ($areaType)" else ""
                                 }
 
                                 rawText = rawText

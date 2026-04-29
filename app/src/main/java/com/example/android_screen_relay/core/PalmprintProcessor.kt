@@ -3,6 +3,7 @@ package com.example.android_screen_relay.core
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -21,25 +22,39 @@ class PalmprintProcessor : AIProcessor {
         this.appContext = context.applicationContext
         this.appConfig = config
         
-        try {
+        return try {
             if (handLandmarker == null) {
-                val baseOptionsBuilder = BaseOptions.builder().setModelAssetPath("hand_landmarker.task")
-                if (config.useGpu) {
-                    baseOptionsBuilder.setDelegate(com.google.mediapipe.tasks.core.Delegate.GPU)
-                }
-                val optionsBuilder = HandLandmarker.HandLandmarkerOptions.builder()
-                    .setBaseOptions(baseOptionsBuilder.build())
-                    .setMinHandDetectionConfidence(0.15f)
-                    .setMinHandPresenceConfidence(0.15f)
-                    .setMinTrackingConfidence(0.15f)
-                    .setNumHands(1)
-                    .setRunningMode(RunningMode.IMAGE)
-                handLandmarker = HandLandmarker.createFromOptions(appContext, optionsBuilder.build())
+                // Force CPU to prevent native JNI crashes on low-end device GPUs
+                tryInit(false)
+            } else true
+        } catch (e: Throwable) {
+            Log.e("Palmprint", "Fatal init error", e)
+            false
+        }
+    }
+
+    private fun tryInit(useGpu: Boolean): Boolean {
+        return try {
+            val baseOptionsBuilder = BaseOptions.builder().setModelAssetPath("hand_landmarker.task")
+            if (useGpu) {
+                baseOptionsBuilder.setDelegate(com.google.mediapipe.tasks.core.Delegate.GPU)
+            } else {
+                baseOptionsBuilder.setDelegate(com.google.mediapipe.tasks.core.Delegate.CPU)
             }
-            return true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+            
+            val optionsBuilder = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptionsBuilder.build())
+                .setMinHandDetectionConfidence(0.15f)
+                .setMinHandPresenceConfidence(0.15f)
+                .setMinTrackingConfidence(0.15f)
+                .setNumHands(1)
+                .setRunningMode(RunningMode.IMAGE)
+            
+            handLandmarker = HandLandmarker.createFromOptions(appContext, optionsBuilder.build())
+            true
+        } catch (e: Throwable) {
+            Log.e("Palmprint", "Init attempt failed (GPU=$useGpu)", e)
+            false
         }
     }
 
@@ -122,20 +137,21 @@ class PalmprintProcessor : AIProcessor {
                         val g = (color shr 8) and 0xFF
                         val b = color and 0xFF
                         
-                        // Basic skin color heuristic under various lighting
-                        if (r > 60 && g > 40 && b > 20 &&
-                            maxOf(r, g, b) - minOf(r, g, b) > 15 &&
-                            kotlin.math.abs(r - g) > 15 && r > g && r > b) {
+                        // Enhanced skin color heuristic for fallback
+                        if (r > 45 && g > 30 && b > 20 &&
+                            r > g && r > b && (r - g) > 10) {
                             skinPixels++
                         }
                     }
                     
-                    if (totalPixels > 0 && (skinPixels.toFloat() / totalPixels) > 0.5f) {
+                    if (totalPixels > 0 && (skinPixels.toFloat() / totalPixels) > 0.4f) {
                         val d = uiRadius * 2f
+                        // For fallback, use the target hand requested by options to reflect correct scanning intent
+                        val targetHand = options["target_hand"] as? String ?: "Unknown"
                         val items = mutableListOf<AIDetectedItem>()
                         items.add(AIDetectedItem(
-                            label = "Palm (Close-up)",
-                            confidence = 1.0f,
+                            label = "Palm ($targetHand)",
+                            confidence = 0.9f,
                             boundingBox = RectF(
                                 (uiCenterX - uiRadius).coerceAtLeast(0f),
                                 (uiCenterY - uiRadius).coerceAtLeast(0f),
@@ -145,7 +161,7 @@ class PalmprintProcessor : AIProcessor {
                                 if (isFront) RectF(w - rect.right, rect.top, w - rect.left, rect.bottom) else rect
                             },
                             extra = mapOf(
-                                "hand" to "Unknown",
+                                "hand" to targetHand,
                                 "roi_dist_d" to d,
                                 "area_type" to "fallback",
                                 "landmarks_count" to 0,
@@ -281,8 +297,9 @@ class PalmprintProcessor : AIProcessor {
             ))
 
             AIResult(true, items, duration)
-        } catch (e: Exception) {
-            AIResult(false, emptyList(), 0, e.message)
+        } catch (e: Throwable) {
+            Log.e("Palmprint", "Process error", e)
+            AIResult(false, emptyList(), 0, e.message ?: "Unknown process error")
         }
     }
 

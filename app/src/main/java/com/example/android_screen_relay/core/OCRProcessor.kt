@@ -38,6 +38,10 @@ class OCRProcessor : AIProcessor {
         }
     }
 
+    fun getRawJson(bitmap: Bitmap): String? {
+        return paddleOCR?.detect(bitmap)
+    }
+
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         if (appContext == null || paddleOCR == null) return AIResult(false, emptyList(), 0, "OCR Not initialized")
         
