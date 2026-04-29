@@ -144,6 +144,7 @@ fun AIScreenLayout() {
     var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var horizontalFlip by remember { mutableStateOf(false) }
     var verticalFlip by remember { mutableStateOf(false) }
+    
 
     LaunchedEffect(currentAiMode) {
         scope.launch(Dispatchers.IO) {
@@ -1462,6 +1463,7 @@ fun CameraPreviewScreen(
     var lastInferenceTimeMs by remember { mutableStateOf(0L) }
     var smoothedFaceRect by remember { mutableStateOf<android.graphics.RectF?>(null) }
     var faceBuffer2s by remember { mutableStateOf<Bitmap?>(null) }
+    val blurredFrame = remember { mutableStateOf<Bitmap?>(null) }
 
     // Persistent models for preview mode (Prevent memory/CPU spike from allocating every 250ms)
     var previewOcr by remember { mutableStateOf<PaddleOCR?>(null) }
@@ -1644,7 +1646,7 @@ fun CameraPreviewScreen(
 
     // Auto-Snap polling
     // ⚠️ Busy State Lock check: Stop loop if 'isProcessingBusy' is true
-    LaunchedEffect(cameraKey, aiMode, targetHand, isProcessingBusy, useCropMode) {
+    LaunchedEffect(cameraKey, aiMode, targetHand, targetFaceMode, isProcessingBusy, useCropMode, horizontalFlip, verticalFlip) {
         isCapturing = false // ป้องกันบัคค้างหมุนตลอดกาล (Reset state every time)
         stableTime = 0L
         smoothedFaceRect = null
@@ -1675,18 +1677,6 @@ fun CameraPreviewScreen(
                             }
                         } else {
                             rawBitmap
-                        }
-
-                        // 🌟 MANUAL FLIP LOGIC: Separate View (what user sees) from Analysis (what AI sees)
-                        // This handles hardware orientation quirks
-                        if (horizontalFlip || verticalFlip) {
-                            val flipMatrix = android.graphics.Matrix()
-                            val hScale = if (horizontalFlip) -1f else 1f
-                            val vScale = if (verticalFlip) -1f else 1f
-                            flipMatrix.postScale(hScale, vScale, baseBitmap.width / 2f, baseBitmap.height / 2f)
-                            val flipped = Bitmap.createBitmap(baseBitmap, 0, 0, baseBitmap.width, baseBitmap.height, flipMatrix, true)
-                            if (baseBitmap !== rawBitmap) baseBitmap.recycle()
-                            baseBitmap = flipped
                         }
 
                         // 🌟 CROP MODE: If enabled, crop to the centered frame area
@@ -1727,6 +1717,31 @@ fun CameraPreviewScreen(
                         
                         bitmapWidth = bitmap.width.toFloat()
                         bitmapHeight = bitmap.height.toFloat()
+
+                        // 🌟 GENERATE LIVE BLUR: For Normal Face focus mode
+                        if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal") {
+                            try {
+                                // Create a tiny version (1/20 size) for a much stronger, cloudier blur effect
+                                val scale = 0.05f
+                                val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
+                                val blurH = (bitmap.height * scale).toInt().coerceAtLeast(1)
+                                val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
+                                // Scale back up to screen size - standard Android bilinear filtering creates a smooth blur
+                                val blurred = Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                tiny.recycle()
+                                
+                                val oldBlur = blurredFrame.value
+                                blurredFrame.value = blurred
+                                oldBlur?.recycle()
+                            } catch (e: Exception) {
+                                Log.e("AIScreen", "Error generating live blur", e)
+                            }
+                        } else {
+                            if (blurredFrame.value != null) {
+                                blurredFrame.value?.recycle()
+                                blurredFrame.value = null
+                            }
+                        }
 
                         val startInference = System.currentTimeMillis()
                         val isFront = cameraController?.isFrontCamera ?: false
@@ -1855,16 +1870,22 @@ fun CameraPreviewScreen(
                                 isPreviewPaused = true
                                 passedToCapture = true
                                 
-                                val captureBitmap = if (aiMode == AiMode.FACE_DETECTION && faceBuffer2s != null) {
-                                    faceBuffer2s!!
+                                var captureBitmap = if (aiMode == AiMode.FACE_DETECTION && faceBuffer2s != null) {
+                                    // Always copy from buffer to leave buffer intact for potential recycle check
+                                    faceBuffer2s!!.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
                                     bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
                                 
-                                // Free buffer if we used a fresh copy
-                                if (faceBuffer2s != null && faceBuffer2s !== captureBitmap) {
-                                    faceBuffer2s?.recycle()
-                                    faceBuffer2s = null
+                                // 🌟 APPLY MANUAL FLIP ONLY ON SNAP
+                                if (horizontalFlip || verticalFlip) {
+                                    val flipMatrix = android.graphics.Matrix()
+                                    val hScale = if (horizontalFlip) -1f else 1f
+                                    val vScale = if (verticalFlip) -1f else 1f
+                                    flipMatrix.postScale(hScale, vScale, captureBitmap.width / 2f, captureBitmap.height / 2f)
+                                    val flipped = Bitmap.createBitmap(captureBitmap, 0, 0, captureBitmap.width, captureBitmap.height, flipMatrix, true)
+                                    captureBitmap.recycle()
+                                    captureBitmap = flipped
                                 }
 
                                 currentOnImageCaptured.value(
@@ -1879,6 +1900,7 @@ fun CameraPreviewScreen(
                                 )
 
                                 stableTime = 0L
+                                faceBuffer2s?.recycle()
                                 faceBuffer2s = null
                             }
                         } else {
@@ -2026,7 +2048,7 @@ fun CameraPreviewScreen(
                                      isAntiAlias = true
                                  }
                                  
-                                 if (isFrontCamera && targetFaceMode == "card") {
+                                 if (targetFaceMode == "card") {
                                      // 1. Draw ID Card Frame (Landscape aspect 1.58:1)
                                      val cardW = cw * 0.85f
                                      val cardH = cardW / 1.58f
@@ -2034,14 +2056,6 @@ fun CameraPreviewScreen(
                                      val cardTop = (ch - cardH) / 2f
                                      val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
                                      drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, guidePaint)
-
-                                     // 2. Face position inside card (Thai ID has face on Right side)
-                                     val faceGuideW = cardW * 0.35f
-                                     val faceGuideH = cardH * 0.65f
-                                     val faceGuideLeft = cardLeft + (cardW * 0.60f)
-                                     val faceGuideTop = cardTop + (cardH * 0.20f)
-                                     val faceRect = android.graphics.RectF(faceGuideLeft, faceGuideTop, faceGuideLeft + faceGuideW, faceGuideTop + faceGuideH)
-                                     drawContext.canvas.nativeCanvas.drawOval(faceRect, guidePaint)
 
                                      // Instructions
                                      val textPaint = android.graphics.Paint().apply {
@@ -2053,14 +2067,57 @@ fun CameraPreviewScreen(
                                      }
                                      drawContext.canvas.nativeCanvas.drawText("วางบัตรและใบหน้าให้ตรงกรอบ", cw / 2f, cardTop - 60f, textPaint)
                                  } else {
-                                     // 🌟 FULL FACE MODE: Draw large centered ellipse
-                                     val ellipseW = cw * 0.75f
-                                     val ellipseH = ellipseW * 1.35f
-                                     val ellipseLeft = (cw - ellipseW) / 2f
-                                     val ellipseTop = (ch - ellipseH) / 2.2f // Slightly above center
-                                     val ellipseRect = android.graphics.RectF(ellipseLeft, ellipseTop, ellipseLeft + ellipseW, ellipseTop + ellipseH)
+                                     // 🌟 FULL FACE MODE: Draw minimal circular guide (Short arcs)
+                                     val circleSize = cw * 0.70f
+                                     val ellipseLeft = (cw - circleSize) / 2f
+                                     val ellipseTop = (ch - circleSize) / 2.5f
+                                     val ellipseRect = android.graphics.RectF(ellipseLeft, ellipseTop, ellipseLeft + circleSize, ellipseTop + circleSize)
                                      
-                                     drawContext.canvas.nativeCanvas.drawOval(ellipseRect, guidePaint)
+                                     // 🌟 Real-time Blur Masking
+                                     blurredFrame.value?.let { blur: Bitmap ->
+                                         if (!blur.isRecycled) {
+                                             val ovalPath = android.graphics.Path().apply {
+                                                 addOval(ellipseRect, android.graphics.Path.Direction.CW)
+                                             }
+                                             
+                                             drawContext.canvas.nativeCanvas.save()
+                                             // Clip out the oval area so we don't draw blur there
+                                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                 drawContext.canvas.nativeCanvas.clipPath(ovalPath, android.graphics.Region.Op.DIFFERENCE)
+                                             } else {
+                                                 // Legacy support
+                                                 @Suppress("DEPRECATION")
+                                                 drawContext.canvas.nativeCanvas.clipPath(ovalPath, android.graphics.Region.Op.DIFFERENCE)
+                                             }
+                                             
+                                             // Draw the blurred frame over the live preview (only in clipped area)
+                                             val destRect = android.graphics.Rect(0, 0, cw.toInt(), ch.toInt())
+                                             drawContext.canvas.nativeCanvas.drawBitmap(blur, null, destRect, null)
+                                             
+                                             // 🌟 Add a 'cloudy' white tint to make it look like frosted glass
+                                             val cloudyPaint = android.graphics.Paint().apply {
+                                                 color = android.graphics.Color.WHITE
+                                                 alpha = 40 // Very subtle white tint
+                                                 style = android.graphics.Paint.Style.FILL
+                                             }
+                                             drawContext.canvas.nativeCanvas.drawRect(0f, 0f, cw, ch, cloudyPaint)
+                                             
+                                             drawContext.canvas.nativeCanvas.restore()
+                                         }
+                                     }
+
+                                     // Use a solid line for the face arcs to match reference image
+                                     val faceGuidePaint = android.graphics.Paint(guidePaint).apply {
+                                         pathEffect = null
+                                         strokeWidth = 8f
+                                         strokeCap = android.graphics.Paint.Cap.ROUND // เส้นมนสวยงาม
+                                     }
+                                     
+                                     // 🌟 DRAW SHORT TOP AND BOTTOM ARCS ONLY
+                                     // Top arc (Forehead) - centered at 270 degrees
+                                     drawContext.canvas.nativeCanvas.drawArc(ellipseRect, 240f, 60f, false, faceGuidePaint)
+                                     // Bottom arc (Chin) - centered at 90 degrees
+                                     drawContext.canvas.nativeCanvas.drawArc(ellipseRect, 60f, 60f, false, faceGuidePaint)
                                      
                                      val textPaint = android.graphics.Paint().apply {
                                          color = guideColor
@@ -2338,7 +2395,7 @@ fun CameraPreviewScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(4.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
                 IconButton(
                     onClick = { onVerticalFlipChange(!verticalFlip) },
@@ -2442,9 +2499,52 @@ fun CameraPreviewScreen(
                             )
                         }
                     }
+                }
+
+                // Right: AI Mode Selector + Face Mode Toggle (Vertical Stack)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        onClick = { showAiModeSheet = true },
+                        color = Color.White.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(100.dp),
+                        modifier = Modifier.height(38.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val displayName = when (aiMode) {
+                                AiMode.PADDLE_OCR -> "PaddleOCR"
+                                AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
+                                AiMode.FACE_DETECTION -> "Face Detection"
+                                AiMode.POSE_DETECTION -> "Pose Detection"
+                                AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
+                                AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
+                                AiMode.OBJECT_DETECTION -> "Object Detect"
+                                AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
+                                AiMode.TEXT_RECOGNITION -> "Text Recognition"
+                                else -> aiMode.name
+                            }
+                            Text(
+                                text = displayName,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                            Icon(
+                                Icons.Default.KeyboardArrowUp,
+                                null,
+                                tint = Color.White.copy(alpha = 0.6f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
 
                     if (aiMode == AiMode.FACE_DETECTION) {
-                        Spacer(modifier = Modifier.width(8.dp))
                         // Face Mode Toggle Button
                         Surface(
                             onClick = { onTargetFaceModeChange(if (targetFaceMode == "card") "normal" else "card") },
@@ -2465,45 +2565,6 @@ fun CameraPreviewScreen(
                                 )
                             }
                         }
-                    }
-                }
-
-                // Right: AI Mode Selector
-                Surface(
-                    onClick = { showAiModeSheet = true },
-                    color = Color.White.copy(alpha = 0.08f),
-                    shape = RoundedCornerShape(100.dp),
-                    modifier = Modifier.height(38.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val displayName = when (aiMode) {
-                            AiMode.PADDLE_OCR -> "PaddleOCR"
-                            AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
-                            AiMode.FACE_DETECTION -> "Face Detection"
-                            AiMode.POSE_DETECTION -> "Pose Detection"
-                            AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
-                            AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
-                            AiMode.OBJECT_DETECTION -> "Object Detect"
-                            AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
-                            AiMode.TEXT_RECOGNITION -> "Text Recognition"
-                            else -> aiMode.name
-                        }
-                        Text(
-                            text = displayName,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp
-                        )
-                        Icon(
-                            Icons.Default.KeyboardArrowUp,
-                            null,
-                            tint = Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier.size(16.dp)
-                        )
                     }
                 }
             }
