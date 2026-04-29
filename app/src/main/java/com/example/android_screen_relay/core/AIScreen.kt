@@ -1477,6 +1477,17 @@ fun CameraPreviewScreen(
     var previewPose by remember { mutableStateOf<PoseDetectorProcessor?>(null) }
     var previewSelfie by remember { mutableStateOf<SelfieSegmenterProcessor?>(null) }
     var previewSubject by remember { mutableStateOf<SubjectSegmenterProcessor?>(null) }
+    
+    // Result states for UI drawing (latest detected items)
+    val latestItemsOcr = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsPalm = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsFace = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsPose = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsSelfie = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsSubject = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsObject = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+    val latestItemsCustomObject = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
+
     val computeMode = ComputeModeManager.getMode()
     
     var latestDetections by remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
@@ -1728,40 +1739,47 @@ fun CameraPreviewScreen(
                         val memoryInfo = ActivityManager.MemoryInfo()
                         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
 
-                        // 🌟 GENERATE LIVE BLUR: Optimized for RAM 8GB (Disable on 2GB RAM)
+                        // 🌟 GENERATE LIVE BLUR: Safe Main-thread update
                         if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
                             try {
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
                                 val blurH = (bitmap.height * scale).toInt().coerceAtLeast(1)
                                 
-                                // Create tiny bitmap
                                 val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
                                 
-                                // Reuse or create blurred frame
-                                val currentBlur = blurredFrame.value
-                                val newBlurred = if (currentBlur != null && currentBlur.width == bitmap.width && currentBlur.height == bitmap.height && !currentBlur.isRecycled) {
-                                    // Use standard Canvas to draw the tiny bitmap onto the full-size blurred frame to reuse it
-                                    val canvas = android.graphics.Canvas(currentBlur)
-                                    val src = android.graphics.Rect(0, 0, tiny.width, tiny.height)
-                                    val dst = android.graphics.Rect(0, 0, currentBlur.width, currentBlur.height)
-                                    canvas.drawBitmap(tiny, src, dst, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
-                                    currentBlur
-                                } else {
-                                    currentBlur?.recycle()
-                                    Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                if (tiny != null && !tiny.isRecycled) {
+                                    withContext(Dispatchers.Main) {
+                                        val currentBlur = blurredFrame.value
+                                        val newBlurred = if (currentBlur != null && !currentBlur.isRecycled && currentBlur.width == bitmap.width && currentBlur.height == bitmap.height) {
+                                            try {
+                                                val canvas = android.graphics.Canvas(currentBlur)
+                                                canvas.drawBitmap(tiny, 0f, 0f, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+                                                currentBlur
+                                            } catch (e: Exception) {
+                                                Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                            }
+                                        } else {
+                                            if (currentBlur != null && !currentBlur.isRecycled) currentBlur.recycle()
+                                            Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                        }
+                                        
+                                        tiny.recycle()
+                                        blurredFrame.value = newBlurred
+                                    }
                                 }
-                                
-                                tiny.recycle()
-                                blurredFrame.value = newBlurred
                             } catch (e: Exception) {
                                 Log.e("AIScreen", "Error generating live blur", e)
                             }
                         } else {
                             if (blurredFrame.value != null) {
-                                blurredFrame.value?.recycle()
-                                blurredFrame.value = null
-                                if (isUltraLowRAM) System.gc() // Force GC on 2GB devices when freeing big assets
+                                withContext(Dispatchers.Main) {
+                                    if (blurredFrame.value != null && !blurredFrame.value!!.isRecycled) {
+                                        blurredFrame.value?.recycle()
+                                    }
+                                    blurredFrame.value = null
+                                    if (isUltraLowRAM) System.gc()
+                                }
                             }
                         }
 
@@ -1792,8 +1810,40 @@ fun CameraPreviewScreen(
                             Pair(false, emptyList())
                         }
 
+                        // 🌟 Expansion: Add 25px padding to Face Bounding Boxes only
+                        if (aiMode == AiMode.FACE_DETECTION && items.isNotEmpty()) {
+                            items = items.map { item ->
+                                val rect = item.boundingBox
+                                val expandedRect = android.graphics.RectF(
+                                    (rect.left - 25f).coerceAtLeast(0f),
+                                    (rect.top - 25f).coerceAtLeast(0f),
+                                    (rect.right + 25f).coerceAtMost(bitmapWidth),
+                                    (rect.bottom + 25f).coerceAtMost(bitmapHeight)
+                                )
+                                item.copy(boundingBox = expandedRect)
+                            }
+                        }
+
+                        // Map items to preview states for drawing using .value
+                        when (aiMode) {
+                            AiMode.PADDLE_OCR -> latestItemsOcr.value = items
+                            AiMode.HAND_DETECTION -> latestItemsPalm.value = items
+                            AiMode.FACE_DETECTION -> latestItemsFace.value = items
+                            AiMode.POSE_DETECTION -> latestItemsPose.value = items
+                            AiMode.SELFIE_SEGMENTATION -> latestItemsSelfie.value = items
+                            AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value = items
+                            AiMode.OBJECT_DETECTION -> latestItemsObject.value = items
+                            AiMode.CUSTOM_OBJECT_DETECTION -> latestItemsCustomObject.value = items
+                            else -> {}
+                        }
+                        
+                        // 🌟 Stabilization: Always update latestDetections for UI drawing
+                        latestDetections = items
+
+                        val criteriaMet = items.isNotEmpty()
+
                         // 🌟 MULTI-SCALE INFERENCE: If initial crop failed, try a 20% larger crop
-                        if (!success && useCropMode) {
+                        if (!criteriaMet && useCropMode) {
                             val expandedBitmap = try {
                                 val cw = baseBitmap.width.toFloat()
                                 val ch = baseBitmap.height.toFloat()
@@ -1846,8 +1896,7 @@ fun CameraPreviewScreen(
                             }
                         }
 
-                        latestDetections = items
-                        val criteriaMet = success
+                        // Use existing criteriaMet (already updated by multi-scale retry if needed)
                         val elapsedInference = System.currentTimeMillis() - startInference
                         lastInferenceTimeMs = elapsedInference
                         detectorLatency = elapsedInference
