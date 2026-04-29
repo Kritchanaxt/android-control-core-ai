@@ -1682,6 +1682,7 @@ fun CameraPreviewScreen(
                         val bitmap = if (useCropMode) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
+                            
                             val frameW = if (aiMode == AiMode.PADDLE_OCR) {
                                 val maxW = cw * 0.9f
                                 val idealH = ch * 0.6f
@@ -1689,7 +1690,7 @@ fun CameraPreviewScreen(
                             } else if (aiMode == AiMode.FACE_DETECTION) {
                                 min(cw, ch) * 0.8f
                             } else {
-                                min(cw, ch) * 0.6f
+                                min(cw, ch) * 0.8f // Use 0.8f for better Subject/Selfie visibility
                             }
                             val frameH = if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
                             val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
@@ -2265,7 +2266,7 @@ fun CameraPreviewScreen(
                         } else if (aiMode == AiMode.FACE_DETECTION) {
                             min(cw, ch) * 0.8f
                         } else {
-                            min(cw, ch) * 0.6f
+                            min(cw, ch) * 0.8f
                         }
                     } else size.width
 
@@ -2433,12 +2434,12 @@ fun CameraPreviewScreen(
                             }
 
                             if (maskBitmap != null && !maskBitmap.isRecycled) {
-                                val destRect = if (aiMode == AiMode.SELFIE_SEGMENTATION) {
-                                    android.graphics.RectF(0f, 0f, size.width, size.height)
-                                } else {
-                                    mappedRect
+                                val destRect = mappedRect
+                                val maskPaint = android.graphics.Paint().apply {
+                                    isFilterBitmap = true
+                                    isAntiAlias = true
                                 }
-                                drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, null)
+                                drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, maskPaint)
                             }
                         }
                     }

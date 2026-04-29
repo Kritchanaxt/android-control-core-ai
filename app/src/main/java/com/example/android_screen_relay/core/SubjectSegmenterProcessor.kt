@@ -69,6 +69,7 @@ class SubjectSegmenterProcessor : AIProcessor {
                     val colors = listOf(0xCCFF00FF.toInt(), 0xCC00FFFF.toInt(), 0xCCFFFF00.toInt(), 0xCC00FF00.toInt())
                     val tintColor = colors[index % colors.size]
                     
+                    mask.rewind()
                     val capacity = mask.capacity()
                     for (i in 0 until width * height) {
                         if (i < capacity) {
