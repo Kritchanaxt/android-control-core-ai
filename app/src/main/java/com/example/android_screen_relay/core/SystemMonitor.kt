@@ -84,6 +84,14 @@ object SystemMonitor {
         return totalRamGb < 3.0 || cores <= 4 || actManager.isLowRamDevice
     }
 
+    fun isUltraLowRAM(context: Context): Boolean {
+        val actManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        actManager.getMemoryInfo(memInfo)
+        val totalRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+        return totalRamGb < 2.5 || actManager.isLowRamDevice
+    }
+
     fun getDeviceInfo(context: Context): DeviceInfo {
         val statFs = StatFs(Environment.getDataDirectory().path)
         val totalRomBytes = statFs.blockCountLong * statFs.blockSizeLong

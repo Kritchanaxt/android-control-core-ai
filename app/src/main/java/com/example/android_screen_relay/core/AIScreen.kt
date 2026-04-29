@@ -1,6 +1,7 @@
 package com.example.android_screen_relay.core
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Context
 import com.example.android_screen_relay.LogRepository
 import android.graphics.Bitmap
@@ -147,9 +148,13 @@ fun AIScreenLayout() {
     
 
     LaunchedEffect(currentAiMode) {
-        scope.launch(Dispatchers.IO) {
+        // 🌟 Fix: Use sequential execution instead of launching into IO
+        // This ensures the write-lock in AIManager is respected and no parallel init occurs
+        isProcessing = true
+        withContext(Dispatchers.Default) {
             AIManager.switchProcessor(context, currentAiMode.name)
         }
+        isProcessing = false
     }
 
     // Models will be lazy-loaded on demand now
@@ -1718,21 +1723,37 @@ fun CameraPreviewScreen(
                         bitmapWidth = bitmap.width.toFloat()
                         bitmapHeight = bitmap.height.toFloat()
 
-                        // 🌟 GENERATE LIVE BLUR: For Normal Face focus mode
-                        if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal") {
+                        // 🌟 RAM 2GB OPTIMIZATION: Check for ultra-low memory
+                        val isUltraLowRAM = SystemMonitor.isUltraLowRAM(context)
+                        val memoryInfo = ActivityManager.MemoryInfo()
+                        (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
+
+                        // 🌟 GENERATE LIVE BLUR: Optimized for RAM 8GB (Disable on 2GB RAM)
+                        if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
                             try {
-                                // Create a tiny version (1/20 size) for a much stronger, cloudier blur effect
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
                                 val blurH = (bitmap.height * scale).toInt().coerceAtLeast(1)
-                                val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
-                                // Scale back up to screen size - standard Android bilinear filtering creates a smooth blur
-                                val blurred = Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
-                                tiny.recycle()
                                 
-                                val oldBlur = blurredFrame.value
-                                blurredFrame.value = blurred
-                                oldBlur?.recycle()
+                                // Create tiny bitmap
+                                val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
+                                
+                                // Reuse or create blurred frame
+                                val currentBlur = blurredFrame.value
+                                val newBlurred = if (currentBlur != null && currentBlur.width == bitmap.width && currentBlur.height == bitmap.height && !currentBlur.isRecycled) {
+                                    // Use standard Canvas to draw the tiny bitmap onto the full-size blurred frame to reuse it
+                                    val canvas = android.graphics.Canvas(currentBlur)
+                                    val src = android.graphics.Rect(0, 0, tiny.width, tiny.height)
+                                    val dst = android.graphics.Rect(0, 0, currentBlur.width, currentBlur.height)
+                                    canvas.drawBitmap(tiny, src, dst, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+                                    currentBlur
+                                } else {
+                                    currentBlur?.recycle()
+                                    Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                }
+                                
+                                tiny.recycle()
+                                blurredFrame.value = newBlurred
                             } catch (e: Exception) {
                                 Log.e("AIScreen", "Error generating live blur", e)
                             }
@@ -1740,7 +1761,16 @@ fun CameraPreviewScreen(
                             if (blurredFrame.value != null) {
                                 blurredFrame.value?.recycle()
                                 blurredFrame.value = null
+                                if (isUltraLowRAM) System.gc() // Force GC on 2GB devices when freeing big assets
                             }
+                        }
+
+                        // 🌟 AI PIPELINE: Check memory pressure before inference
+                        if (isUltraLowRAM && memoryInfo.availMem < (memoryInfo.totalMem * 0.15)) {
+                            // If memory is critically low on 2GB device, skip this frame to allow GC
+                            bitmap.recycle()
+                            kotlinx.coroutines.delay(100)
+                            continue
                         }
 
                         val startInference = System.currentTimeMillis()
