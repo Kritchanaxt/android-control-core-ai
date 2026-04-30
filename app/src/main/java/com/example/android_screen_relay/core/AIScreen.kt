@@ -1734,22 +1734,19 @@ fun CameraPreviewScreen(
 
                                 if (tiny != null && !tiny.isRecycled) {
                                     withContext(Dispatchers.Main) {
-                                        val currentBlur = blurredFrame.value
-                                        val newBlurred = if (currentBlur != null && !currentBlur.isRecycled && currentBlur.width == bitmap.width && currentBlur.height == bitmap.height) {
-                                            try {
-                                                val canvas = android.graphics.Canvas(currentBlur)
-                                                canvas.drawBitmap(tiny, 0f, 0f, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
-                                                currentBlur
-                                            } catch (e: Exception) {
-                                                Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
-                                            }
-                                        } else {
-                                            if (currentBlur != null && !currentBlur.isRecycled) currentBlur.recycle()
-                                            Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
-                                        }
-
-                                        tiny.recycle()
+                                        val oldBlur = blurredFrame.value
+                                        // 🌟 ALWAYS create new bitmap to trigger Compose recompose
+                                        // createScaledBitmap with filtering=true provides a fast blur effect
+                                        val newBlurred = Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                        
                                         blurredFrame.value = newBlurred
+                                        
+                                        // Recycle old one AFTER setting new one to avoid flickering or use of recycled bitmap in UI
+                                        if (oldBlur != null && !oldBlur.isRecycled && oldBlur !== newBlurred) {
+                                            oldBlur.recycle()
+                                        }
+                                        
+                                        tiny.recycle()
                                     }
                                 }
                             } catch (e: Exception) {
