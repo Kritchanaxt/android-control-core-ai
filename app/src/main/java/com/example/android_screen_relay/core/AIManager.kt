@@ -112,6 +112,26 @@ object AIManager {
      * Helper to switch processor by name (string)
      */
     fun switchProcessor(context: android.content.Context, modeName: String): Boolean {
+        // 🌟 Fix: Avoid redundant switching if the current processor matches the requested mode
+        val current = getActiveProcessor()
+        val alreadyActive = when {
+            modeName.contains("OCR", ignoreCase = true) && current is OCRProcessor -> true
+            modeName.contains("HAND", ignoreCase = true) && current is PalmprintProcessor -> true
+            modeName.contains("FACE", ignoreCase = true) && current is FaceDetectorProcessor -> true
+            modeName.contains("POSE", ignoreCase = true) && current is PoseDetectorProcessor -> true
+            modeName.contains("SELFIE", ignoreCase = true) && current is SelfieSegmenterProcessor -> true
+            modeName.contains("SUBJECT", ignoreCase = true) && current is SubjectSegmenterProcessor -> true
+            modeName.contains("CUSTOM_OBJECT", ignoreCase = true) && current is CustomObjectDetectorProcessor -> true
+            modeName.contains("OBJECT", ignoreCase = true) && current is ObjectDetectorProcessor -> true
+            modeName.contains("TEXT", ignoreCase = true) && current is TextRecognitionProcessor -> true
+            else -> false
+        }
+        
+        if (alreadyActive) {
+            Log.d("AIManager", "Processor for $modeName is already active. Skipping switch.")
+            return true
+        }
+
         val isLowSpec = SystemMonitor.isLowSpecDevice(context)
         val config = AIConfig(
             useGpu = true, // Force GPU as requested
@@ -134,6 +154,31 @@ object AIManager {
     }
     
     fun getActiveProcessor(): AIProcessor? = lock.read { activeProcessor }
+
+    /**
+     * Executes a block of code with the active processor safely under a read lock.
+     * Use this when you need to cast the processor or perform extra logic alongside processing.
+     */
+    fun <T> runWithProcessor(block: (AIProcessor?) -> T): T {
+        val readLock = lock.readLock()
+        // Wait up to 2 seconds for a switch to complete
+        if (!readLock.tryLock(2, java.util.concurrent.TimeUnit.SECONDS)) {
+            Log.e("AIManager", "Timeout waiting for read lock")
+            // Return result of block with null if we can't get the lock
+            // This is safer than crashing or blocking indefinitely
+            return block(null)
+        }
+        
+        return try {
+            if (isSwitching) {
+                block(null)
+            } else {
+                block(activeProcessor)
+            }
+        } finally {
+            readLock.unlock()
+        }
+    }
     
     fun paddleOCRLoaded(): Boolean = lock.read {
         activeProcessor?.name?.contains("PaddleOCR", ignoreCase = true) == true

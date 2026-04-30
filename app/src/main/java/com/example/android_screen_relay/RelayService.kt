@@ -98,8 +98,8 @@ class RelayService : Service() {
         
         // P'Bear: Automatic Release (Release Native/JNI memory)
         try {
-            PaddleOCR().release() // Force release native engines
-            android.util.Log.d("RelayService", "Native PaddleOCR resources released.")
+            AIManager.release() // Force release all managed AI engines
+            android.util.Log.d("RelayService", "All AI resources released via AIManager.")
         } catch (e: Exception) {
             android.util.Log.e("RelayService", "Release failed: ${e.message}")
         }
@@ -146,10 +146,15 @@ class RelayService : Service() {
         val notification = createNotification()
 
         val resultCode = intent?.getIntExtra("RESULT_CODE", 0) ?: 0
-        val dataIntent = intent?.getParcelableExtra<Intent>("DATA_INTENT")
+        val dataIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("DATA_INTENT", Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra<Intent>("DATA_INTENT")
+        }
         val hasProjectionData = resultCode != 0 && dataIntent != null
 
-        // IMPORTANT: Start Foreground Service BEFORE creating the virtual display (Android 14+ requirement)
+        // ... rest of the logic ...
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val fgsType = if (hasProjectionData) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
@@ -173,7 +178,7 @@ class RelayService : Service() {
         overlayManager.showOverlay()
 
         // Start Screen Capture if data is present
-        if (hasProjectionData) {
+        if (hasProjectionData && dataIntent != null) {
             try {
                 val quality = intent?.getIntExtra("QUALITY_MODE", 1) ?: 1 // Default to Medium (1)
                 android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
@@ -281,9 +286,19 @@ class RelayService : Service() {
                             // Only accumulate crash timer if memory is dangerously low (Critical) 
                             // Merely staying in the 'Warning' zone is normal for Android OS caching on 2GB devices.
                             if (availableRam < criticalThreshold) {
-                                consecutiveLowMemory++
-                                statusMap["ai_memory_state"] = "releasing_models"
-                                AIManager.release()
+                                // 🌟 Fix: Only auto-release models if app is NOT in foreground 
+                                // to prevent crashing the user's active AI session.
+                                val currentState = AppStateManager.currentState
+                                if (currentState != AppState.FOREGROUND) {
+                                    consecutiveLowMemory++
+                                    statusMap["ai_memory_state"] = "releasing_models"
+                                    AIManager.release()
+                                } else {
+                                    // In foreground, we still increment but don't force release immediately
+                                    // until we hit the fatal threshold
+                                    consecutiveLowMemory++
+                                    statusMap["ai_memory_state"] = "warning_foreground"
+                                }
                             } else {
                                 consecutiveLowMemory = 0
                             }
@@ -291,8 +306,9 @@ class RelayService : Service() {
                             consecutiveLowMemory = 0
                         }
 
-                        // Crash ONLY if memory drops below fatal immediately, OR stays under critical for ~60 seconds (12 loops)
-                        if (availableRam < fatalThreshold || consecutiveLowMemory > 12) {
+                        // Crash ONLY if memory drops below fatal immediately, OR stays under critical for ~120 seconds (24 loops)
+                        // Increased tolerance from 12 to 24 loops (2 minutes) to prevent premature exits
+                        if (availableRam < fatalThreshold || consecutiveLowMemory > 24) {
                             val activeFeature = statusMap["ai_active"]?.toString() ?: "None"
                             android.util.Log.e("RelayService", "Emergency Stop: OOM Prevention during [$activeFeature]")
                             statusMap["fatal_error"] = "OOM_PREVENTION_${availableRam}MB_FEATURE_$activeFeature"

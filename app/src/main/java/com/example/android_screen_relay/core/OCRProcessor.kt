@@ -11,7 +11,8 @@ class OCRProcessor : AIProcessor {
     private var appContext: android.content.Context? = null
     private var appThreads: Int = 4
     private var appGpu: Boolean = false
-    private var paddleOCR: PaddleOCR? = null
+    var paddleOCR: PaddleOCR? = null // Made public for benchmarking
+        private set
     override val name: String = "PaddleOCRv5"
 
     override fun init(context: android.content.Context, config: AIConfig): Boolean {

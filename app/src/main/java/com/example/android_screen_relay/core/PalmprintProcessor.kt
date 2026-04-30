@@ -21,7 +21,7 @@ class PalmprintProcessor : AIProcessor {
     override fun init(context: Context, config: AIConfig): Boolean {
         this.appContext = context.applicationContext
         this.appConfig = config
-        
+
         return try {
             if (handLandmarker == null) {
                 // Force CPU to prevent native JNI crashes on low-end device GPUs
@@ -41,7 +41,7 @@ class PalmprintProcessor : AIProcessor {
             } else {
                 baseOptionsBuilder.setDelegate(com.google.mediapipe.tasks.core.Delegate.CPU)
             }
-            
+
             val optionsBuilder = HandLandmarker.HandLandmarkerOptions.builder()
                 .setBaseOptions(baseOptionsBuilder.build())
                 .setMinHandDetectionConfidence(0.15f)
@@ -49,7 +49,7 @@ class PalmprintProcessor : AIProcessor {
                 .setMinTrackingConfidence(0.15f)
                 .setNumHands(1)
                 .setRunningMode(RunningMode.IMAGE)
-            
+
             handLandmarker = HandLandmarker.createFromOptions(appContext, optionsBuilder.build())
             true
         } catch (e: Throwable) {
@@ -62,7 +62,7 @@ class PalmprintProcessor : AIProcessor {
         if (appContext == null || appConfig == null || handLandmarker == null) return AIResult(false, emptyList(), 0, "Not initialized")
         val isFront = options["is_front"] as? Boolean ?: false
         val startTime = System.currentTimeMillis()
-        
+
         return try {
             var processingBitmap = bitmap
             if (isFront) {
@@ -76,7 +76,7 @@ class PalmprintProcessor : AIProcessor {
             var mpImage = BitmapImageBuilder(processingBitmap).build()
             var result = handLandmarker!!.detect(mpImage)
             var usedScale = 1.0f
-            
+
             // Retry with padding if no hand is detected
             // This tricks MediaPipe into detecting a close-up palm that fills the whole screen
             // The palm detector usually fails if fingers are missing or if the hand anchor box is too large
@@ -91,11 +91,11 @@ class PalmprintProcessor : AIProcessor {
                     val offsetX = (padW - w) / 2f
                     val offsetY = (padH - h) / 2f
                     canvas.drawBitmap(processingBitmap, offsetX, offsetY, null)
-                    
+
                     val paddedMpImage = BitmapImageBuilder(paddedBitmap).build()
                     result = handLandmarker!!.detect(paddedMpImage)
                     paddedBitmap.recycle()
-                    
+
                     if (result.landmarks().isNotEmpty()) {
                         usedScale = scale
                         break
@@ -104,7 +104,7 @@ class PalmprintProcessor : AIProcessor {
             }
 
             val duration = System.currentTimeMillis() - startTime
-            
+
             if (isFront && processingBitmap !== bitmap) processingBitmap.recycle()
 
             if (result.landmarks().isEmpty()) {
@@ -113,37 +113,37 @@ class PalmprintProcessor : AIProcessor {
                 val uiCenterX = w / 2f
                 val uiCenterY = h * 0.45f
                 val uiRadius = w * 0.38f
-                
+
                 val startX = (uiCenterX - uiRadius * 0.7f).toInt().coerceAtLeast(0)
                 val startY = (uiCenterY - uiRadius * 0.7f).toInt().coerceAtLeast(0)
                 val endX = (uiCenterX + uiRadius * 0.7f).toInt().coerceAtMost(w.toInt() - 1)
                 val endY = (uiCenterY + uiRadius * 0.7f).toInt().coerceAtMost(h.toInt() - 1)
-                
+
                 val boxW = endX - startX
                 val boxH = endY - startY
-                
+
                 if (boxW > 0 && boxH > 0) {
                     val pixels = IntArray(boxW * boxH)
                     bitmap.getPixels(pixels, 0, boxW, startX, startY, boxW, boxH)
-                    
+
                     var skinPixels = 0
                     var totalPixels = 0
                     val step = 10 // sample every 10th pixel for speed
-                    
+
                     for (i in pixels.indices step step) {
                         totalPixels++
                         val color = pixels[i]
                         val r = (color shr 16) and 0xFF
                         val g = (color shr 8) and 0xFF
                         val b = color and 0xFF
-                        
+
                         // Enhanced skin color heuristic for fallback
                         if (r > 45 && g > 30 && b > 20 &&
                             r > g && r > b && (r - g) > 10) {
                             skinPixels++
                         }
                     }
-                    
+
                     if (totalPixels > 0 && (skinPixels.toFloat() / totalPixels) > 0.4f) {
                         val d = uiRadius * 2f
                         // For fallback, use the target hand requested by options to reflect correct scanning intent
@@ -176,15 +176,15 @@ class PalmprintProcessor : AIProcessor {
                         return AIResult(true, items, duration, "Close-up fallback used")
                     }
                 }
-                
+
                 return AIResult(true, emptyList(), duration, "No hand detected")
             }
 
             val items = mutableListOf<AIDetectedItem>()
-            
+
             val landmarks = result.landmarks()[0]
             val handedness = result.handednesses().getOrNull(0)?.getOrNull(0)
-            
+
             val label = handedness?.categoryName() ?: "Unknown"
             val score = handedness?.score() ?: 0f
 
@@ -205,7 +205,7 @@ class PalmprintProcessor : AIProcessor {
             var minY = Float.MAX_VALUE
             var maxX = Float.MIN_VALUE
             var maxY = Float.MIN_VALUE
-            
+
             for (index in landmarks.indices) {
                 if (index in palmLandmarks) {
                     val lm = landmarks[index]

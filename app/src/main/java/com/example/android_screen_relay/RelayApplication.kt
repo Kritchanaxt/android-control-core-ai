@@ -9,6 +9,7 @@ import android.util.Log
 import android.widget.Toast
 import android.os.Handler
 import android.os.Looper
+import androidx.work.Configuration
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -17,7 +18,13 @@ import com.example.android_screen_relay.core.FirebaseLogger
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 
-class RelayApplication : Application() {
+class RelayApplication : Application(), Configuration.Provider {
+    
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setMinimumLoggingLevel(Log.INFO)
+            .build()
+
     override fun onCreate() {
         super.onCreate()
         

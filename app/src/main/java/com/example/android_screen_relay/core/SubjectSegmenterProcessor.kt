@@ -26,7 +26,7 @@ class SubjectSegmenterProcessor : AIProcessor {
                 .build()
             segmenter = SubjectSegmentation.getClient(options)
             true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e("Subject", "Init error", e)
             false
         }
@@ -50,7 +50,7 @@ class SubjectSegmenterProcessor : AIProcessor {
             result.subjects.forEachIndexed { index, subject ->
                 val extra = mutableMapOf<String, Any>()
                 val mask = subject.confidenceMask
-                
+
                 // Extract the actual image of the subject with background removed
                 val subjectBitmap = subject.bitmap
                 if (subjectBitmap != null) {
@@ -61,14 +61,14 @@ class SubjectSegmenterProcessor : AIProcessor {
                 if (mask != null) {
                     val width = subject.width
                     val height = subject.height
-                    
+
                     // Generate Bitmap in background thread to prevent UI thread OOM and concurrent access crashes
                     val maskBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val pixels = IntArray(width * height)
-                    
+
                     val colors = listOf(0xCCFF00FF.toInt(), 0xCC00FFFF.toInt(), 0xCCFFFF00.toInt(), 0xCC00FF00.toInt())
                     val tintColor = colors[index % colors.size]
-                    
+
                     mask.rewind()
                     val capacity = mask.capacity()
                     for (i in 0 until width * height) {
@@ -82,7 +82,7 @@ class SubjectSegmenterProcessor : AIProcessor {
                         }
                     }
                     maskBitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-                    
+
                     extra["mask_bitmap"] = maskBitmap
                     extra["width"] = width
                     extra["height"] = height
@@ -90,7 +90,7 @@ class SubjectSegmenterProcessor : AIProcessor {
                 } else {
                     Log.d("Subject", "Subject #$index: NO mask found")
                 }
-                
+
                 items.add(
                     AIDetectedItem(
                         label = "Subject",
@@ -118,14 +118,14 @@ class SubjectSegmenterProcessor : AIProcessor {
                 unionTop = (unionTop - pad).coerceAtLeast(0)
                 unionRight = (unionRight + pad).coerceAtMost(bitmap.width)
                 unionBottom = (unionBottom + pad).coerceAtMost(bitmap.height)
-                
+
                 val width = unionRight - unionLeft
                 val height = unionBottom - unionTop
                 if (width > 0 && height > 0) {
                     // Create a transparent bitmap for the union area
                     val combinedBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val canvas = android.graphics.Canvas(combinedBitmap)
-                    
+
                     // Draw each subject's bitmap onto the combined canvas
                     result.subjects.forEach { subject ->
                         val subBmp = subject.bitmap
@@ -135,13 +135,13 @@ class SubjectSegmenterProcessor : AIProcessor {
                             canvas.drawBitmap(subBmp, drawX, drawY, null)
                         }
                     }
-                    
+
                     (items[0].extra as MutableMap<String, Any>)["combined_subject_bitmap"] = combinedBitmap
                 }
             }
 
             AIResult(true, items, duration)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e("Subject", "Process error", e)
             AIResult(false, emptyList(), 0, e.message)
         }

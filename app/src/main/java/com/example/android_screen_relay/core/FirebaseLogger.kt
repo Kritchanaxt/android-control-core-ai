@@ -14,7 +14,16 @@ import java.util.Locale
 
 object FirebaseLogger {
     private const val TAG = "FirebaseLogger"
-    private val db: FirebaseFirestore by lazy { FirebaseFirestore.getInstance() }
+    private val db: FirebaseFirestore by lazy {
+        try {
+            FirebaseFirestore.getInstance()
+        } catch (e: Exception) {
+            val app = Class.forName("android.app.ActivityThread")
+                .getMethod("currentApplication").invoke(null) as android.app.Application
+            com.google.firebase.FirebaseApp.initializeApp(app)
+            FirebaseFirestore.getInstance()
+        }
+    }
 
     /**
      * ดึงข้อมูลสถานะเครื่องแบบ Real-time เพื่อแนบไปกับทุก Log
@@ -52,7 +61,7 @@ object FirebaseLogger {
     ) {
         val device = SystemMonitor.getDeviceInfo(context)
         val logData = mutableMapOf<String, Any>()
-        
+
         // ดึงสถานะระบบรอบเดียวเพื่อใช้ทั้งฟังก์ชัน (ประหยัดพลังงานรันของ CPU)
         val currentSystemStatus = getSystemStatus(context)
 
@@ -82,7 +91,7 @@ object FirebaseLogger {
             "cores" to Runtime.getRuntime().availableProcessors(),
             "total_rom_gb" to (extraData?.get("total_rom_gb") ?: device.totalRomGb),
             "battery_capacity_mah" to (extraData?.get("battery_capacity_mah") ?: device.batteryCapacityMAh),
-            "is_target_low_end" to isTargetLowSpec 
+            "is_target_low_end" to isTargetLowSpec
         )
 
         // 3. หมวดหมู่สถานะระบบขณะนั้น (System State) - เปลี่ยนแปลงตลอดเวลา
@@ -180,5 +189,3 @@ object FirebaseLogger {
         // จะเป็นการสร้าง Log ชุดเดิมแต่มีระเบียบขึ้น
     }
 }
-
-

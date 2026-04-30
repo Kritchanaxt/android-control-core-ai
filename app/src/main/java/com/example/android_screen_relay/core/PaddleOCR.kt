@@ -55,18 +55,27 @@ class PaddleOCR {
     fun detect(bitmap: Bitmap): String {
         // Run detectNative on a thread with 8MB stack to prevent stack overflow
         // in ncnn's recursive extract() for the 316-layer recognition model.
-        if (executor == null || executor!!.isShutdown) {
+        val currentExecutor = executor
+        if (currentExecutor == null || currentExecutor.isShutdown) {
             return "[]"
         }
 
         var result: Array<Obj>? = null
         var error: Throwable? = null
 
-        val future = executor!!.submit(java.util.concurrent.Callable {
-            synchronized(lock) {
-                detectNative(bitmap, false)
-            }
-        })
+        val future = try {
+            currentExecutor.submit(java.util.concurrent.Callable {
+                synchronized(lock) {
+                    if (isNativeInitialized) {
+                        detectNative(bitmap, false)
+                    } else {
+                        null
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            return "[]"
+        }
 
         try {
             result = future.get()
@@ -74,7 +83,10 @@ class PaddleOCR {
             error = e.cause ?: e
         }
 
-        error?.let { throw it }
+        error?.let { 
+            Log.e("PaddleOCR", "Detection failed", it)
+            return "[]" 
+        }
 
         val objs = result ?: return "[]"
         val jsonArray = JSONArray()

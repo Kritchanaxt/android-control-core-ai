@@ -340,9 +340,21 @@
                                 } else {
                                     writeLog("ERR", "Auth Failed: " + (jsonData.reason || "Invalid Key"));
                                 }
-                            } else if (jsonData.type === "ocr_result") {
+                            } else if (jsonData.type === "ocr_result" || jsonData.type === "text_recognition_result") {
                                 const summary = jsonData.summary || {};
-                                writeLog("RX", "OCR Success | " + (summary.text_object_count || 0) + " items found | " + (summary.total_latency_ms || 0) + "ms");
+                                const engine = (jsonData.engine_info && jsonData.engine_info.engine) || "ocr";
+                                writeLog("RX", engine.toUpperCase() + " Success | " + (summary.text_object_count || 0) + " items | " + (summary.total_latency_ms || 0) + "ms");
+                                writeLog("RX", JSON.stringify(jsonData, null, 2));
+                            } else if (jsonData.type === "face_result" || jsonData.type === "pose_result" || jsonData.type === "palmprint_result") {
+                                const items = jsonData.results || [];
+                                const type = jsonData.type.replace("_result", "").toUpperCase();
+                                writeLog("RX", type + " Detected | " + items.length + " targets found");
+                                writeLog("RX", JSON.stringify(jsonData, null, 2));
+                            } else if (jsonData.type.includes("segmentation_result")) {
+                                writeLog("RX", "SEGMENTATION Result Received");
+                                writeLog("RX", JSON.stringify(jsonData, null, 2));
+                            } else if (jsonData.type.includes("object_detection_result")) {
+                                writeLog("RX", "OBJECT DETECTION Result Received");
                                 writeLog("RX", JSON.stringify(jsonData, null, 2));
                             } else {
                                 // ถ้าไม่ใช่ heartbeat ให้แสดง raw data ปกติ

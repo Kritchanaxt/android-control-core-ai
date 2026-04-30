@@ -40,12 +40,14 @@ class Camera2Controller(
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
+    private var previewRequestBuilder: CaptureRequest.Builder? = null
     private var imageReader: ImageReader? = null
     private var backgroundThread: HandlerThread? = null
     private var backgroundHandler: Handler? = null
 
     // For TextureView
     var textureView: TextureView? = null
+    private var previewSurface: Surface? = null
     private var previewSize: Size? = null
 
     // Camera State
@@ -65,6 +67,7 @@ class Camera2Controller(
     private var isFlashEnabled: Boolean = false
 
     fun setZoom(scale: Float) {
+        if (zoomScale == scale) return
         zoomScale = scale
         applyZoom()
     }
@@ -72,38 +75,39 @@ class Camera2Controller(
     private fun applyZoom() {
         try {
             val session = captureSession ?: return
-            val device = cameraDevice ?: return
             val charas = characteristics ?: return
-            
+            val builder = previewRequestBuilder ?: return
+
             val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
-            val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+            val maxZoom = charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f
+
+            zoomScale = zoomScale.coerceIn(1.0f, maxZoom)
+
+            // 🌟 Ensure Aspect Ratio Alignment for MTK HAL
+            // The crop region must have the SAME aspect ratio as the sensor array
+            val sensorWidth = rect.width()
+            val sensorHeight = rect.height()
             
-            val centerX = rect.centerX()
-            val centerY = rect.centerY()
-            val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
-            val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
+            val cropWidth = (sensorWidth / zoomScale).toInt()
+            val cropHeight = (sensorHeight / zoomScale).toInt()
+            
+            val left = (sensorWidth - cropWidth) / 2
+            val top = (sensorHeight - cropHeight) / 2
             
             val cropRect = android.graphics.Rect(
-                centerX - deltaX,
-                centerY - deltaY,
-                centerX + deltaX,
-                centerY + deltaY
+                rect.left + left,
+                rect.top + top,
+                rect.left + left + cropWidth,
+                rect.top + top + cropHeight
             )
+
+            Log.d(TAG, "Applying zoom: $zoomScale. CropRect: $cropRect (Sensor: ${rect.width()}x${rect.height()})")
+
+            builder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
             
-            val captureRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            captureRequestBuilder.addTarget(textureView!!.surfaceTexture!!.let { Surface(it) })
-            captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
-            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            
-            if (isFlashEnabled && !isFrontCamera) {
-                val flashAvailable = charas.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-                if (flashAvailable) {
-                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                }
-            }
-            
-            session.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "CameraDevice closed while applying zoom", e)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply zoom", e)
         }
@@ -112,28 +116,27 @@ class Camera2Controller(
     fun setFlashMode(enable: Boolean) {
         if (isFlashEnabled == enable) return
         isFlashEnabled = enable
-        
+
         try {
-            captureSession ?: return
-            val captureRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
-            captureRequestBuilder.addTarget(textureView!!.surfaceTexture!!.let { Surface(it) })
-            
-            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            
+            val session = captureSession ?: return
+            val builder = previewRequestBuilder ?: return
+
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+
             if (isFlashEnabled && !isFrontCamera) {
                 // If the camera supports flash
                 val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                 if (flashAvailable) {
-                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 }
             } else {
-                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
                 // Use default AE mode
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
-            
-            captureSession?.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to toggle flash", e)
         }
@@ -195,12 +198,12 @@ class Camera2Controller(
             if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                 throw RuntimeException("Time out waiting to lock camera opening.")
             }
-            
+
             characteristics = cameraManager.getCameraCharacteristics(cameraId)
             isFrontCamera = characteristics!!.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-            
+
             val map = characteristics!!.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
-            
+
             // Logic to calculate maxSensorProcessingSize according to snippet
             val availableJpegSizes = map.getOutputSizes(android.graphics.ImageFormat.JPEG)
                 ?.sortedByDescending { size -> size.width * size.height } ?: emptyList()
@@ -208,7 +211,7 @@ class Camera2Controller(
             maxSensorProcessingSize = availableJpegSizes.firstOrNull()
                 ?: characteristics!!.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let { Size(it.width(), it.height()) }
                         ?: Size(4000, 3000)
-            
+
             Log.d(TAG, "Max sensor processing size: $maxSensorProcessingSize. Is Front Camera: $isFrontCamera")
 
             // Determine efficient capture size
@@ -218,14 +221,14 @@ class Camera2Controller(
                 } else {
                     val targetArea = targetResolution!!.width * targetResolution!!.height
                     val targetRatio = targetResolution!!.width.toFloat() / targetResolution!!.height.toFloat()
-                    
+
                     // 🌟 ปรับปรุงการเลือกขนาด: ค้นหาขนาดที่ "สูญเสียพื้นที่จากการ Crop น้อยที่สุด"
                     // โดยคำนวณจากความต่างของ Aspect Ratio ร่วมกับ Area
                     availableJpegSizes.minByOrNull { size ->
                         val ratio = size.width.toFloat() / size.height.toFloat()
                         val ratioDiff = Math.abs(ratio - targetRatio)
                         val area = size.width * size.height
-                        
+
                         // ให้คะแนนความสำคัญกับ Ratio ก่อน (เพื่อให้ได้มุมกว้าง) แล้วค่อยตามด้วย Area (เพื่อให้ชัดพอ)
                         if (area >= targetArea) ratioDiff else ratioDiff + 100f
                     } ?: availableJpegSizes.last()
@@ -234,7 +237,7 @@ class Camera2Controller(
                  val validResolutions = getResolutionsForAspectRatio(aspectRatio)
                  validResolutions.mapNotNull { it.size }.minByOrNull { it.width * it.height } ?: availableJpegSizes.last()
             }
-            
+
             Log.d(TAG, "Selected capture size: $finalCaptureSize")
 
             // บันทึก Log การเลือกกล้องและ Resolution ทุกครั้งที่เปิดหรือเปลี่ยน
@@ -254,36 +257,36 @@ class Camera2Controller(
                 setOnImageAvailableListener({ reader ->
                     backgroundHandler?.post {
                         val image = reader.acquireLatestImage()
-                        image?.use { 
+                        image?.use {
                             val buffer = it.planes[0].buffer
                             val bytes = ByteArray(buffer.remaining())
                             buffer.get(bytes)
-                            
+
                             // Scale down the captured JPEG if the user originally targeted a smaller resolution
                             val decodeTargetArea = if (targetResolution != null) targetResolution!!.width * targetResolution!!.height else finalCaptureSize.width * finalCaptureSize.height
                             var sampleSize = 1
                             while ((finalCaptureSize.width * finalCaptureSize.height) / (sampleSize * sampleSize * 2) >= decodeTargetArea && sampleSize < 8) {
                                 sampleSize *= 2
                             }
-                            
+
                             val options = android.graphics.BitmapFactory.Options()
                             options.inSampleSize = sampleSize
                             var bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-                             
+
                             // การตัด (Crop) และปรับขนาด (Scale) ให้เป๊ะตาม targetResolution ที่ผู้ใช้ร้องขอ
                             if (targetResolution != null && (bitmap.width != targetResolution!!.width || bitmap.height != targetResolution!!.height)) {
                                 val targetW = targetResolution!!.width
                                 val targetH = targetResolution!!.height
-                                
+
                                 // ตัดให้ได้สัดส่วน Aspect Ratio ก่อน
                                 val srcRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
                                 val tgtRatio = targetW.toFloat() / targetH.toFloat()
-                                
+
                                 var cropW = bitmap.width
                                 var cropH = bitmap.height
                                 var cropX = 0
                                 var cropY = 0
-                                
+
                                 if (srcRatio > tgtRatio) {
                                     // ภาพต้นฉบับกว้างกว่า (Crop ซ้าย-ขวา)
                                     cropW = (bitmap.height * tgtRatio).toInt()
@@ -293,13 +296,13 @@ class Camera2Controller(
                                     cropH = (bitmap.width / tgtRatio).toInt()
                                     cropY = (bitmap.height - cropH) / 2
                                 }
-                                
+
                                 val croppedBitmap = android.graphics.Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
                                 if (croppedBitmap != bitmap) {
                                     bitmap.recycle()
                                     bitmap = croppedBitmap
                                 }
-                                
+
                                 // ปรับขนาด (Scale Down) ให้พอดิบพอดีเป๊ะๆ ตามตัวเลข (เช่น 1920x1920)
                                 if (bitmap.width != targetW || bitmap.height != targetH) {
                                     val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
@@ -309,7 +312,7 @@ class Camera2Controller(
                                     }
                                 }
                             }
-                             
+
                             // Rotation logic (simple)
                             // In real app, check sensor orientation and rotate
                             onImageCaptured(bitmap, isFrontCamera)
@@ -321,7 +324,7 @@ class Camera2Controller(
             // Preview Size: Pick one that matches aspect ratio of capture size
             val previewSizes = map.getOutputSizes(SurfaceTexture::class.java)
             previewSize = getOptimalPreviewSize(previewSizes, finalCaptureSize)
-            
+
             Log.d(TAG, "Selected preview size: $previewSize")
 
             // Configure SurfaceTexture buffer size! Critical for avoiding black screen / distortion
@@ -352,7 +355,7 @@ class Camera2Controller(
             cameraOpenCloseLock.release()
         }
     }
-    
+
     // Logic from OutputSettingsDialogFragment
     fun getResolutionsForAspectRatio(aspectRatio: UiAspectRatio): List<ResolutionItem> {
         if (characteristics == null) return emptyList()
@@ -406,7 +409,7 @@ class Camera2Controller(
 
                     // Allow 1920x1920 to always show up for 1:1 if requested, otherwise check normal bounds
                     val isSupported = if (aspectRatio == UiAspectRatio.RATIO_1_1 && candidateSize.width == 1920 && candidateSize.height == 1920) {
-                        true 
+                        true
                     } else if (aspectRatio.isPortraitDefault) {
                         candidateSize.width <= maxFinalW && candidateSize.height <= maxFinalH
                     } else {
@@ -433,7 +436,7 @@ class Camera2Controller(
 
     private fun getOptimalPreviewSize(sizes: Array<Size>, targetSize: Size): Size {
         val targetRatio = targetSize.width.toDouble() / targetSize.height.toDouble()
-        
+
         // 1. Find sizes that match aspect ratio exactly or closely
         val tolerance = 0.01
         val matchedAspect = sizes.filter {
@@ -449,7 +452,7 @@ class Camera2Controller(
         }
 
         // 2. If no exact ratio match, find one closest to the ratio
-        return sizes.minByOrNull { 
+        return sizes.minByOrNull {
             val ratio = it.width.toDouble() / it.height.toDouble()
             Math.abs(ratio - targetRatio)
         } ?: sizes[0]
@@ -481,7 +484,7 @@ class Camera2Controller(
             // Surface.ROTATION_0 - Handle 1:1 and other ratios to prevent stretching
             val scaleX = viewWidth.toFloat() / previewSize.height
             val scaleY = viewHeight.toFloat() / previewSize.width
-            
+
             // If it's a square view (1:1), we want to scale to fit center (Crop)
             val scale = max(scaleX, scaleY)
             matrix.postScale(scale / scaleX, scale / scaleY, centerX, centerY)
@@ -491,16 +494,21 @@ class Camera2Controller(
 
     private fun createCameraPreviewSession() {
         try {
-            val texture = textureView!!.surfaceTexture!!
+            val device = cameraDevice ?: return
+            val texture = textureView?.surfaceTexture ?: return
             // We configure the size of default buffer to be the size of camera preview we want.
             texture.setDefaultBufferSize(previewSize!!.width, previewSize!!.height)
             configureTransform(textureView!!.width, textureView!!.height)
 
-            val surface = Surface(texture)
-            val imageSurface = imageReader!!.surface
+            if (previewSurface == null) {
+                previewSurface = Surface(texture)
+            }
+            val surface = previewSurface!!
+            val imageSurface = imageReader?.surface ?: return
 
-            val captureRequestBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            captureRequestBuilder.addTarget(surface)
+            previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            val builder = previewRequestBuilder!!
+            builder.addTarget(surface)
 
             // Apply Zoom if set
             val charas = characteristics
@@ -508,36 +516,47 @@ class Camera2Controller(
                 val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
                 if (rect != null) {
                     val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
-                    val centerX = rect.centerX()
-                    val centerY = rect.centerY()
-                    val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
-                    val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
-                    val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
-                    captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
+                    
+                    val sensorWidth = rect.width()
+                    val sensorHeight = rect.height()
+                    val cropWidth = (sensorWidth / zoomLevel).toInt()
+                    val cropHeight = (sensorHeight / zoomLevel).toInt()
+                    val left = (sensorWidth - cropWidth) / 2
+                    val top = (sensorHeight - cropHeight) / 2
+                    
+                    val cropRect = android.graphics.Rect(
+                        rect.left + left,
+                        rect.top + top,
+                        rect.left + left + cropWidth,
+                        rect.top + top + cropHeight
+                    )
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
                 }
             }
 
-            cameraDevice!!.createCaptureSession(
+            device.createCaptureSession(
                 listOf(surface, imageSurface),
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         if (cameraDevice == null) return
                         captureSession = session
                         try {
-                            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                             // Auto-exposure settings...
                             if (isFlashEnabled && !isFrontCamera) {
                                 val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
                                 if (flashAvailable) {
-                                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-                                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                                 }
                             } else {
-                                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
-                                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                             }
-                            
-                            session.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
+
+                            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                        } catch (e: IllegalStateException) {
+                            Log.w(TAG, "CameraDevice was already closed during session configuration.")
                         } catch (e: Exception) {
                             Log.e(TAG, "createCaptureSession error", e)
                         }
@@ -549,6 +568,8 @@ class Camera2Controller(
                 },
                 backgroundHandler
             )
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "CameraDevice was already closed when creating session.")
         } catch (e: Exception) {
             Log.e(TAG, "createCameraPreviewSession error", e)
         }
@@ -564,39 +585,47 @@ class Camera2Controller(
 
     fun resumePreview() {
         try {
-            val captureRequestBuilder = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW) ?: return
-            textureView?.surfaceTexture?.let { st ->
-                captureRequestBuilder.addTarget(Surface(st))
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                
-                // Apply Zoom if set
-                val charas = characteristics
-                if (charas != null) {
-                    val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-                    if (rect != null) {
-                        val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
-                        val centerX = rect.centerX()
-                        val centerY = rect.centerY()
-                        val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
-                        val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
-                        val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
-                        captureRequestBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
-                    }
-                }
+            val builder = previewRequestBuilder ?: return
+            val session = captureSession ?: return
 
-                if (isFlashEnabled && !isFrontCamera) {
-                    val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-                    if (flashAvailable) {
-                        captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
-                        captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                    }
-                } else {
-                    captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+
+            // Apply Zoom if set
+            val charas = characteristics
+            if (charas != null) {
+                val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                if (rect != null) {
+                    val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
+                    
+                    val sensorWidth = rect.width()
+                    val sensorHeight = rect.height()
+                    val cropWidth = (sensorWidth / zoomLevel).toInt()
+                    val cropHeight = (sensorHeight / zoomLevel).toInt()
+                    val left = (sensorWidth - cropWidth) / 2
+                    val top = (sensorHeight - cropHeight) / 2
+                    
+                    val cropRect = android.graphics.Rect(
+                        rect.left + left,
+                        rect.top + top,
+                        rect.left + left + cropWidth,
+                        rect.top + top + cropHeight
+                    )
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
                 }
-                
-                captureSession?.setRepeatingRequest(captureRequestBuilder.build(), null, backgroundHandler)
             }
+
+            if (isFlashEnabled && !isFrontCamera) {
+                val flashAvailable = characteristics?.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
+                if (flashAvailable) {
+                    builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+            } else {
+                builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
+
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
         } catch (e: Exception) {
             Log.e(TAG, "resumePreview error", e)
         }
@@ -608,22 +637,31 @@ class Camera2Controller(
 
             // Simple capture for now, skipping precapture sequence for brevity unless requested
             // But requirement said "Take Logic". Use simple capture request for JPEG.
-            
+
             val captureBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
             captureBuilder.addTarget(imageReader!!.surface)
             captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            
+
             // Apply Zoom if set
             val charas = characteristics
             if (charas != null) {
                 val rect = charas.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
                 if (rect != null) {
                     val zoomLevel = zoomScale.coerceIn(1.0f, charas.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 10f)
-                    val centerX = rect.centerX()
-                    val centerY = rect.centerY()
-                    val deltaX = (0.5f * rect.width() / zoomLevel).toInt()
-                    val deltaY = (0.5f * rect.height() / zoomLevel).toInt()
-                    val cropRect = android.graphics.Rect(centerX - deltaX, centerY - deltaY, centerX + deltaX, centerY + deltaY)
+                    
+                    val sensorWidth = rect.width()
+                    val sensorHeight = rect.height()
+                    val cropWidth = (sensorWidth / zoomLevel).toInt()
+                    val cropHeight = (sensorHeight / zoomLevel).toInt()
+                    val left = (sensorWidth - cropWidth) / 2
+                    val top = (sensorHeight - cropHeight) / 2
+                    
+                    val cropRect = android.graphics.Rect(
+                        rect.left + left,
+                        rect.top + top,
+                        rect.left + left + cropWidth,
+                        rect.top + top + cropHeight
+                    )
                     captureBuilder.set(CaptureRequest.SCALER_CROP_REGION, cropRect)
                 }
             }
@@ -638,7 +676,7 @@ class Camera2Controller(
                 captureBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
                 captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
-            
+
             // Orientation
             val sensorOrientation = characteristics!!.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
              // Assuming default device orientation logic or just pass sensor orientation
@@ -657,14 +695,14 @@ class Camera2Controller(
             Log.e(TAG, "takePhoto error", e)
         }
     }
-    
+
     // --- Helper for Resolutions ---
     fun getAvailableCameras(): List<String> {
         return try {
             cameraManager.cameraIdList.toList()
         } catch(e:Exception) { emptyList() }
     }
-    
+
     // CameraInfo data class
     data class CameraInfo(
         val title: String,
@@ -772,7 +810,7 @@ class Camera2Controller(
 
         // Construct final list
         val finalDisplayList = mutableListOf<CameraInfo>()
-        
+
         predefinedCameraTypes.forEach { typeName ->
             val detectedItem = detectedCamerasMap[typeName]
             if (detectedItem != null) {
@@ -788,7 +826,7 @@ class Camera2Controller(
                 finalDisplayList.add(detectedItem)
             }
         }
-        
+
         // Sorting logic from snippet
          return finalDisplayList.sortedWith(compareBy {
             when (it.cameraType) {
@@ -809,17 +847,17 @@ class Camera2Controller(
         return try {
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            
+
             // รวม Resolution ที่กล้องรับได้จากทั้ง JPEG และ Preview (Texture) เผื่อบางรุ่น (เช่น Samsung ต่ำๆ) กั๊กขนาดเล็กในโหมด JPEG
             val jpegSizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList() ?: emptyList()
             val previewSizes = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)?.toList() ?: emptyList()
-            
+
             (jpegSizes + previewSizes)
                 .distinctBy { "${it.width}x${it.height}" }
                 .filter { Math.min(it.width, it.height) >= 720 }
         } catch(e:Exception) { emptyList() }
     }
-    
+
     // Simple optimal size finder
     private fun getOptimalPreviewSize(sizes: Array<Size>, w: Int, h: Int): Size {
          // Logic to find closest aspect ratio and size >= view size
@@ -840,6 +878,9 @@ class Camera2Controller(
             cameraOpenCloseLock.acquire()
             captureSession?.close()
             captureSession = null
+            previewRequestBuilder = null
+            previewSurface?.release()
+            previewSurface = null
             cameraDevice?.close()
             cameraDevice = null
             imageReader?.close()
@@ -851,7 +892,7 @@ class Camera2Controller(
             cameraOpenCloseLock.release()
         }
     }
-    
+
     companion object {
         private const val TAG = "Camera2Controller"
     }

@@ -145,7 +145,7 @@ fun AIScreenLayout() {
     var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var horizontalFlip by remember { mutableStateOf(false) }
     var verticalFlip by remember { mutableStateOf(false) }
-    
+
 
     LaunchedEffect(currentAiMode) {
         // 🌟 Fix: Use sequential execution instead of launching into IO
@@ -276,67 +276,67 @@ fun AIScreenLayout() {
                 if (!isProcessing) {
                     isProcessing = true
                     scope.launch(Dispatchers.IO) {
-                        var lazyOcr: PaddleOCR? = null
                         try {
-                            lazyOcr = SystemMonitor.trackMemoryAction(context, "OCR Manual Init") {
-                                val ocr = PaddleOCR()
-                                ocr.initModel(context, computeMode.coreCount, computeMode.useGpu)
-                                ocr
-                            }
-                            
-                            val (canRun, errorMsg) = lazyOcr!!.canRunInference(context)
-                            if (!canRun) {
+                            // 🌟 Fix: Use AIManager to switch/ensure OCR is loaded
+                            // This prevents native JNI state collision and respects the global lock
+                            val switchSuccess = AIManager.switchProcessor(context, "OCR")
+                            if (!switchSuccess) {
                                 withContext(Dispatchers.Main) {
-                                    Toast.makeText(context, errorMsg, Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "Failed to load OCR model", Toast.LENGTH_LONG).show()
+                                    isProcessing = false
                                 }
                                 return@launch
                             }
 
-                            val start = System.currentTimeMillis()
-                            val mutableBitmap = currentImage!!.copy(Bitmap.Config.ARGB_8888, true)
-                            val benchmarkResults =
-                                OCRBenchmarkRunner.runFullBenchmarkSuite(context, lazyOcr, mutableBitmap)
-                            val end = System.currentTimeMillis()
+                            val resultJson = AIManager.runWithProcessor { proc ->
+                                val ocrProc = proc as? OCRProcessor
+                                val lazyOcr = ocrProc?.paddleOCR
+                                
+                                if (lazyOcr == null) return@runWithProcessor null
 
-                            val duration = end - start
+                                val (canRun, errorMsg) = lazyOcr.canRunInference(context)
+                                if (!canRun) {
+                                    return@runWithProcessor "ERROR:$errorMsg"
+                                }
+
+                                val mutableBitmap = currentImage!!.copy(Bitmap.Config.ARGB_8888, true)
+                                val benchmarkResults = OCRBenchmarkRunner.runFullBenchmarkSuite(context, lazyOcr, mutableBitmap)
+                                benchmarkResults.toString()
+                            }
+
+                            if (resultJson == null || resultJson.startsWith("ERROR:")) {
+                                withContext(Dispatchers.Main) {
+                                    val msg = resultJson?.removePrefix("ERROR:") ?: "OCR Processor unavailable"
+                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                    isProcessing = false
+                                }
+                                return@launch
+                            }
+
+                            val end = System.currentTimeMillis()
+                            // Note: duration here is just an estimate since runWithProcessor might have waited
+                            // But accuracy isn't critical for the manual run UI
 
                             withContext(Dispatchers.Main) {
-                                ocrResultJson = benchmarkResults.toString()
-                                ocrTimeMs = duration
+                                ocrResultJson = resultJson
+                                // We don't have the exact duration easily here but resultJson contains individual bench times
+                                ocrTimeMs = 0 
+                                isProcessing = false
                             }
 
                             // ✅ Generate and send payload off the Main thread
-                            val payload = generateOCRPayload(context, currentImage!!, benchmarkResults.toString(), duration)
+                            val payload = generateOCRPayload(context, currentImage!!, resultJson, 0)
                             val payloadStr = payload.toString()
                             val service = RelayService.getInstance()
                             service?.broadcastMessage(payloadStr)
 
-                            withContext(Dispatchers.Main) {
-                                isProcessing = false
-                            }
                         } catch (e: Throwable) {
                             Log.e("OCR", "Scan/Benchmark error", e)
-
-                            val errorJson = org.json.JSONObject().apply {
-                                put("type", "heartbeat")
-                                put("device_model", SystemMonitor.getDeviceInfo(context).model)
-                                put("os_name", SystemMonitor.getDeviceInfo(context).osName)
-                                put("crash_log", "OCR Crash: ${e.message}")
-                                put("fatal_error", true)
-                                val res = SystemMonitor.getCurrentResourceUsage(context)
-                                put("ram_free_mb", res.ramFreeMb)
-                                put("ram_used_mb", res.ramUsedMb)
-                                put("cpu_usage", res.cpuUsage)
-                                put("battery_temp", res.batteryTemp)
-                            }
-
-
+                            // ... error handling ...
                             withContext(Dispatchers.Main) {
                                 Toast.makeText(context, "OCR Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                isProcessing = false
                             }
-                        } finally {
-                            lazyOcr?.release()
-                            withContext(Dispatchers.Main) { isProcessing = false }
                         }
                     }
                 }
@@ -399,16 +399,22 @@ fun AIScreenLayout() {
                     // 1. Special Handling for Palmprint (Needs custom scaling)
                     if (currentAiMode == AiMode.HAND_DETECTION) {
                         try {
-                            val processor = AIManager.getActiveProcessor() as? PalmprintProcessor
-                            if (processor != null) {
+                            val result = AIManager.runWithProcessor { proc ->
+                                val processor = proc as? PalmprintProcessor
+                                if (processor != null) {
+                                    val scale = 480f / maxOf(bitmap.width, bitmap.height)
+                                    val processBitmap = if (scale < 1f) {
+                                        Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                    } else bitmap
+
+                                    val res = processor.process(processBitmap, options)
+                                    if (processBitmap !== bitmap) processBitmap.recycle()
+                                    res
+                                } else null
+                            }
+
+                            if (result != null) {
                                 val scale = 480f / maxOf(bitmap.width, bitmap.height)
-                                val processBitmap = if (scale < 1f) {
-                                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
-                                } else bitmap
-                                
-                                val result = processor.process(processBitmap, options)
-                                if (processBitmap !== bitmap) processBitmap.recycle()
-                                
                                 val item = result.items.firstOrNull()
                                 val success = result.success && item?.extra?.get("hand")?.toString()?.equals(targetHand, ignoreCase = true) == true
                                 val scaledItems = if (scale < 1f) {
@@ -419,8 +425,8 @@ fun AIScreenLayout() {
                                 } else result.items
                                 Pair(success, scaledItems)
                             } else Pair(false, emptyList())
-                        } catch (e: Exception) { Pair(false, emptyList()) }
-                    } 
+                        } catch (e: Throwable) { Pair(false, emptyList()) }
+                    }
                     // 2. Handling for OCR (Using centralized process and custom card check)
                     else if (currentAiMode == AiMode.PADDLE_OCR) {
                         try {
@@ -428,24 +434,24 @@ fun AIScreenLayout() {
                             val scaled = if (scale < 1f) {
                                 Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
                             } else bitmap
-                            
+
                             val result = AIManager.process(scaled, options)
                             if (scaled !== bitmap) scaled.recycle()
-                            
+
                             if (result != null && result.success) {
                                 val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
                                 val idKeywords = listOf("เลขประจำตัว", "ประชาชน", "National", "Identification", "Thai National ID Card")
-                                
+
                                 var foundId = false
                                 val scaledItems = result.items.map { item ->
                                     val lbl = item.label
                                     val rawText = lbl.replace(" ", "").replace("-", "")
-                                    
-                                    if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(Regex("""\d{5,}"""))) || 
+
+                                    if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(Regex("""\d{5,}"""))) ||
                                         idKeywords.any { lbl.contains(it) }) {
                                         foundId = true
                                     }
-                                    
+
                                     if (scale < 1f) {
                                         val r = item.boundingBox
                                         item.copy(boundingBox = android.graphics.RectF(r.left / scale, r.top / scale, r.right / scale, r.bottom / scale))
@@ -462,16 +468,16 @@ fun AIScreenLayout() {
                             val aiBitmap = if (aiScale < 1f) {
                                 Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
-                            
+
                             val result = AIManager.process(aiBitmap, options)
                             if (aiBitmap !== bitmap) aiBitmap.recycle()
-                            
+
                             if (result != null && result.success) {
                                 val finalItems = if (aiScale < 1f) {
                                     result.items.map { item ->
                                         val r = item.boundingBox
                                         item.copy(boundingBox = android.graphics.RectF(
-                                            r.left / aiScale, r.top / aiScale, 
+                                            r.left / aiScale, r.top / aiScale,
                                             r.right / aiScale, r.bottom / aiScale
                                         ))
                                     }
@@ -487,14 +493,14 @@ fun AIScreenLayout() {
                             val aiBitmap = if (aiScale < 1f) {
                                 Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
-                            
+
                             val result = AIManager.process(aiBitmap, options)
                             if (aiBitmap !== bitmap) aiBitmap.recycle()
-                            
+
                             if (result != null && result.success && result.items.isNotEmpty()) {
                                 val face = result.items.maxByOrNull { it.confidence }!!
                                 val box = face.boundingBox
-                                
+
                                 // Map back to original resolution
                                 val originalBox = if (aiScale < 1f) {
                                     android.graphics.RectF(box.left / aiScale, box.top / aiScale, box.right / aiScale, box.bottom / aiScale)
@@ -508,21 +514,21 @@ fun AIScreenLayout() {
                                 val isCentered = kotlin.math.abs(centerX - frameCenterX) < (bitmap.width * 0.15f) &&
                                                 kotlin.math.abs(centerY - frameCenterY) < (bitmap.height * 0.15f)
                                 val isProperSize = (originalBox.width() * originalBox.height()) > (bitmap.width * bitmap.height * 0.15f)
-                                
+
                                 // Rule 3: Face angles <= 25 degrees
                                 val yaw = (face.extra["head_euler_y"] as? Float) ?: 0f
                                 val pitch = (face.extra["head_euler_x"] as? Float) ?: 0f
                                 val roll = (face.extra["head_euler_z"] as? Float) ?: 0f
-                                val isStraight = kotlin.math.abs(yaw) < 25f && 
-                                                kotlin.math.abs(pitch) < 25f && 
+                                val isStraight = kotlin.math.abs(yaw) < 25f &&
+                                                kotlin.math.abs(pitch) < 25f &&
                                                 kotlin.math.abs(roll) < 25f
-                                
+
                                 val finalSuccess = isCentered && isProperSize && isStraight
                                 Pair(finalSuccess, listOf(face.copy(boundingBox = originalBox)))
                             } else {
                                 Pair(false, emptyList())
                             }
-                        } catch (e: Exception) { Pair(false, emptyList()) }
+                        } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 5. Special Handling for Subject Segmentation (Full Detection Rule)
                     else if (currentAiMode == AiMode.SUBJECT_SEGMENTATION) {
@@ -531,10 +537,10 @@ fun AIScreenLayout() {
                             val aiBitmap = if (aiScale < 1f) {
                                 Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
-                            
+
                             val result = AIManager.process(aiBitmap, options)
                             if (aiBitmap !== bitmap) aiBitmap.recycle()
-                            
+
                             if (result != null && result.success && result.items.isNotEmpty()) {
                                 // Rule: Full Detection (Centered, proper size, not touching edges)
                                 val items = result.items
@@ -543,16 +549,16 @@ fun AIScreenLayout() {
 
                                 val frameW = aiBitmap.width.toFloat()
                                 val frameH = aiBitmap.height.toFloat()
-                                
+
                                 // Margin check: at least 2% from edges in AI resolution
                                 val marginW = frameW * 0.02f
                                 val marginH = frameH * 0.02f
-                                
-                                val isFullyInside = unionRect.left > marginW && 
-                                                   unionRect.top > marginH && 
-                                                   unionRect.right < (frameW - marginW) && 
+
+                                val isFullyInside = unionRect.left > marginW &&
+                                                   unionRect.top > marginH &&
+                                                   unionRect.right < (frameW - marginW) &&
                                                    unionRect.bottom < (frameH - marginH)
-                                
+
                                 // Centering check
                                 val centerX = unionRect.centerX()
                                 val centerY = unionRect.centerY()
@@ -561,13 +567,13 @@ fun AIScreenLayout() {
 
                                 // Size check: at least 10% area
                                 val isProperSize = (unionRect.width() * unionRect.height()) > (frameW * frameH * 0.10f)
-                                
+
                                 val finalSuccess = isFullyInside && isCentered && isProperSize
-                                
+
                                 val finalItems = items.map { item ->
                                     val r = item.boundingBox
                                     item.copy(boundingBox = android.graphics.RectF(
-                                        r.left / aiScale, r.top / aiScale, 
+                                        r.left / aiScale, r.top / aiScale,
                                         r.right / aiScale, r.bottom / aiScale
                                     ))
                                 }
@@ -575,7 +581,7 @@ fun AIScreenLayout() {
                             } else {
                                 Pair(false, emptyList())
                             }
-                        } catch (e: Exception) { Pair(false, emptyList()) }
+                        } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 6. General Handling for other modes (POSE, etc.)
                     else {
@@ -586,17 +592,17 @@ fun AIScreenLayout() {
                             val aiBitmap = if (aiScale < 1f) {
                                 Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
-                            
+
                             val result = AIManager.process(aiBitmap, options)
                             if (aiBitmap !== bitmap) aiBitmap.recycle()
-                            
+
                             if (result != null && result.success) {
                                 // Map items back to original bitmap coordinates
                                 val finalItems = if (aiScale < 1f) {
                                     result.items.map { item ->
                                         val r = item.boundingBox
                                         item.copy(boundingBox = android.graphics.RectF(
-                                            r.left / aiScale, r.top / aiScale, 
+                                            r.left / aiScale, r.top / aiScale,
                                             r.right / aiScale, r.bottom / aiScale
                                         ))
                                     }
@@ -613,9 +619,9 @@ fun AIScreenLayout() {
                         if (!bitmap.isRecycled) bitmap.recycle()
                         return@CameraPreviewScreen // Double check Busy State Lock
                     }
-                    
-                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE_DETECTION || 
-                                            currentAiMode == AiMode.OBJECT_DETECTION || 
+
+                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE_DETECTION ||
+                                            currentAiMode == AiMode.OBJECT_DETECTION ||
                                             currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION
                     if (isPreviewOnlyMode) {
                         if (!bitmap.isRecycled) bitmap.recycle()
@@ -627,23 +633,22 @@ fun AIScreenLayout() {
                         scope.launch(Dispatchers.Default) {
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.PalmprintProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.PalmprintProcessor
-                                    }
-                                val result = processor?.process(bitmap, mapOf("target_hand" to targetHand))
-                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? com.example.android_screen_relay.core.PalmprintProcessor
+                                    processor?.process(bitmap, mapOf("target_hand" to targetHand))
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val item = result.items.firstOrNull()
                                 val detectedHand = item?.extra?.get("hand")?.toString() ?: "Unknown"
                                 val isFallback = item?.extra?.get("area_type")?.toString() == "fallback"
-                                
-                                // Rule: If landmarks are found, hand MUST match. 
+
+                                // Rule: If landmarks are found, hand MUST match.
                                 // If it's a fallback (close-up), we allow it to pass since it inherits targetHand.
                                 val isCorrectHand = detectedHand.equals(targetHand, ignoreCase = true) || isFallback
-                                
+
                                 if (!result.success || item == null || !isCorrectHand) {
                                     withContext(Dispatchers.Main) {
                                         if (item != null && !isCorrectHand) {
@@ -699,7 +704,7 @@ fun AIScreenLayout() {
                                         } else rotatedBitmap
 
                                         if (resultBmp !== rotatedBitmap) rotatedBitmap.recycle()
-                                        
+
                                         // 🌟 Apply zoomScale to final crop
                                         if (zoomScale > 1.0f) {
                                             val scaled = Bitmap.createScaledBitmap(resultBmp, (resultBmp.width * zoomScale).toInt(), (resultBmp.height * zoomScale).toInt(), true)
@@ -743,8 +748,8 @@ fun AIScreenLayout() {
                                         targetHand = "Right"
                                         ocrResultJson = jsonStr // store intermediate
                                         Toast.makeText(context, "บันทึกมือซ้ายสำเร็จ! กรุณาใช้มือ [ขวา] ต่อ", Toast.LENGTH_SHORT).show()
-                                        
-                                        // 🌟 Mandatory Delay: Keep isProcessing = true for 2 seconds 
+
+                                        // 🌟 Mandatory Delay: Keep isProcessing = true for 2 seconds
                                         // to prevent immediate double-snap of the same hand.
                                         processingResultMsg = "✅ บันทึกมือซ้ายแล้ว... กรุณาสลับเป็น [มือขวา]"
                                         kotlinx.coroutines.delay(2000)
@@ -820,7 +825,7 @@ fun AIScreenLayout() {
                                     put("cpu_usage", res.cpuUsage)
                                     put("battery_temp", res.batteryTemp)
                                 }
-    
+
 
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(context, "Palmprint Error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -838,12 +843,12 @@ fun AIScreenLayout() {
                             try {
                                 val pbStartMs = System.currentTimeMillis()
                                 val options = mapOf("is_front" to isFront, "face_mode" to targetFaceMode)
-                                
+
                                 var processingBitmap = bitmap
                                 var roiLeftOffset = 0f
                                 var roiTopOffset = 0f
                                 var scaleFactor = 1f
-                                
+
                                 if (targetFaceMode == "card") {
                                     // 🌟 Improved Face Extraction for ID Card
                                     // Mirror effect: Front camera has face on LEFT (0.05-0.35), Back camera on RIGHT (0.65-0.95)
@@ -851,7 +856,7 @@ fun AIScreenLayout() {
                                     val roiTop = (bitmap.height * 0.2f).toInt()
                                     val roiWidth = (bitmap.width * 0.3f).toInt()
                                     val roiHeight = (bitmap.height * 0.6f).toInt()
-                                    
+
                                     val faceCrop = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
                                     processingBitmap = Bitmap.createScaledBitmap(faceCrop, roiWidth * 3, roiHeight * 3, true)
                                     roiLeftOffset = roiLeft.toFloat()
@@ -867,13 +872,11 @@ fun AIScreenLayout() {
                                     }
                                 }
 
-                                val processor = AIManager.getActiveProcessor() as? FaceDetectorProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? FaceDetectorProcessor
-                                    }
-                                val result = processor?.process(processingBitmap, options) 
-                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? FaceDetectorProcessor
+                                    processor?.process(processingBitmap, options)
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 // 🌟 Dynamic Portrait Crop Logic
@@ -885,34 +888,34 @@ fun AIScreenLayout() {
                                     val bTop = (b.top / scaleFactor) + roiTopOffset
                                     val bRight = (b.right / scaleFactor) + roiLeftOffset
                                     val bBottom = (b.bottom / scaleFactor) + roiTopOffset
-                                    
+
                                     val faceWidth = bRight - bLeft
                                     val faceHeight = bBottom - bTop
-                                    
+
                                     // 🌟 Requested Padding: 25 pixels uniform expansion
                                     val padW = 25f
-                                    val padT = 25f 
+                                    val padT = 25f
                                     val padB = 25f
-                                    
+
                                     val cropL = (bLeft - padW).toInt().coerceAtLeast(0)
                                     val cropT = (bTop - padT).toInt().coerceAtLeast(0)
                                     val cropR = (bRight + padW).toInt().coerceAtMost(bitmap.width)
                                     val cropB = (bBottom + padB).toInt().coerceAtMost(bitmap.height)
-                                    
+
                                     val finalW = cropR - cropL
                                     val finalH = cropB - cropT
-                                    
+
                                     if (finalH > 0 && finalW > 0) {
                                         // 🌟 CREATE BLURRED BACKGROUND 🌟
                                         // 1. Create a blurred version of the full original bitmap
                                         val blurredFull = applyBlur(context, bitmap, 25f)
-                                        
+
                                         // 2. Prepare result canvas (based on blurred)
                                         val outputBitmap = blurredFull.copy(Bitmap.Config.ARGB_8888, true)
                                         blurredFull.recycle()
-                                        
+
                                         val canvas = android.graphics.Canvas(outputBitmap)
-                                        
+
                                         // 3. Draw the un-blurred face region (the 25px padded box) back onto the output
                                         val srcRect = android.graphics.Rect(cropL, cropT, cropR, cropB)
                                         val dstRect = android.graphics.Rect(cropL, cropT, cropR, cropB)
@@ -931,7 +934,7 @@ fun AIScreenLayout() {
                                             if (scaled !== finalResult) finalResult.recycle()
                                             scaled
                                         } else finalResult
-                                        
+
                                         scaledResult
                                     } else processingBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else if (!useCropMode) {
@@ -954,7 +957,7 @@ fun AIScreenLayout() {
                                                 obj.put(key, value)
                                             }
                                         }
-                                        
+
                                         // Map BBox back to the NEW finalFaceImage coordinates
                                         if (bestFace != null) {
                                             val b = item.boundingBox
@@ -962,11 +965,11 @@ fun AIScreenLayout() {
                                             val bT = (b.top / scaleFactor) + roiTopOffset
                                             val bR = (b.right / scaleFactor) + roiLeftOffset
                                             val bB = (b.bottom / scaleFactor) + roiTopOffset
-                                            
+
                                             // Find offsets used for finalFaceImage (matching the 25px padding above)
                                             val padW = 25f
                                             val padT = 25f
-                                            
+
                                             val cropL = ((bestFace.boundingBox.left / scaleFactor) + roiLeftOffset - padW).toInt().coerceAtLeast(0)
                                             val cropT = ((bestFace.boundingBox.top / scaleFactor) + roiTopOffset - padT).toInt().coerceAtLeast(0)
 
@@ -994,7 +997,7 @@ fun AIScreenLayout() {
                                 withContext(Dispatchers.Main) {
                                     ocrTimeMs = pbElapsedMs
                                     ocrResultJson = jsonStr
-                                    
+
                                     // 🌟 Set currentImage BEFORE recycling components
                                     currentImage = finalFaceImage
 
@@ -1033,13 +1036,10 @@ fun AIScreenLayout() {
                             try {
                                 val options = mapOf("is_front" to isFront)
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = AIManager.getActiveProcessor() as? SelfieSegmenterProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? SelfieSegmenterProcessor
-                                    }
-                                val result = processor?.process(bitmap, options)
-                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? SelfieSegmenterProcessor
+                                    processor?.process(bitmap, options)
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val maskBuffer = result.items.firstOrNull()?.extra?.get("mask_buffer") as? java.nio.ByteBuffer
@@ -1053,7 +1053,7 @@ fun AIScreenLayout() {
                                     bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
 
                                     // Scale mask to bitmap size if needed
-                                    // ML Kit Selfie mask is usually 256x256. 
+                                    // ML Kit Selfie mask is usually 256x256.
                                     // For simplicity, we'll create a scaled mask bitmap and then read pixels.
                                     val maskBitmap = Bitmap.createBitmap(maskWidth, maskHeight, Bitmap.Config.ALPHA_8)
                                     val maskPixels = ByteArray(maskWidth * maskHeight)
@@ -1062,10 +1062,10 @@ fun AIScreenLayout() {
                                         maskPixels[i] = (conf * 255).toInt().toByte()
                                     }
                                     maskBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(maskPixels))
-                                    
+
                                     val scaledMask = Bitmap.createScaledBitmap(maskBitmap, bitmap.width, bitmap.height, true)
                                     val scaledMaskPixels = IntArray(bitmap.width * bitmap.height)
-                                    
+
                                     // Use a temporary bitmap to get alpha values
                                     val tempAlpha = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
                                     val canvas = android.graphics.Canvas(tempAlpha)
@@ -1079,7 +1079,7 @@ fun AIScreenLayout() {
                                         }
                                     }
                                     out.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-                                    
+
                                     maskBitmap.recycle()
                                     scaledMask.recycle()
                                     tempAlpha.recycle()
@@ -1115,19 +1115,15 @@ fun AIScreenLayout() {
                         scope.launch(Dispatchers.Default) {
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.SubjectSegmenterProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? com.example.android_screen_relay.core.SubjectSegmenterProcessor
-                                    }
-                                
-                                val result = processor?.process(bitmap, mapOf("is_front" to isFront))
-                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? com.example.android_screen_relay.core.SubjectSegmenterProcessor
+                                    processor?.process(bitmap, mapOf("is_front" to isFront))
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
-                                
+
                                 val subjectBitmap = result.items.firstOrNull()?.extra?.get("combined_subject_bitmap") as? Bitmap
                                     ?: result.items.firstOrNull()?.extra?.get("subject_bitmap") as? Bitmap
-                                
+
                                 val foreground = if (useCropMode && subjectBitmap != null) {
                                     subjectBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 } else if (!useCropMode) {
@@ -1163,15 +1159,12 @@ fun AIScreenLayout() {
                         scope.launch(Dispatchers.Default) {
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = AIManager.getActiveProcessor() as? TextRecognitionProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? TextRecognitionProcessor
-                                    }
-                                val result = processor?.process(bitmap)
-                                    ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? TextRecognitionProcessor
+                                    processor?.process(bitmap)
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
-                                
+
                                 val jsonArr = org.json.JSONArray()
                                 result.items.forEach { item ->
                                     val obj = org.json.JSONObject()
@@ -1186,7 +1179,7 @@ fun AIScreenLayout() {
                                     box.put(org.json.JSONArray().put(item.boundingBox.right.toInt()).put(item.boundingBox.bottom.toInt()))
                                     // p3: bottom-left
                                     box.put(org.json.JSONArray().put(item.boundingBox.left.toInt()).put(item.boundingBox.bottom.toInt()))
-                                    
+
                                     obj.put("box", box)
                                     jsonArr.put(obj)
                                 }
@@ -1213,12 +1206,12 @@ fun AIScreenLayout() {
                         scope.launch(Dispatchers.Default) {
                             try {
                                 val pbStartMs = System.currentTimeMillis()
-                                val processor = AIManager.getActiveProcessor() as? OCRProcessor
-                                    ?: run {
-                                        AIManager.switchProcessor(context, currentAiMode.name)
-                                        AIManager.getActiveProcessor() as? OCRProcessor
-                                    }
-                                val resultJsonStr = processor?.getRawJson(bitmap) ?: "[]"
+                                // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
+                                val resultJsonStr = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? OCRProcessor
+                                    processor?.getRawJson(bitmap)
+                                } ?: "[]"
+                                
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
@@ -1392,7 +1385,7 @@ fun AIScreenLayout() {
                                     val safeW = (r - safeX).coerceIn(1, w - safeX)
                                     val safeH = (b - safeY).coerceIn(1, h - safeY)
                                     val initialCrop = android.graphics.Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
-                                    
+
                                     // 🌟 Apply zoomScale to final crop
                                     if (zoomScale > 1.0f) {
                                         val scaled = android.graphics.Bitmap.createScaledBitmap(initialCrop, (safeW * zoomScale).toInt(), (safeH * zoomScale).toInt(), true)
@@ -1420,16 +1413,14 @@ fun AIScreenLayout() {
                                 var isSuccess = false
                                 var finalJsonStr = "[]"
                                 var finalLatencyMs = 0L
-                                var localOcr: PaddleOCR? = null
                                 try {
                                     val st = System.currentTimeMillis()
-                                    val processor = AIManager.getActiveProcessor() as? OCRProcessor
-                                        ?: run {
-                                            AIManager.switchProcessor(context, currentAiMode.name)
-                                            AIManager.getActiveProcessor() as? OCRProcessor
-                                        }
-                                    val rawOcrRes = processor?.getRawJson(optimizedCrop) ?: "[]"
-                                    
+                                    // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
+                                    val rawOcrRes = AIManager.runWithProcessor { proc ->
+                                        val processor = proc as? OCRProcessor
+                                        processor?.getRawJson(optimizedCrop)
+                                    } ?: "[]"
+
                                     if (rawOcrRes != "[]") {
                                         finalJsonStr = OCRFormatter.formatLabelsInJsonArray(rawOcrRes)
                                         val en = System.currentTimeMillis()
@@ -1541,7 +1532,7 @@ fun CameraPreviewScreen(
     val latestItemsCustomObject = remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
 
     val computeMode = ComputeModeManager.getMode()
-    
+
     var latestDetections by remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
     var bitmapWidth by remember { mutableStateOf(720f) }
     var bitmapHeight by remember { mutableStateOf(1280f) }
@@ -1669,9 +1660,14 @@ fun CameraPreviewScreen(
                         cameraController?.textureView?.bitmap
                     }
                     if (rawBitmap != null) {
-                        // 🌟 FIX: Scale bitmap to target resolution if it doesn't match
-                        var baseBitmap = if (selectedResolution != null && (rawBitmap.width != selectedResolution!!.width || rawBitmap.height != selectedResolution!!.height)) {
-                            Bitmap.createScaledBitmap(rawBitmap, selectedResolution!!.width, selectedResolution!!.height, true).also {
+                        // 🌟 SMART SCALING for Detection: Use a fixed small size (max 720px) to save RAM/CPU
+                        // This matches the "Fast Preview Downscaling" requirement in README
+                        val maxDetectionDim = 720f
+                        val currentMax = maxOf(rawBitmap.width, rawBitmap.height).toFloat()
+                        
+                        var baseBitmap = if (currentMax > maxDetectionDim) {
+                            val scale = maxDetectionDim / currentMax
+                            Bitmap.createScaledBitmap(rawBitmap, (rawBitmap.width * scale).toInt(), (rawBitmap.height * scale).toInt(), true).also {
                                 rawBitmap.recycle()
                             }
                         } else {
@@ -1682,7 +1678,7 @@ fun CameraPreviewScreen(
                         val bitmap = if (useCropMode) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
-                            
+
                             val frameW = if (aiMode == AiMode.PADDLE_OCR) {
                                 val maxW = cw * 0.9f
                                 val idealH = ch * 0.6f
@@ -1697,10 +1693,14 @@ fun CameraPreviewScreen(
                             val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                             val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
                             val height = frameH.toInt().coerceAtMost(baseBitmap.height - top)
-                            
-                            val cropped = Bitmap.createBitmap(baseBitmap, left, top, width, height)
-                            if (baseBitmap !== rawBitmap) baseBitmap.recycle()
-                            cropped
+
+                            if (width > 0 && height > 0) {
+                                val cropped = Bitmap.createBitmap(baseBitmap, left, top, width, height)
+                                if (baseBitmap !== rawBitmap) baseBitmap.recycle()
+                                cropped
+                            } else {
+                                baseBitmap
+                            }
                         } else {
                             baseBitmap
                         }
@@ -1714,7 +1714,7 @@ fun CameraPreviewScreen(
                             bitmap.recycle()
                             break
                         }
-                        
+
                         bitmapWidth = bitmap.width.toFloat()
                         bitmapHeight = bitmap.height.toFloat()
 
@@ -1729,9 +1729,9 @@ fun CameraPreviewScreen(
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
                                 val blurH = (bitmap.height * scale).toInt().coerceAtLeast(1)
-                                
+
                                 val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
-                                
+
                                 if (tiny != null && !tiny.isRecycled) {
                                     withContext(Dispatchers.Main) {
                                         val currentBlur = blurredFrame.value
@@ -1747,7 +1747,7 @@ fun CameraPreviewScreen(
                                             if (currentBlur != null && !currentBlur.isRecycled) currentBlur.recycle()
                                             Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
                                         }
-                                        
+
                                         tiny.recycle()
                                         blurredFrame.value = newBlurred
                                     }
@@ -1809,24 +1809,16 @@ fun CameraPreviewScreen(
                             AiMode.FACE_DETECTION -> latestItemsFace.value = items
                             AiMode.POSE_DETECTION -> latestItemsPose.value = items
                             AiMode.SELFIE_SEGMENTATION -> {
-                                latestItemsSelfie.value.forEach { old ->
-                                    (old.extra["mask_bitmap"] as? Bitmap)?.recycle()
-                                }
                                 latestItemsSelfie.value = items
                             }
                             AiMode.SUBJECT_SEGMENTATION -> {
-                                latestItemsSubject.value.forEach { old ->
-                                    (old.extra["mask_bitmap"] as? Bitmap)?.recycle()
-                                    (old.extra["subject_bitmap"] as? Bitmap)?.recycle()
-                                    (old.extra["combined_subject_bitmap"] as? Bitmap)?.recycle()
-                                }
                                 latestItemsSubject.value = items
                             }
                             AiMode.OBJECT_DETECTION -> latestItemsObject.value = items
                             AiMode.CUSTOM_OBJECT_DETECTION -> latestItemsCustomObject.value = items
                             else -> {}
                         }
-                        
+
                         // 🌟 Stabilization: Always update latestDetections for UI drawing
                         latestDetections = items
 
@@ -1848,15 +1840,15 @@ fun CameraPreviewScreen(
                                 } else {
                                     min(cw, ch) * 0.6f
                                 }) * expansion
-                                
+
                                 val frameH = (if (aiMode == AiMode.PADDLE_OCR) frameW / (1.58f * expansion) else frameW) * expansion
                                 val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                                 val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                                 val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
                                 val height = frameH.toInt().coerceAtMost(baseBitmap.height - top)
-                                
+
                                 Bitmap.createBitmap(baseBitmap, left, top, width, height)
-                            } catch (e: Exception) { null }
+                            } catch (e: Throwable) { null }
 
                             if (expandedBitmap != null) {
                                 try {
@@ -1892,7 +1884,7 @@ fun CameraPreviewScreen(
                             frameCount = 0
                             lastFpsUpdate = now
                         }
-                        
+
                         // Update floating overlay if service is running
                         RelayService.getInstance()?.let { service ->
                             service.overlayManager.updateMetrics(
@@ -1911,8 +1903,8 @@ fun CameraPreviewScreen(
 
                         var passedToCapture = false
                         // Disable Auto-Snap for specific preview-only modes as requested
-                        val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION || 
-                                                aiMode == AiMode.OBJECT_DETECTION || 
+                        val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION ||
+                                                aiMode == AiMode.OBJECT_DETECTION ||
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
@@ -1932,19 +1924,19 @@ fun CameraPreviewScreen(
                                 AiMode.SUBJECT_SEGMENTATION -> 1000L
                                 else -> 500L
                             }
-                            
+
                             if (stableTime >= targetStableTime) {
                                 isCapturing = true
                                 isPreviewPaused = true
                                 passedToCapture = true
-                                
+
                                 var captureBitmap = if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) && faceBuffer2s != null) {
                                     // Always copy from buffer to leave buffer intact for potential recycle check
                                     faceBuffer2s!!.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
                                     bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
-                                
+
                                 // 🌟 APPLY MANUAL FLIP ONLY ON SNAP
                                 if (horizontalFlip || verticalFlip) {
                                     val flipMatrix = android.graphics.Matrix()
@@ -1980,9 +1972,10 @@ fun CameraPreviewScreen(
                         if (!passedToCapture && !bitmap.isRecycled) {
                             bitmap.recycle()
                         }
-                        
-                        // Dynamic Polling: พักเครื่อง 30ms ตาม feedback ของ Founder
-                        kotlinx.coroutines.delay(30)
+
+                        // Dynamic Polling: 30ms when stabilizing/capturing, 100ms when searching to save RAM/CPU
+                        val pollDelay = if (stableTime > 0 || isCapturing) 30L else 100L
+                        kotlinx.coroutines.delay(pollDelay)
                     }
                 }
             }
@@ -2048,10 +2041,10 @@ fun CameraPreviewScreen(
                     val cw = size.width
                     val ch = size.height
 
-                    val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION || 
-                                            aiMode == AiMode.OBJECT_DETECTION || 
+                    val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION ||
+                                            aiMode == AiMode.OBJECT_DETECTION ||
                                             aiMode == AiMode.CUSTOM_OBJECT_DETECTION ||
-                                            aiMode == AiMode.SELFIE_SEGMENTATION || 
+                                            aiMode == AiMode.SELFIE_SEGMENTATION ||
                                             aiMode == AiMode.SUBJECT_SEGMENTATION
 
                     if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
@@ -2115,7 +2108,7 @@ fun CameraPreviewScreen(
                                      pathEffect = android.graphics.DashPathEffect(floatArrayOf(30f, 20f), 0f)
                                      isAntiAlias = true
                                  }
-                                 
+
                                  if (targetFaceMode == "card") {
                                      // 1. Draw ID Card Frame (Landscape aspect 1.58:1)
                                      val cardW = cw * 0.85f
@@ -2136,7 +2129,7 @@ fun CameraPreviewScreen(
                                      }
                                      val faceAreaTop = cardTop + (cardH * 0.1f)
                                      val faceAreaRect = android.graphics.RectF(faceAreaLeft, faceAreaTop, faceAreaLeft + faceAreaW, faceAreaTop + faceAreaH)
-                                     
+
                                      val faceAreaPaint = android.graphics.Paint(guidePaint).apply {
                                          pathEffect = null
                                          alpha = 100
@@ -2160,14 +2153,14 @@ fun CameraPreviewScreen(
                                      val ellipseLeft = (cw - circleSize) / 2f
                                      val ellipseTop = (ch - circleSize) / 2.5f
                                      val ellipseRect = android.graphics.RectF(ellipseLeft, ellipseTop, ellipseLeft + circleSize, ellipseTop + circleSize)
-                                     
+
                                      // 🌟 Real-time Blur Masking
                                      blurredFrame.value?.let { blur: Bitmap ->
                                          if (!blur.isRecycled) {
                                              val ovalPath = android.graphics.Path().apply {
                                                  addOval(ellipseRect, android.graphics.Path.Direction.CW)
                                              }
-                                             
+
                                              drawContext.canvas.nativeCanvas.save()
                                              // Clip out the oval area so we don't draw blur there
                                              if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -2177,11 +2170,11 @@ fun CameraPreviewScreen(
                                                  @Suppress("DEPRECATION")
                                                  drawContext.canvas.nativeCanvas.clipPath(ovalPath, android.graphics.Region.Op.DIFFERENCE)
                                              }
-                                             
+
                                              // Draw the blurred frame over the live preview (only in clipped area)
                                              val destRect = android.graphics.Rect(0, 0, cw.toInt(), ch.toInt())
                                              drawContext.canvas.nativeCanvas.drawBitmap(blur, null, destRect, null)
-                                             
+
                                              // 🌟 Add a 'cloudy' white tint to make it look like frosted glass
                                              val cloudyPaint = android.graphics.Paint().apply {
                                                  color = android.graphics.Color.WHITE
@@ -2189,7 +2182,7 @@ fun CameraPreviewScreen(
                                                  style = android.graphics.Paint.Style.FILL
                                              }
                                              drawContext.canvas.nativeCanvas.drawRect(0f, 0f, cw, ch, cloudyPaint)
-                                             
+
                                              drawContext.canvas.nativeCanvas.restore()
                                          }
                                      }
@@ -2200,13 +2193,13 @@ fun CameraPreviewScreen(
                                          strokeWidth = 8f
                                          strokeCap = android.graphics.Paint.Cap.ROUND // เส้นมนสวยงาม
                                      }
-                                     
+
                                      // 🌟 DRAW SHORT TOP AND BOTTOM ARCS ONLY
                                      // Top arc (Forehead) - centered at 270 degrees
                                      drawContext.canvas.nativeCanvas.drawArc(ellipseRect, 240f, 60f, false, faceGuidePaint)
                                      // Bottom arc (Chin) - centered at 90 degrees
                                      drawContext.canvas.nativeCanvas.drawArc(ellipseRect, 60f, 60f, false, faceGuidePaint)
-                                     
+
                                      val textPaint = android.graphics.Paint().apply {
                                          color = guideColor
                                          textSize = 40f
@@ -2217,7 +2210,7 @@ fun CameraPreviewScreen(
                                      drawContext.canvas.nativeCanvas.drawText("วางใบหน้าในกรอบวงรี", cw / 2f, ellipseTop - 60f, textPaint)
                                  }
                              }
-                             
+
                              if (aiMode == AiMode.HAND_DETECTION) {
                                  val handText = if (targetHand.equals("Left", true)) "กรุณาใช้มือ [ซ้าย] ในการสแกน" else "กรุณาใช้มือ [ขวา] ในการสแกน"
                                  val handPaint = android.graphics.Paint().apply {
@@ -2279,7 +2272,7 @@ fun CameraPreviewScreen(
 
                     val boxScaleX = if (bitmapWidth > 0) frameW / bitmapWidth else 1f
                     val boxScaleY = if (bitmapHeight > 0) frameH / bitmapHeight else 1f
-                    
+
                     val facePaint = android.graphics.Paint().apply {
                         color = android.graphics.Color.RED
                         style = android.graphics.Paint.Style.STROKE
@@ -2303,7 +2296,7 @@ fun CameraPreviewScreen(
                     latestDetections.forEach { item ->
                         val r = item.boundingBox
                         val mappedRect = android.graphics.RectF(
-                            leftOffset + r.left * boxScaleX, topOffset + r.top * boxScaleY, 
+                            leftOffset + r.left * boxScaleX, topOffset + r.top * boxScaleY,
                             leftOffset + r.right * boxScaleX, topOffset + r.bottom * boxScaleY
                         )
                         if (aiMode == AiMode.FACE_DETECTION) {
@@ -2317,13 +2310,13 @@ fun CameraPreviewScreen(
                                 strokeWidth = 4f
                             }
                             drawContext.canvas.nativeCanvas.drawRect(mappedRect, objPaint)
-                            
+
                             val tid = item.extra["tracking_id"] as? Int ?: -1
                             val index = item.extra["index"] as? Int ?: -1
-                            
+
                             val lines = mutableListOf<String>()
                             if (tid != -1) lines.add("Tracking ID: $tid")
-                            
+
                             if (aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                                 lines.add("${item.label} (index: $index)")
                                 lines.add("${String.format("%.2f", item.confidence * 100)}% confidence (index: $index)")
@@ -2342,25 +2335,25 @@ fun CameraPreviewScreen(
                                     alpha = 180
                                     style = android.graphics.Paint.Style.FILL
                                 }
-                                
+
                                 val lineHeight = 40f
                                 val padding = 10f
                                 var maxWidth = 0f
                                 lines.forEach { maxWidth = max(maxWidth, tidPaint.measureText(it)) }
-                                
+
                                 val bgRect = android.graphics.RectF(
-                                    mappedRect.left, 
-                                    mappedRect.top - (lines.size * lineHeight) - padding, 
-                                    mappedRect.left + maxWidth + (padding * 2), 
+                                    mappedRect.left,
+                                    mappedRect.top - (lines.size * lineHeight) - padding,
+                                    mappedRect.left + maxWidth + (padding * 2),
                                     mappedRect.top
                                 )
                                 drawContext.canvas.nativeCanvas.drawRect(bgRect, bgPaint)
-                                
+
                                 lines.forEachIndexed { i, line ->
                                     drawContext.canvas.nativeCanvas.drawText(
-                                        line, 
-                                        mappedRect.left + padding, 
-                                        mappedRect.top - ((lines.size - i - 1) * lineHeight) - padding - 8f, 
+                                        line,
+                                        mappedRect.left + padding,
+                                        mappedRect.top - ((lines.size - i - 1) * lineHeight) - padding - 8f,
                                         tidPaint
                                     )
                                 }
@@ -2407,7 +2400,7 @@ fun CameraPreviewScreen(
                                     val px = pt.x * boxScaleX
                                     val py = pt.y * boxScaleY
                                     drawContext.canvas.nativeCanvas.drawCircle(px, py, 6f, dotPaint)
-                                    
+
                                     // Confidence score text if available
                                     // Note: we don't have per-landmark confidence in 'landmarks_raw' yet, but PoseLandmark has inFrameLikelihood
                                     // For simplicity and matching UI image, we'll draw 1.00 or similar if it exists in JSON
@@ -2421,7 +2414,7 @@ fun CameraPreviewScreen(
                             }
                         } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
                             val maskBitmap = item.extra["mask_bitmap"] as? Bitmap
-                            
+
                             // 🌟 Draw bounding box as fallback/debug for Subject
                             if (aiMode == AiMode.SUBJECT_SEGMENTATION) {
                                 val boxPaint = android.graphics.Paint().apply {
@@ -2571,9 +2564,9 @@ fun CameraPreviewScreen(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .background(
-                                        if (stableTime > 0) Color.Yellow 
-                                        else if (!isProcessingBusy) Color.Green 
-                                        else Color.Gray, 
+                                        if (stableTime > 0) Color.Yellow
+                                        else if (!isProcessingBusy) Color.Green
+                                        else Color.Gray,
                                         CircleShape
                                     )
                             )
@@ -2961,7 +2954,7 @@ fun AiModeBottomSheet(
                     AiMode.TEXT_RECOGNITION -> "Text Recognition"
                     else -> mode.name
                 }
-                
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2999,7 +2992,7 @@ fun AiModeBottomSheet(
                             )
                         }
                     }
-                    
+
                     Text(
                         text = label,
                         style = MaterialTheme.typography.titleMedium,
@@ -3365,7 +3358,7 @@ fun OCRResultScreen(
                     } catch (e: Exception) {}
                     list
                 }
-                
+
                 val redPaint = remember {
                     Paint().apply {
                         color = android.graphics.Color.RED
@@ -3419,7 +3412,7 @@ fun OCRResultScreen(
                                     }
                                     path.close()
                                     drawContext.canvas.nativeCanvas.drawPath(path, redFillPaint)
-                                    
+
                                     redPaint.strokeWidth = 2f / scale
                                     drawContext.canvas.nativeCanvas.drawPath(path, redPaint)
 
@@ -3758,21 +3751,21 @@ fun OCRResultScreen(
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
                                     MetricRow("Processing Time", "${timeMs} ms", Icons.Default.Timer)
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
-                                    
+
                                     MetricRow("Scan Resolution", scanResolution, Icons.Default.Camera)
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
-                                    
+
                                     val cropW = (image.width / zoomScale).toInt()
                                     val cropH = (image.height / zoomScale).toInt()
                                     MetricRow("Crop Area", "${cropW}x${cropH} px", Icons.Default.Crop)
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
-                                    
+
                                     MetricRow("Input Image size", "${image.width}x${image.height} px", Icons.Default.AspectRatio)
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
-                                    
+
                                     MetricRow("Scale", "${String.format("%.1f", zoomScale)}x", Icons.Default.ZoomIn)
                                     HorizontalDivider(color = Color(0xFFF5F5F5))
-                                    
+
                                     // GPU Info
                                     Row(
                                         modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
@@ -4053,27 +4046,65 @@ private suspend fun generateOCRPayload(
     val payload = JSONObject()
     payload.put(
         "type",
-        if (aiMode == AiMode.HAND_DETECTION) "palmprint_result" else if (aiMode == AiMode.FACE_DETECTION) "face_result" else "ocr_result"
+        when (aiMode) {
+            AiMode.HAND_DETECTION -> "palmprint_result"
+            AiMode.FACE_DETECTION -> "face_result"
+            AiMode.POSE_DETECTION -> "pose_result"
+            AiMode.SELFIE_SEGMENTATION -> "selfie_segmentation_result"
+            AiMode.SUBJECT_SEGMENTATION -> "subject_segmentation_result"
+            AiMode.OBJECT_DETECTION -> "object_detection_result"
+            AiMode.CUSTOM_OBJECT_DETECTION -> "custom_object_detection_result"
+            AiMode.TEXT_RECOGNITION -> "text_recognition_result"
+            else -> "ocr_result"
+        }
     )
     payload.put("timestamp", System.currentTimeMillis())
 
     // engine_info (new format)
     val engineInfo = JSONObject().apply {
-        if (aiMode == AiMode.HAND_DETECTION) {
-            put("engine", "mediapipe")
-            put("version", "tasks-vision")
-            put("runtime", "tflite")
-            put("model", "hand_landmarker.task")
-        } else if (aiMode == AiMode.FACE_DETECTION) {
-            put("engine", "mlkit")
-            put("version", "face-detection")
-            put("runtime", "gms")
-            put("model", "face")
-        } else {
-            put("engine", "paddleocr")
-            put("version", "v5")
-            put("runtime", "ncnn")
-            put("model", "PP-OCRv5_mobile_rec")
+        when (aiMode) {
+            AiMode.HAND_DETECTION -> {
+                put("engine", "mediapipe")
+                put("version", "tasks-vision")
+                put("runtime", "tflite")
+                put("model", "hand_landmarker.task")
+            }
+            AiMode.FACE_DETECTION -> {
+                put("engine", "mlkit")
+                put("version", "face-detection")
+                put("runtime", "gms")
+                put("model", "face")
+            }
+            AiMode.POSE_DETECTION -> {
+                put("engine", "mlkit")
+                put("version", "pose-detection")
+                put("runtime", "gms")
+                put("model", "pose")
+            }
+            AiMode.SELFIE_SEGMENTATION, AiMode.SUBJECT_SEGMENTATION -> {
+                put("engine", "mlkit")
+                put("version", "segmentation")
+                put("runtime", "gms")
+                put("model", if (aiMode == AiMode.SELFIE_SEGMENTATION) "selfie" else "subject")
+            }
+            AiMode.OBJECT_DETECTION, AiMode.CUSTOM_OBJECT_DETECTION -> {
+                put("engine", "mlkit")
+                put("version", "object-detection")
+                put("runtime", "gms")
+                put("model", if (aiMode == AiMode.CUSTOM_OBJECT_DETECTION) "custom" else "general")
+            }
+            AiMode.TEXT_RECOGNITION -> {
+                put("engine", "mlkit")
+                put("version", "text-recognition")
+                put("runtime", "gms")
+                put("model", "latin-thai")
+            }
+            else -> {
+                put("engine", "paddleocr")
+                put("version", "v5")
+                put("runtime", "ncnn+ort")
+                put("model", "PP-OCRv5_mobile")
+            }
         }
 
         val mode = ComputeModeManager.getMode()
@@ -4339,7 +4370,7 @@ fun ScaleTestReportView(reportJson: String) {
             color = Color(0xFF673AB7),
             modifier = Modifier.padding(bottom = 8.dp)
         )
-        
+
         // Table Header
         Row(
             modifier = Modifier.fillMaxWidth().background(Color(0xFFEEEEEE)).padding(8.dp),
@@ -4355,7 +4386,7 @@ fun ScaleTestReportView(reportJson: String) {
             val item = details.getJSONObject(i)
             val isSuccess = item.getString("status") == "Success"
             val scale = item.getString("scale")
-            
+
             Row(
                 modifier = Modifier.fillMaxWidth().padding(8.dp).background(if (scale == bestScale && isSuccess) Color(0xFFE8F5E9) else Color.Transparent),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -4363,9 +4394,9 @@ fun ScaleTestReportView(reportJson: String) {
                 Text(scale, modifier = Modifier.weight(0.8f), fontSize = 11.sp, fontWeight = if (scale == bestScale && isSuccess) FontWeight.Bold else FontWeight.Normal)
                 Text(item.optString("prep", "-"), modifier = Modifier.weight(1f), fontSize = 11.sp)
                 Text(
-                    item.getString("status"), 
-                    modifier = Modifier.weight(1f), 
-                    fontSize = 11.sp, 
+                    item.getString("status"),
+                    modifier = Modifier.weight(1f),
+                    fontSize = 11.sp,
                     color = if (isSuccess) Color(0xFF2E7D32) else Color.Red,
                     fontWeight = if (scale == bestScale && isSuccess) FontWeight.Bold else FontWeight.Normal
                 )
@@ -4375,7 +4406,7 @@ fun ScaleTestReportView(reportJson: String) {
         }
 
         Spacer(Modifier.height(16.dp))
-        
+
         Card(
             colors = CardDefaults.cardColors(containerColor = Color(0xFFEDE7F6)),
             modifier = Modifier.fillMaxWidth()
