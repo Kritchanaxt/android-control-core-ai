@@ -115,6 +115,7 @@ object AIManager {
         // 🌟 Fix: Avoid redundant switching if the current processor matches the requested mode
         val current = getActiveProcessor()
         val alreadyActive = when {
+            modeName.contains("TESSERACT_FAST", ignoreCase = true) && current is TesseractOCRProcessor -> true
             modeName.contains("OCR", ignoreCase = true) && current is OCRProcessor -> true
             modeName.contains("HAND", ignoreCase = true) && current is PalmprintProcessor -> true
             modeName.contains("FACE", ignoreCase = true) && current is FaceDetectorProcessor -> true
@@ -139,6 +140,7 @@ object AIManager {
             options = mapOf("low_spec_mode" to isLowSpec, "force_gpu" to true)
         )
         val processor: AIProcessor = when {
+            modeName.contains("TESSERACT_FAST", ignoreCase = true) -> TesseractOCRProcessor()
             modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()
             modeName.contains("HAND", ignoreCase = true) -> PalmprintProcessor()
             modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()

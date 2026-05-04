@@ -92,7 +92,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, PADDLE_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION }
+enum class AiMode { PREVIEW, PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -428,7 +428,7 @@ fun AIScreenLayout() {
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 2. Handling for OCR (Using centralized process and custom card check)
-                    else if (currentAiMode == AiMode.PADDLE_OCR) {
+                    else if (currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR) {
                         try {
                             val scale = 720f / maxOf(bitmap.width, bitmap.height)
                             val scaled = if (scale < 1f) {
@@ -442,14 +442,22 @@ fun AIScreenLayout() {
                                 val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
                                 val idKeywords = listOf("เลขประจำตัว", "ประชาชน", "National", "Identification", "Thai National ID Card")
 
-                                var foundId = false
+                                var hasNumber = false
+                                var hasNameInfo = false
+                                var hasDateInfo = false
+
                                 val scaledItems = result.items.map { item ->
                                     val lbl = item.label
                                     val rawText = lbl.replace(" ", "").replace("-", "")
 
-                                    if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 5 && rawText.contains(Regex("""\d{5,}"""))) ||
-                                        idKeywords.any { lbl.contains(it) }) {
-                                        foundId = true
+                                    if (strictIdRegex.containsMatchIn(lbl) || (rawText.length >= 8 && rawText.contains(Regex("""\d{8,}""")))) {
+                                        hasNumber = true
+                                    }
+                                    if (listOf("ชื่อ", "นามสกุล", "Name", "Last name", "Lest name", "เลขประจำตัว", "ประชาชน").any { lbl.contains(it, ignoreCase = true) } || idKeywords.any { lbl.contains(it, ignoreCase = true) }) {
+                                        hasNameInfo = true
+                                    }
+                                    if (listOf("เกิด", "เกิดวันที่", "วัน", "เดือน", "ปี", "Date of Birth", "Date", "Birth").any { lbl.contains(it, ignoreCase = true) }) {
+                                        hasDateInfo = true
                                     }
 
                                     if (scale < 1f) {
@@ -457,6 +465,13 @@ fun AIScreenLayout() {
                                         item.copy(boundingBox = android.graphics.RectF(r.left / scale, r.top / scale, r.right / scale, r.bottom / scale))
                                     } else item
                                 }
+
+                                val foundId = if (currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.PADDLE_OCR) {
+                                    hasNumber && hasNameInfo && hasDateInfo
+                                } else {
+                                    hasNumber && hasNameInfo
+                                }
+
                                 Pair(foundId, scaledItems)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
@@ -1216,161 +1231,14 @@ fun AIScreenLayout() {
 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
 
-                                var idMinX = Float.MAX_VALUE;
-                                var idMinY = Float.MAX_VALUE;
-                                var idMaxX = 0f;
-                                var idMaxY = 0f
-                                var nameMinX = Float.MAX_VALUE;
-                                var nameMinY = Float.MAX_VALUE;
-                                var nameMaxX = 0f;
-                                var nameMaxY = 0f
-
-                                var hasId = false
-                                var hasName = false
-
-                                val strictIdRegex = Regex("""\d[\s-]*\d{4}[\s-]*\d{5}[\s-]*\d{2}[\s-]*\d""")
-                                // ตัด "ชื่อตัวและชื่อสกุล" ออก เพื่อไม่ให้กรอบไปกินป้ายกำกับด้านซ้ายหรือบน ให้จับแค่คำนำหน้าชื่อจริงๆ เท่านั้น
-                                val namePrefixes = listOf("นาย", "นาง", "นางสาว", "เด็กชาย", "เด็กหญิง")
-
-                                for (i in 0 until jsonArr.length()) {
-                                    val obj = jsonArr.optJSONObject(i) ?: continue
-                                    val lbl = obj.optString("label", "")
-                                    val rawText = lbl.replace(" ", "").replace("-", "")
-
-                                    // ดักเฉพาะตัวเลข 13 หลักเท่านั้น ไม่เอาคำศัพท์ป้ายกำกับเช่น "เลขประจำตัว" เพื่อไม่ให้กรอบสูงเกินไปกินขอบบัตรด้านบน
-                                    val isIdFound = strictIdRegex.containsMatchIn(lbl) ||
-                                            (rawText.length >= 13 && rawText.contains(Regex("""\d{13}""")))
-
-                                    val isNameFound = namePrefixes.any { lbl.contains(it) }
-
-                                    if (isIdFound || isNameFound) {
-                                        val box = obj.optJSONArray("box") ?: continue
-                                        var bxXMin = Float.MAX_VALUE;
-                                        var bxYMin = Float.MAX_VALUE;
-                                        var bxXMax = 0f;
-                                        var bxYMax = 0f
-                                        for (j in 0 until box.length()) {
-                                            val pt = box.optJSONArray(j) ?: continue
-                                            val x = pt.optDouble(0, 0.0).toFloat()
-                                            val y = pt.optDouble(1, 0.0).toFloat()
-                                            if (x < bxXMin) bxXMin = x
-                                            if (y < bxYMin) bxYMin = y
-                                            if (x > bxXMax) bxXMax = x
-                                            if (y > bxYMax) bxYMax = y
-                                        }
-
-                                        // ตรวจจับเฉพาะคำที่อยู่ด้านบนและกลางบัตร (ตัดส่วนล่างทิ้ง)
-                                        val centerY = (bxYMin + bxYMax) / 2f
-                                        val centerX = (bxXMin + bxXMax) / 2f
-                                        val isTopHalf =
-                                            centerY < (bitmap.height * 0.40f) // ห้ามเกิน 40% ความสูงของบัตรลงมาด้านล่าง
-                                        val isNotTooEdge =
-                                            centerX > (bitmap.width * 0.05f) && centerX < (bitmap.width * 0.95f)
-
-                                        if (isTopHalf && isNotTooEdge) {
-                                            if (isIdFound) {
-                                                hasId = true
-                                                var adjXMin = bxXMin
-                                                // ขยับ X ไปที่ตัวเลขจริงๆ (ประมาณ index ใน string)
-                                                val match = strictIdRegex.find(lbl)
-                                                if (match != null && lbl.isNotEmpty()) {
-                                                    val ratio = match.range.first.toFloat() / lbl.length.toFloat()
-                                                    adjXMin = bxXMin + (bxXMax - bxXMin) * ratio
-                                                } else if (lbl.length >= 13 && lbl.isNotEmpty()) {
-                                                    // fallback
-                                                    val digitIdx = lbl.indexOfFirst { it.isDigit() }
-                                                    if (digitIdx > 0) {
-                                                        val ratio = digitIdx.toFloat() / lbl.length.toFloat()
-                                                        adjXMin = bxXMin + (bxXMax - bxXMin) * ratio
-                                                    }
-                                                }
-
-                                                if (adjXMin < idMinX) idMinX = adjXMin
-                                                // ขยับ Y ลงมาให้เยอะขึ้น (หั่นครึ่งบนของกล่องทิ้ง) เพื่อหนี "บัตรประจำตัวประชาชน"
-                                                // เลขบัตรไม่มีสระบน จึงสามารถตัด top margin ของกล่องทิ้งไปได้มากถึง 35-40%
-                                                val yPad = (bxYMax - bxYMin) * 0.45f
-                                                if ((bxYMin + yPad) < idMinY) idMinY = bxYMin + yPad
-                                                if (bxXMax > idMaxX) idMaxX = bxXMax
-                                                if (bxYMax > idMaxY) idMaxY = bxYMax
-                                            }
-                                            if (isNameFound) {
-                                                hasName = true
-                                                var adjXMin = bxXMin
-                                                val prefixMatch = namePrefixes.find { lbl.contains(it) }
-                                                if (prefixMatch != null && lbl.isNotEmpty()) {
-                                                    val idx = lbl.indexOf(prefixMatch)
-                                                    val ratio = idx.toFloat() / lbl.length.toFloat()
-                                                    adjXMin = bxXMin + (bxXMax - bxXMin) * ratio
-                                                }
-
-                                                if (adjXMin < nameMinX) nameMinX = adjXMin
-                                                if (bxYMin < nameMinY) nameMinY = bxYMin
-                                                if (bxXMax > nameMaxX) nameMaxX = bxXMax
-                                                if (bxYMax > nameMaxY) nameMaxY = bxYMax
-                                            }
-                                        }
-                                    }
-                                }
-
-                                var finalMinX = 0f;
-                                var finalMinY = 0f;
-                                var finalMaxX = 0f;
-                                var finalMaxY = 0f
-                                var validAreaFound = false
-
-                                // บังคับกรอบให้อยู่แค่ด้านบน-กลางบัตรเท่านั้น (ซ้าย 10% ถึง ขวา 95%, บน 15% ถึง 40%) ไม่ว่าจะเจออะไรหรือไม่ก็ตาม
-                                // เพื่อป้องกันไม่ให้อ่าน โลโก้ด้านซ้าย หรือ ที่อยู่และวันเกิดด้านล่างบัตรมามั่วๆ
-
-                                if (hasId || hasName) {
-                                    validAreaFound = true
-                                    var minXAll = Float.MAX_VALUE
-                                    var minYAll = Float.MAX_VALUE
-                                    var maxXAll = 0f
-                                    var maxYAll = 0f
-
-                                    if (hasId) {
-                                        minXAll = minOf(minXAll, idMinX)
-                                        minYAll = minOf(minYAll, idMinY)
-                                        maxXAll = maxOf(maxXAll, idMaxX)
-                                        maxYAll = maxOf(maxYAll, idMaxY)
-                                    }
-                                    if (hasName) {
-                                        minXAll = minOf(minXAll, nameMinX)
-                                        minYAll = minOf(minYAll, nameMinY)
-                                        maxXAll = maxOf(maxXAll, nameMaxX)
-                                        maxYAll = maxOf(maxYAll, nameMaxY)
-                                    }
-                                    finalMinX = minXAll
-                                    finalMinY = minYAll
-                                    finalMaxX = maxXAll
-                                    finalMaxY = maxYAll
-                                }
-
-                                val calculatedRect = if (validAreaFound) {
-                                    // ตั้งค่า Padding เล็กน้อยเพื่อให้ไม่กุดจนเกินไป
-                                    val padX = 15f
-                                    val padYTop = 0f    // ขอบบนชิดพอดี
-                                    val padYBottom = 30f // เพิ่มขอบล่างเซฟสระด้านล่าง
-                                    val w = bitmap.width.toFloat()
-                                    val h = bitmap.height.toFloat()
-
-                                    // สร้างกรอบภาพพอดีๆ (Tight crop) รอบเลขบัตรและชื่อเท่านั้น
-                                    val left = maxOf(0f, ((finalMinX - padX) / w).coerceIn(0f, 1f))
-                                    val top = maxOf(0f, ((finalMinY - padYTop) / h).coerceIn(0f, 1f))
-                                    val right =
-                                        0.95f // บังคับให้ครอปสุดขอบบัตรด้านขวาเสมอ เพื่อไม่ให้นามสกุลยาวๆ โดนหั่นทิ้ง
-                                    val bottom = minOf(1f, ((finalMaxY + padYBottom) / h).coerceIn(0f, 1f))
-
-                                    if (bottom > top && right > left) androidx.compose.ui.geometry.Rect(
-                                        left,
-                                        top,
-                                        right,
-                                        bottom
-                                    )
-                                    else androidx.compose.ui.geometry.Rect(0.15f, 0.15f, 0.95f, 0.40f)
-                                } else {
-                                    androidx.compose.ui.geometry.Rect(0.15f, 0.15f, 0.95f, 0.40f)
-                                }
+                                // บังคับตัดภาพคงที่ (Fixed Crop) ตั้งแต่เลขบัตร จนถึง วันเดือนปีเกิด
+                                // อ้างอิงขนาดประมาณการ: x เริ่มที่ 2%, y เริ่มที่ 12%, กว้าง 93%, สูงลงมาถึงตำแหน่งประมาณ 75-80% 
+                                val calculatedRect = androidx.compose.ui.geometry.Rect(
+                                    left = 0.20f,     // เริ่มที่ขอบซ้าย 20%
+                                    top = 0.10f,      // เริ่มต่ำลงมา 10% (ครอบคลุมเลขบัตร)
+                                    right = 0.98f,    // ไปจนสุดขอบขวา 98%
+                                    bottom = 0.62f    // ลงมาจนถึง 62% ของบัตร (ครอบคลุมวันเดือนปีเกิดแน่นอน)
+                                )
 
                                 // Auto Crop without UI
                                 val croppedResult = if (useCropMode && calculatedRect != null) {
@@ -1417,8 +1285,13 @@ fun AIScreenLayout() {
                                     val st = System.currentTimeMillis()
                                     // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
                                     val rawOcrRes = AIManager.runWithProcessor { proc ->
-                                        val processor = proc as? OCRProcessor
-                                        processor?.getRawJson(optimizedCrop)
+                                        if (proc is OCRProcessor) {
+                                            proc.getRawJson(optimizedCrop)
+                                        } else if (proc is TesseractOCRProcessor) {
+                                            proc.getRawJson(optimizedCrop)
+                                        } else {
+                                            "[]"
+                                        }
                                     } ?: "[]"
 
                                     if (rawOcrRes != "[]") {
@@ -1679,7 +1552,7 @@ fun CameraPreviewScreen(
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
 
-                            val frameW = if (aiMode == AiMode.PADDLE_OCR) {
+                            val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                                 val maxW = cw * 0.9f
                                 val idealH = ch * 0.6f
                                 if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -1688,7 +1561,7 @@ fun CameraPreviewScreen(
                             } else {
                                 min(cw, ch) * 0.8f // Use 0.8f for better Subject/Selfie visibility
                             }
-                            val frameH = if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
+                            val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
                             val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                             val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                             val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -1819,7 +1692,11 @@ fun CameraPreviewScreen(
                         // 🌟 Stabilization: Always update latestDetections for UI drawing
                         latestDetections = items
 
-                        val criteriaMet = items.isNotEmpty()
+                        var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
+                            success
+                        } else {
+                            items.isNotEmpty()
+                        }
 
                         // 🌟 MULTI-SCALE INFERENCE: If initial crop failed, try a 20% larger crop
                         if (!criteriaMet && useCropMode) {
@@ -1828,7 +1705,7 @@ fun CameraPreviewScreen(
                                 val ch = baseBitmap.height.toFloat()
                                 // Expand frame by 20%
                                 val expansion = 1.20f
-                                val frameW = (if (aiMode == AiMode.PADDLE_OCR) {
+                                val frameW = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                                     val maxW = cw * 0.9f
                                     val idealH = ch * 0.6f
                                     if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -1838,7 +1715,7 @@ fun CameraPreviewScreen(
                                     min(cw, ch) * 0.6f
                                 }) * expansion
 
-                                val frameH = (if (aiMode == AiMode.PADDLE_OCR) frameW / (1.58f * expansion) else frameW) * expansion
+                                val frameH = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / (1.58f * expansion) else frameW) * expansion
                                 val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                                 val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                                 val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -1855,6 +1732,7 @@ fun CameraPreviewScreen(
                                     )
                                     if (retrySuccess) {
                                         success = true
+                                        criteriaMet = true
                                         items = retryItems
                                         // Update overlay to show we found it in expanded mode
                                         RelayService.getInstance()?.overlayManager?.updateMetrics(
@@ -2044,9 +1922,9 @@ fun CameraPreviewScreen(
                                             aiMode == AiMode.SELFIE_SEGMENTATION ||
                                             aiMode == AiMode.SUBJECT_SEGMENTATION
 
-                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
+                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION) {
                         // OCR matches bounds, PALMPRINT uses a smaller centered box
-                        val frameW = if (aiMode == AiMode.PADDLE_OCR) {
+                        val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -2055,7 +1933,7 @@ fun CameraPreviewScreen(
                         } else {
                             min(cw, ch) * 0.6f
                         }
-                        val frameH = if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
+                        val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
 
                         val left = (cw - frameW) / 2
                         val top = (ch - frameH) / 2
@@ -2073,7 +1951,7 @@ fun CameraPreviewScreen(
                             typeface = android.graphics.Typeface.DEFAULT_BOLD
                         }
 
-                        if (aiMode == AiMode.PADDLE_OCR) {
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                             // Main ID card border (Landscape)
                             val rect = android.graphics.RectF(left, top, right, bottom)
                             drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
@@ -2249,7 +2127,7 @@ fun CameraPreviewScreen(
                     val frameW = if (useCropMode) {
                         val cw = size.width
                         val ch = size.height
-                        if (aiMode == AiMode.PADDLE_OCR) {
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -2261,7 +2139,7 @@ fun CameraPreviewScreen(
                     } else size.width
 
                     val frameH = if (useCropMode) {
-                        if (aiMode == AiMode.PADDLE_OCR) frameW / 1.58f else frameW
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
                     } else size.height
 
                     val leftOffset = if (useCropMode) (size.width - frameW) / 2f else 0f
@@ -2298,7 +2176,7 @@ fun CameraPreviewScreen(
                         )
                         if (aiMode == AiMode.FACE_DETECTION) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                             // White box as requested
                             val objPaint = android.graphics.Paint().apply {
@@ -2618,6 +2496,7 @@ fun CameraPreviewScreen(
                         ) {
                             val displayName = when (aiMode) {
                                 AiMode.PADDLE_OCR -> "PaddleOCR"
+                                AiMode.TESSERACT_FAST_OCR -> "Tesseract Fast OCR"
                                 AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
                                 AiMode.FACE_DETECTION -> "Face Detection"
                                 AiMode.POSE_DETECTION -> "Pose Detection"
@@ -2941,6 +2820,7 @@ fun AiModeBottomSheet(
             AiMode.values().filter { it != AiMode.PREVIEW }.forEach { mode ->
                 val label = when (mode) {
                     AiMode.PADDLE_OCR -> "PaddleOCRv5"
+                    AiMode.TESSERACT_FAST_OCR -> "Tesseract Fast OCR"
                     AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
                     AiMode.FACE_DETECTION -> "Face Detection"
                     AiMode.POSE_DETECTION -> "Pose Detection"
@@ -3050,6 +2930,7 @@ fun OCRResultScreen(
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
                         val modelName = when (aiMode) {
+                            AiMode.TESSERACT_FAST_OCR -> "Tesseract Fast OCR"
                             AiMode.HAND_DETECTION -> "MediaPipe Hand Gesture"
                             AiMode.FACE_DETECTION -> "ML Kit Face Detection"
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
@@ -3090,33 +2971,6 @@ fun OCRResultScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (aiMode == AiMode.PADDLE_OCR) {
-                        // Compute Mode Selector only for OCR
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ComputeMode.values().forEach { mode ->
-                                FilterChip(
-                                    selected = (computeMode == mode),
-                                    onClick = { onComputeModeChange(mode) },
-                                    label = { Text(mode.displayName, fontSize = 12.sp, maxLines = 1) },
-                                    leadingIcon = if (computeMode == mode) {
-                                        {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    } else null
-                                )
-                            }
-                        }
-                    }
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -3220,7 +3074,7 @@ fun OCRResultScreen(
                                                         else -> "OCR"
                                                     },
                                                     "use_gpu" to computeMode.useGpu,
-                                                    "model_paddle_loaded" to (aiMode == AiMode.PADDLE_OCR),
+                                                    "model_paddle_loaded" to (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR),
                                                     "model_mlkit_text_loaded" to (aiMode == AiMode.TEXT_RECOGNITION),
                                                     "model_mediapipe_loaded" to (aiMode == AiMode.HAND_DETECTION),
                                                     "snap_image_active" to true,
@@ -3397,29 +3251,48 @@ fun OCRResultScreen(
 
                         drawingBoxes.forEach { boxObj ->
                             // Parse "box" for OCR (polygon)
-                            if (boxObj.has("box")) {
-                                val boxArr = boxObj.getJSONArray("box")
-                                if (boxArr.length() > 0) {
-                                    val path = Path()
-                                    val p0 = boxArr.getJSONArray(0)
-                                    path.moveTo(p0.getInt(0).toFloat(), p0.getInt(1).toFloat())
-                                    for (j in 1 until boxArr.length()) {
-                                        val p = boxArr.getJSONArray(j)
-                                        path.lineTo(p.getInt(0).toFloat(), p.getInt(1).toFloat())
+                            if (boxObj.has("box") || (boxObj.has("x0") && boxObj.has("y0"))) {
+                                val boxPath = Path()
+                                var validPath = false
+                                var p0X = 0f
+                                var p0Y = 0f
+
+                                if (boxObj.has("box")) {
+                                    val boxArr = boxObj.getJSONArray("box")
+                                    if (boxArr.length() > 0) {
+                                        val p0 = boxArr.getJSONArray(0)
+                                        p0X = p0.getInt(0).toFloat()
+                                        p0Y = p0.getInt(1).toFloat()
+                                        boxPath.moveTo(p0X, p0Y)
+                                        for (j in 1 until boxArr.length()) {
+                                            val p = boxArr.getJSONArray(j)
+                                            boxPath.lineTo(p.getInt(0).toFloat(), p.getInt(1).toFloat())
+                                        }
+                                        boxPath.close()
+                                        validPath = true
                                     }
-                                    path.close()
-                                    drawContext.canvas.nativeCanvas.drawPath(path, redFillPaint)
+                                } else {
+                                    p0X = boxObj.getDouble("x0").toFloat()
+                                    p0Y = boxObj.getDouble("y0").toFloat()
+                                    boxPath.moveTo(p0X, p0Y)
+                                    boxPath.lineTo(boxObj.getDouble("x1").toFloat(), boxObj.getDouble("y1").toFloat())
+                                    boxPath.lineTo(boxObj.getDouble("x2").toFloat(), boxObj.getDouble("y2").toFloat())
+                                    boxPath.lineTo(boxObj.getDouble("x3").toFloat(), boxObj.getDouble("y3").toFloat())
+                                    boxPath.close()
+                                    validPath = true
+                                }
+
+                                if (validPath) {
+                                    drawContext.canvas.nativeCanvas.drawPath(boxPath, redFillPaint)
 
                                     redPaint.strokeWidth = 2f / scale
-                                    drawContext.canvas.nativeCanvas.drawPath(path, redPaint)
+                                    drawContext.canvas.nativeCanvas.drawPath(boxPath, redPaint)
 
                                     // Draw label
                                     if (boxObj.has("label")) {
                                         val label = boxObj.getString("label")
-                                        val x = p0.getInt(0).toFloat()
-                                        val y = p0.getInt(1).toFloat()
                                         textPaint.textSize = 12f / scale
-                                        drawContext.canvas.nativeCanvas.drawText(label, x, y - (5f / scale), textPaint)
+                                        drawContext.canvas.nativeCanvas.drawText(label, p0X, p0Y - (5f / scale), textPaint)
                                     }
                                 }
                             } else if (aiMode == AiMode.FACE_DETECTION && boxObj.has("bbox")) {
@@ -3538,7 +3411,7 @@ fun OCRResultScreen(
                 Text(
                     if (showPayload) "Review the generated data structure" else "Review the processed ${
                         when (aiMode) {
-                            AiMode.PADDLE_OCR -> "OCR text"
+                            AiMode.PADDLE_OCR, AiMode.TESSERACT_FAST_OCR -> "OCR text"
                             AiMode.FACE_DETECTION -> "face data"
                             AiMode.SELFIE_SEGMENTATION -> "selfie data"
                             AiMode.SUBJECT_SEGMENTATION -> "subject data"
@@ -3646,7 +3519,6 @@ fun OCRResultScreen(
                                 rawText = rawText
                                     .replace(Regex("(?<=[ก-ฮ])(?=(นาย|นาง|นางสาว)[a-zA-Zก-ฮ])"), " ")
                                     .replace(Regex("(?<=(นาย|นาง|นางสาว|เด็กชาย|เด็กหญิง))(?=[a-zA-Zก-ฮ])"), " ")
-                                    .replace("นาย กฤชณัชมาลัยขวัญ", "นาย กฤชณัช มาลัยขวัญ")
                                     .replace("ชื่อตัวและชื่อสกุลนาย", "ชื่อตัวและชื่อสกุล นาย")
                             }
 
@@ -3698,7 +3570,7 @@ fun OCRResultScreen(
                             val statusText = when {
                                 aiMode == AiMode.FACE_DETECTION && isSuccess -> "Face Detected"
                                 aiMode == AiMode.HAND_DETECTION && isSuccess -> "Palmprint Detected"
-                                (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
+                                (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
                                 !isSuccess -> "No Object Detected"
                                 else -> "Inference Completed"
                             }
@@ -4188,16 +4060,32 @@ private suspend fun generateOCRPayload(
 
             val text = if (hasText) item.getString("text") else item.getString("label")
             val conf = if (item.has("confidence")) item.getDouble("confidence") else item.getDouble("prob")
-            val box = item.getJSONArray("box")
-
+            
             val xs = mutableListOf<Double>()
             val ys = mutableListOf<Double>()
-            for (j in 0 until box.length()) {
-                val p = box.getJSONArray(j)
-                xs.add(p.getDouble(0))
-                ys.add(p.getDouble(1))
+            var boxArrayOrNull = item.optJSONArray("box")
+
+            if (boxArrayOrNull != null) {
+                for (j in 0 until boxArrayOrNull.length()) {
+                    val p = boxArrayOrNull.getJSONArray(j)
+                    xs.add(p.getDouble(0))
+                    ys.add(p.getDouble(1))
+                }
+            } else if (item.has("x0")) {
+                xs.addAll(listOf(item.getDouble("x0"), item.getDouble("x1"), item.getDouble("x2"), item.getDouble("x3")))
+                ys.addAll(listOf(item.getDouble("y0"), item.getDouble("y1"), item.getDouble("y2"), item.getDouble("y3")))
+                
+                // Construct a box array so we can use it downstream
+                boxArrayOrNull = JSONArray()
+                boxArrayOrNull.put(JSONArray().put(item.getDouble("x0")).put(item.getDouble("y0")))
+                boxArrayOrNull.put(JSONArray().put(item.getDouble("x1")).put(item.getDouble("y1")))
+                boxArrayOrNull.put(JSONArray().put(item.getDouble("x2")).put(item.getDouble("y2")))
+                boxArrayOrNull.put(JSONArray().put(item.getDouble("x3")).put(item.getDouble("y3")))
+            } else {
+                continue
             }
 
+            val box = boxArrayOrNull
             val minX = xs.minOrNull() ?: 0.0
             val minY = ys.minOrNull() ?: 0.0
             val maxX = xs.maxOrNull() ?: 0.0

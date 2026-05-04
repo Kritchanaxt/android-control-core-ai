@@ -54,7 +54,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 enum class ScanMode {
-    PADDLE_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE, SUBJECT
+    PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE, SUBJECT
 }
 
 enum class HandSide {
@@ -289,7 +289,7 @@ fun RealtimeCameraPreview(
                                 put("side", handMatch.extra["side"])
                             }.toString()
                         }
-                    } else if (mode != ScanMode.PADDLE_OCR) {
+                    } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
                         if (result.success && result.items.isNotEmpty()) {
                             criteriaMet = true
                             metaStr = JSONObject().apply {
@@ -416,7 +416,7 @@ fun RealtimeCameraPreview(
                                                         put("side", handMatch.extra["side"])
                                                     }.toString()
                                                 }
-                                            } else if (mode != ScanMode.PADDLE_OCR) {
+                                            } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
                                                 if (result.success && result.items.isNotEmpty()) {
                                                     criteriaMet = true
                                                     metaStr = JSONObject().apply {
@@ -526,7 +526,7 @@ fun RealtimeCameraPreview(
                             style = Stroke(width = 4.dp.toPx())
                         )
                     }
-                    ScanMode.PADDLE_OCR -> {
+                    ScanMode.PADDLE_OCR, ScanMode.TESSERACT_FAST_OCR -> {
                         val rect = item.boundingBox
                         drawRect(
                             color = Color.Cyan.copy(alpha = 0.8f),
@@ -560,16 +560,16 @@ fun RealtimeCameraPreview(
                 drawText("Latency: ${AIManager.getLastLatency()}ms", 40f, yStart + 50f, paint)
                 drawText("Mode: ${mode.name}", 40f, yStart + 100f, paint)
                 
-                if (latestDetections.isEmpty() && mode != ScanMode.PADDLE_OCR) {
+                if (latestDetections.isEmpty() && mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
                     paint.color = android.graphics.Color.RED
                     drawText("No Object Detected", 40f, yStart + 150f, paint)
                 }
             }
 
             // Default UI Guide Box (For OCR/Palm)
-            if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.HAND_DETECTION) {
-                val boxWidth = if (mode == ScanMode.PADDLE_OCR) size.width * 0.85f else size.width * 0.7f
-                val boxHeight = if (mode == ScanMode.PADDLE_OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
+            if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR || mode == ScanMode.HAND_DETECTION) {
+                val boxWidth = if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR) size.width * 0.85f else size.width * 0.7f
+                val boxHeight = if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
                 val left = (size.width - boxWidth) / 2
                 val top = (size.height - boxHeight) / 2
                 drawRoundRect(
