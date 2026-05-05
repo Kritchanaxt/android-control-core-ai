@@ -1,5 +1,7 @@
 package com.example.android_screen_relay
 
+import android.util.Log
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -165,13 +167,27 @@ class RelayService : Service() {
                     0 // Default on older versions
                 }
             }
-            if (fgsType == 0) {
-                startForeground(1, notification)
-            } else {
-                startForeground(1, notification, fgsType)
+            try {
+                if (fgsType == 0) {
+                    startForeground(1, notification)
+                } else {
+                    startForeground(1, notification, fgsType)
+                }
+            } catch (e: Exception) {
+                Log.e("RelayService", "Error starting foreground service", e)
+                showForegroundRequiredAlert()
+                stopSelf()
+                return START_NOT_STICKY
             }
         } else {
-            startForeground(1, notification)
+            try {
+                startForeground(1, notification)
+            } catch (e: Exception) {
+                Log.e("RelayService", "Error starting foreground service", e)
+                showForegroundRequiredAlert()
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
         
         // Show Overlay
@@ -403,6 +419,27 @@ class RelayService : Service() {
             manager.createNotificationChannel(serviceChannel)
         }
     }
+    private fun showForegroundRequiredAlert() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val alertNotification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Screen Relay Stopped")
+            .setContentText("Cannot start in background. Tap here to open app.")
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(2, alertNotification)
+    }
+
 
     private fun createNotification(): Notification {
         val stopIntent = Intent(this, RelayService::class.java).apply {
