@@ -17,7 +17,7 @@ enum class VerificationState {
 class IdentityVerificationProcessor : AIProcessor {
     override val name: String = "IdentityVerificationPipeline"
 
-    private var ocrProcessor: TesseractOCRProcessor? = null
+    private var ocrProcessor: OCRProcessor? = null
     private var faceProcessor: FaceDetectorProcessor? = null
 
     private var currentState = VerificationState.WAITING_FOR_CARD
@@ -29,11 +29,11 @@ class IdentityVerificationProcessor : AIProcessor {
     private var extractedIdInfo: String = ""
     private var extractedNameInfo: String = ""
     private var extractedDobInfo: String = ""
-    private val ocrEngineName = "Tesseract OCR"
+    private val ocrEngineName = "PaddleOCRv5"
     private var lastFaceMetrics: String = "{}"
 
     override fun init(context: Context, config: AIConfig): Boolean {
-        ocrProcessor = TesseractOCRProcessor()
+        ocrProcessor = OCRProcessor()
         faceProcessor = FaceDetectorProcessor()
         val ocrInit = ocrProcessor?.init(context, config) ?: false
         val faceInit = faceProcessor?.init(context, config) ?: false

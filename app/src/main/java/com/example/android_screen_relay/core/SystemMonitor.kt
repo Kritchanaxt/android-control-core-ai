@@ -77,11 +77,11 @@ object SystemMonitor {
         val memInfo = ActivityManager.MemoryInfo()
         actManager.getMemoryInfo(memInfo)
         
-        // Devices with less than 3GB RAM or <= 4 cores are considered low spec for heavy AI tasks
+        // เครื่องสเปคต่ำสุดคือ RAM 2GB (<= 3.0GB)
         val totalRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
         val cores = Runtime.getRuntime().availableProcessors()
         
-        return totalRamGb < 3.0 || cores <= 4 || actManager.isLowRamDevice
+        return totalRamGb <= 3.0 || cores <= 4 || actManager.isLowRamDevice
     }
 
     fun isUltraLowRAM(context: Context): Boolean {
@@ -89,7 +89,9 @@ object SystemMonitor {
         val memInfo = ActivityManager.MemoryInfo()
         actManager.getMemoryInfo(memInfo)
         val totalRamGb = memInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
-        return totalRamGb < 2.5 || actManager.isLowRamDevice
+        
+        // เครื่องสเปคต่ำสุดคือ RAM 2GB ถือว่าเป็น Ultra Low RAM เมื่อไม่เกิน 2.5GB
+        return totalRamGb <= 2.5 || actManager.isLowRamDevice
     }
 
     fun getDeviceInfo(context: Context): DeviceInfo {

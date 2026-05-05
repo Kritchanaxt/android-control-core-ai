@@ -59,6 +59,13 @@ object FirebaseLogger {
         error: Throwable? = null,
         extraData: Map<String, Any>? = null
     ) {
+        // ป้องกันแอปเด้งใน Multi-process environment (เช่น mlkit_acceleration_mini_benchmark)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            if (android.app.Application.getProcessName() != context.packageName) {
+                return
+            }
+        }
+
         val device = SystemMonitor.getDeviceInfo(context)
         val logData = mutableMapOf<String, Any>()
 
@@ -79,7 +86,8 @@ object FirebaseLogger {
         // 2. หมวดหมู่ข้อมูลสเปคเครื่อง (Device Specs) - ข้อมูล Hardware ตายตัว
         val ramTotalMb = extraData?.get("ram_total_mb") as? Number ?: currentSystemStatus["ram_total_mb"] as? Number ?: 0L
         val ramTotalGb = ramTotalMb.toDouble() / 1024.0
-        val isTargetLowSpec = Runtime.getRuntime().availableProcessors() == 8 && ramTotalGb <= 3.0 // เช็คสเปคเป้าหมาย Founder
+        // เช็คสเปคเป้าหมาย (Low-end คือ RAM <= 3GB)
+        val isTargetLowSpec = ramTotalGb <= 3.0 || Runtime.getRuntime().availableProcessors() <= 4
 
         logData["device_info"] = hashMapOf(
             "brand" to device.manufacturer,
