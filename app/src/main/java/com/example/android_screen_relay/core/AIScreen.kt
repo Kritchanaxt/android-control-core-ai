@@ -917,10 +917,16 @@ fun AIScreenLayout() {
                                     val roiHeight = (bitmap.height * 0.6f).toInt()
 
                                     val faceCrop = Bitmap.createBitmap(bitmap, roiLeft, roiTop, roiWidth, roiHeight)
-                                    processingBitmap = Bitmap.createScaledBitmap(faceCrop, roiWidth * 3, roiHeight * 3, true)
+                                    
+                                    // 🌟 PREVENT MASSIVE UPSCALING OOM: Map max dimension to safe limits
+                                    val scaleLimit = if (maxOf(roiWidth, roiHeight) > 600) 1f else 3f
+                                    
+                                    processingBitmap = Bitmap.createScaledBitmap(faceCrop, (roiWidth * scaleLimit).toInt(), (roiHeight * scaleLimit).toInt(), true)
+                                    if (faceCrop !== processingBitmap && !faceCrop.isRecycled) faceCrop.recycle()
+                                    
                                     roiLeftOffset = roiLeft.toFloat()
                                     roiTopOffset = roiTop.toFloat()
-                                    scaleFactor = 3f
+                                    scaleFactor = scaleLimit
                                 } else {
                                     // 🌟 Safe scaling for normal face mode to prevent ML Kit OOM on 12MP+ cameras
                                     val maxDim = 1200f
@@ -1270,8 +1276,13 @@ fun AIScreenLayout() {
                                 val pbStartMs = System.currentTimeMillis()
                                 // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
                                 val resultJsonStr = AIManager.runWithProcessor { proc ->
-                                    val processor = proc as? OCRProcessor
-                                    processor?.getRawJson(bitmap)
+                                    if (proc is OCRProcessor) {
+                                        proc.getRawJson(bitmap)
+                                    } else if (proc is TesseractOCRProcessor) {
+                                        proc.getRawJson(bitmap)
+                                    } else {
+                                        "[]"
+                                    }
                                 } ?: "[]"
                                 
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
@@ -1644,7 +1655,7 @@ fun CameraPreviewScreen(
                         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
 
                         // 🌟 GENERATE LIVE BLUR: Safe Main-thread update
-                        if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
+                        if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
                             try {
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
@@ -4430,18 +4441,40 @@ fun MetricRow(label: String, value: String, icon: ImageVector? = null) {
 }
 
 /**
- * 🌟 Blurs a bitmap using RenderScript (Fast Gaussian Blur)
+ * 🌟 Blurs a bitmap using RenderScript (Fast Gaussian Blur with Safe Scaling to prevent OOM)
  */
 fun applyBlur(context: Context, bitmap: Bitmap, radius: Float = 25f): Bitmap {
-    val outBitmap = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+    // 🌟 SMART SCALING: prevent OOM on 12MP+ camera frames
+    val maxDim = 600f
+    val currentMax = maxOf(bitmap.width, bitmap.height).toFloat()
+    val scale = if (currentMax > maxDim) maxDim / currentMax else 1f
+    
+    val smallBitmap = if (scale < 1f) {
+        Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
+    } else {
+        bitmap.copy(Bitmap.Config.ARGB_8888, true)
+    }
+
+    val outBitmap = Bitmap.createBitmap(smallBitmap.width, smallBitmap.height, Bitmap.Config.ARGB_8888)
     val rs = android.renderscript.RenderScript.create(context)
     val blurScript = android.renderscript.ScriptIntrinsicBlur.create(rs, android.renderscript.Element.U8_4(rs))
-    val allIn = android.renderscript.Allocation.createFromBitmap(rs, bitmap)
+    val allIn = android.renderscript.Allocation.createFromBitmap(rs, smallBitmap)
     val allOut = android.renderscript.Allocation.createFromBitmap(rs, outBitmap)
     blurScript.setRadius(radius.coerceIn(0f, 25f))
     blurScript.setInput(allIn)
     blurScript.forEach(allOut)
     allOut.copyTo(outBitmap)
     rs.destroy()
-    return outBitmap
+    
+    if (smallBitmap !== bitmap) smallBitmap.recycle()
+    
+    val finalBitmap = if (scale < 1f) {
+        val scaledBack = Bitmap.createScaledBitmap(outBitmap, bitmap.width, bitmap.height, true)
+        outBitmap.recycle()
+        scaledBack
+    } else {
+        outBitmap
+    }
+    
+    return finalBitmap
 }

@@ -60,51 +60,63 @@ class TesseractOCRProcessor : AIProcessor {
     }
 
     fun getRawJson(bitmap: Bitmap): String? {
-        val result = process(bitmap)
-        if (!result.success || result.items.isEmpty()) return "[]"
-        
-        val jsonArray = org.json.JSONArray()
-        for (item in result.items) {
-            val obj = org.json.JSONObject()
-            obj.put("label", item.label)
-            obj.put("prob", item.confidence.toDouble())
+        try {
+            if (bitmap.isRecycled) return "[]"
+            val result = process(bitmap)
+            if (!result.success || result.items.isEmpty()) return "[]"
             
-            val r = item.boundingBox
-            obj.put("x0", r.left.toDouble())
-            obj.put("y0", r.top.toDouble())
-            obj.put("x1", r.right.toDouble())
-            obj.put("y1", r.top.toDouble())
-            obj.put("x2", r.right.toDouble())
-            obj.put("y2", r.bottom.toDouble())
-            obj.put("x3", r.left.toDouble())
-            obj.put("y3", r.bottom.toDouble())
-            
-            jsonArray.put(obj)
+            val jsonArray = org.json.JSONArray()
+            for (item in result.items) {
+                val obj = org.json.JSONObject()
+                obj.put("label", item.label)
+                obj.put("prob", item.confidence.toDouble())
+                
+                val r = item.boundingBox
+                obj.put("x0", r.left.toDouble())
+                obj.put("y0", r.top.toDouble())
+                obj.put("x1", r.right.toDouble())
+                obj.put("y1", r.top.toDouble())
+                obj.put("x2", r.right.toDouble())
+                obj.put("y2", r.bottom.toDouble())
+                obj.put("x3", r.left.toDouble())
+                obj.put("y3", r.bottom.toDouble())
+                
+                jsonArray.put(obj)
+            }
+            return jsonArray.toString()
+        } catch (e: Throwable) {
+            Log.e("TesseractOCR", "getRawJson error", e)
+            return "[]"
         }
-        return jsonArray.toString()
     }
 
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         if (tess == null) return AIResult(false, emptyList(), 0, "Not initialized")
         val start = System.currentTimeMillis()
         
-        tess!!.setImage(bitmap)
-        val text = tess!!.utF8Text ?: ""
-        
-        val items = mutableListOf<AIDetectedItem>()
-        if (text.isNotBlank()) {
-            items.add(
-                AIDetectedItem(
-                    label = text.trim(),
-                    confidence = 1.0f,
-                    boundingBox = RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+        return try {
+            if (bitmap.isRecycled) return AIResult(false, emptyList(), 0, "Bitmap is recycled")
+            
+            tess!!.setImage(bitmap)
+            val text = tess!!.utF8Text ?: ""
+            
+            val items = mutableListOf<AIDetectedItem>()
+            if (text.isNotBlank()) {
+                items.add(
+                    AIDetectedItem(
+                        label = text.trim(),
+                        confidence = 1.0f,
+                        boundingBox = RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+                    )
                 )
-            )
+            }
+            
+            val processTime = System.currentTimeMillis() - start
+            AIResult(true, items, processTime)
+        } catch (e: Throwable) {
+            Log.e("TesseractOCR", "Process error", e)
+            AIResult(false, emptyList(), System.currentTimeMillis() - start, e.message)
         }
-        
-        val processTime = System.currentTimeMillis() - start
-        
-        return AIResult(true, items, processTime)
     }
 
     override fun release() {

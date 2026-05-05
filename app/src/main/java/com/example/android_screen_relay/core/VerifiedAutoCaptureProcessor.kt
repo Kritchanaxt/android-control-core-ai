@@ -24,8 +24,11 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
         val start = System.currentTimeMillis()
         
-        try {
+        return try {
+            if (bitmap.isRecycled) return AIResult(false, emptyList(), 0, "Bitmap is recycled")
+            
             // STEP 1: Pose Detection to check for hands blocking face
+            // Using the exact same bitmap instance sequentially (No parallel processing)
             val poseResult = poseProcessor?.process(bitmap, options)
             var poseMetrics = "{}"
             if (poseResult != null && poseResult.success && poseResult.items.isNotEmpty()) {
@@ -120,16 +123,16 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 )
             }
             
-            return AIResult(
+            AIResult(
                 success = false,
                 items = emptyList(),
                 processTimeMs = System.currentTimeMillis() - start,
                 errorMessage = "FACE_NOT_FOUND"
             )
             
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e("VerifiedAutoCapture", "Process error", e)
-            return AIResult(false, emptyList(), System.currentTimeMillis() - start, e.message)
+            AIResult(false, emptyList(), System.currentTimeMillis() - start, e.message)
         }
     }
 
