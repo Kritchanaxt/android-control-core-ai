@@ -92,7 +92,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION, VERIFIED_AUTO_CAPTURE }
+enum class AiMode { PREVIEW, PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION, VERIFIED_AUTO_CAPTURE, IDENTITY_VERIFICATION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -598,8 +598,8 @@ fun AIScreenLayout() {
                             }
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
-                    // 6. Special Handling for Verified Auto Capture
-                    else if (currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                    // 6. Special Handling for Verified Auto Capture or Identity Verification
+                    else if (currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE || currentAiMode == AiMode.IDENTITY_VERIFICATION) {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
@@ -895,7 +895,7 @@ fun AIScreenLayout() {
                                 if (!bitmap.isRecycled) bitmap.recycle()
                             }
                         }
-                    } else if (currentAiMode == AiMode.FACE_DETECTION || currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                    } else if (currentAiMode == AiMode.FACE_DETECTION || currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE || currentAiMode == AiMode.IDENTITY_VERIFICATION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             var tempFace: FaceDetectorProcessor? = null
@@ -1655,7 +1655,7 @@ fun CameraPreviewScreen(
                         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
 
                         // 🌟 GENERATE LIVE BLUR: Safe Main-thread update
-                        if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
+                        if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
                             try {
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
@@ -1845,7 +1845,7 @@ fun CameraPreviewScreen(
                             stableTime += elapsedSinceStart
 
                             // Rule 4: Buffer at 2s for Face and Hand Detection
-                            if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && stableTime in 1900..2100) {
+                            if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && stableTime in 1900..2100) {
                                 if (faceBuffer2s == null) {
                                     faceBuffer2s = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
@@ -1855,6 +1855,7 @@ fun CameraPreviewScreen(
                                 AiMode.FACE_DETECTION -> 3000L
                                 AiMode.HAND_DETECTION -> 3000L
                                 AiMode.VERIFIED_AUTO_CAPTURE -> 3000L
+                                AiMode.IDENTITY_VERIFICATION -> 3000L
                                 AiMode.SUBJECT_SEGMENTATION -> 1000L
                                 else -> 500L
                             }
@@ -1864,7 +1865,7 @@ fun CameraPreviewScreen(
                                 isPreviewPaused = true
                                 passedToCapture = true
 
-                                var captureBitmap = if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && faceBuffer2s != null) {
+                                var captureBitmap = if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && faceBuffer2s != null) {
                                     // Always copy from buffer to leave buffer intact for potential recycle check
                                     faceBuffer2s!!.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
@@ -1981,13 +1982,13 @@ fun CameraPreviewScreen(
                                             aiMode == AiMode.SELFIE_SEGMENTATION ||
                                             aiMode == AiMode.SUBJECT_SEGMENTATION
 
-                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                         // OCR matches bounds, PALMPRINT uses a smaller centered box
                         val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             min(cw, ch) * 0.8f
                         } else {
                             min(cw, ch) * 0.6f
@@ -2031,9 +2032,9 @@ fun CameraPreviewScreen(
                             val bottomTextWidth = textPaint.measureText(bottomText)
                             drawContext.canvas.nativeCanvas.drawText(bottomText, -bottomTextWidth / 2f, 0f, textPaint)
                             drawContext.canvas.nativeCanvas.restore()
-                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                              // 🌟 Guide for Face/Palm
-                             if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                             if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                                  val guideColor = if (stableTime >= 250L) android.graphics.Color.parseColor("#4CAF50") else android.graphics.Color.YELLOW
                                  val guidePaint = android.graphics.Paint().apply {
                                      color = guideColor
@@ -2190,7 +2191,7 @@ fun CameraPreviewScreen(
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
-                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                        } else if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             min(cw, ch) * 0.8f
                         } else {
                             min(cw, ch) * 0.8f
@@ -2233,7 +2234,7 @@ fun CameraPreviewScreen(
                             leftOffset + r.left * boxScaleX, topOffset + r.top * boxScaleY,
                             leftOffset + r.right * boxScaleX, topOffset + r.bottom * boxScaleY
                         )
-                        if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                        if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
                         } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
@@ -2559,6 +2560,7 @@ fun CameraPreviewScreen(
                                 AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
                                 AiMode.FACE_DETECTION -> "Face Detection"
                                 AiMode.VERIFIED_AUTO_CAPTURE -> "Verified Auto Capture"
+                                AiMode.IDENTITY_VERIFICATION -> "Identity Verification Mode"
                                 AiMode.POSE_DETECTION -> "Pose Detection"
                                 AiMode.SELFIE_SEGMENTATION -> "Selfie Segment"
                                 AiMode.SUBJECT_SEGMENTATION -> "Subject Segment"
@@ -2582,7 +2584,7 @@ fun CameraPreviewScreen(
                         }
                     }
 
-                    if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                    if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                         // Face Mode Toggle Button
                         Surface(
                             onClick = { onTargetFaceModeChange(if (targetFaceMode == "card") "normal" else "card") },
@@ -2884,6 +2886,7 @@ fun AiModeBottomSheet(
                     AiMode.HAND_DETECTION -> "MediaPipe Hand Landmarks Detection"
                     AiMode.FACE_DETECTION -> "Face Detection"
                     AiMode.VERIFIED_AUTO_CAPTURE -> "Verified Auto Capture"
+                    AiMode.IDENTITY_VERIFICATION -> "Identity Verification Mode"
                     AiMode.POSE_DETECTION -> "Pose Detection"
                     AiMode.SELFIE_SEGMENTATION -> "Selfie Segmentation"
                     AiMode.SUBJECT_SEGMENTATION -> "Subject Segmentation"
@@ -2985,6 +2988,7 @@ fun OCRResultScreen(
                             AiMode.HAND_DETECTION -> "Palmprint Result"
                             AiMode.FACE_DETECTION -> "Face Result"
                             AiMode.VERIFIED_AUTO_CAPTURE -> "Verified Auto Capture Result"
+                            AiMode.IDENTITY_VERIFICATION -> "Identity Verification Result"
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Result"
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Result"
                             AiMode.TEXT_RECOGNITION -> "ML Kit Result"
@@ -2996,6 +3000,7 @@ fun OCRResultScreen(
                             AiMode.HAND_DETECTION -> "MediaPipe Hand Gesture"
                             AiMode.FACE_DETECTION -> "ML Kit Face Detection"
                             AiMode.VERIFIED_AUTO_CAPTURE -> "Verified Auto Capture Pipeline"
+                            AiMode.IDENTITY_VERIFICATION -> "Identity Verification Pipeline"
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
                             AiMode.SUBJECT_SEGMENTATION -> "ML Kit Subject Segmentation"
                             AiMode.TEXT_RECOGNITION -> "ML Kit Text Recognition"
@@ -3361,7 +3366,7 @@ fun OCRResultScreen(
                                         drawContext.canvas.nativeCanvas.drawText(label, p0X, p0Y - (5f / scale), textPaint)
                                     }
                                 }
-                            } else if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && boxObj.has("bbox")) {
+                            } else if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && boxObj.has("bbox")) {
                                 // Draw BBox for face
                                 val bArr = boxObj.getJSONArray("bbox")
                                 val l = bArr.getDouble(0).toFloat()
@@ -3564,7 +3569,7 @@ fun OCRResultScreen(
 
                             // Calculate FullText
                             var rawText = ""
-                            if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                            if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
                                 val smiling = obj.optDouble("smiling_prob", -1.0)
                                 val leftEye = obj.optDouble("left_eye_open_prob", -1.0)
                                 val rightEye = obj.optDouble("right_eye_open_prob", -1.0)
@@ -3573,20 +3578,18 @@ fun OCRResultScreen(
                                 if (leftEye >= 0) rawText += " L-Eye(${String.format("%.1f", leftEye * 100)}%)"
                                 if (rightEye >= 0) rawText += " R-Eye(${String.format("%.1f", rightEye * 100)}%)"
                                 
-                                if (aiMode == AiMode.VERIFIED_AUTO_CAPTURE && obj.has("verification_metrics")) {
+                                if ((aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && obj.has("verification_metrics")) {
                                     try {
                                         val vm = obj.getJSONObject("verification_metrics")
+                                        val pStep0 = vm.optJSONObject("step_0_ocr")
                                         val pStep1 = vm.optJSONObject("step_1_pose")
                                         val pStep2 = vm.optJSONObject("step_2_face")
                                         
-                                        rawText += "\n\n   [Pose Verification]"
-                                        if (pStep1 != null) {
-                                            rawText += "\n     - Hands Detected: ${pStep1.optBoolean("hand_detected")}"
-                                            rawText += "\n     - Shoulders Y: ${String.format("%.1f", pStep1.optDouble("shoulder_y", 0.0))}"
-                                            rawText += "\n     - L-Wrist Y: ${String.format("%.1f", pStep1.optDouble("left_wrist_y", 0.0))}"
-                                            rawText += "\n     - R-Wrist Y: ${String.format("%.1f", pStep1.optDouble("right_wrist_y", 0.0))}"
+                                        if (pStep0 != null) {
+                                            rawText += "\n\n   [OCR Verification]"
+                                            rawText += "\n     - Extracted: ${pStep0.optString("text_extracted", "N/A")}"
                                         }
-                                        
+
                                         rawText += "\n   [Face 4-Pillar Verification]"
                                         if (pStep2 != null) {
                                             rawText += "\n     - All Pillars Passed: ${pStep2.optBoolean("4_pillars_passed")}"
@@ -3661,7 +3664,7 @@ fun OCRResultScreen(
                             } catch (e: Exception) { false }
 
                             val statusText = when {
-                                (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && isSuccess -> "Face Detected"
+                                (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && isSuccess -> "Face Detected"
                                 aiMode == AiMode.HAND_DETECTION && isSuccess -> "Palmprint Detected"
                                 (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
                                 !isSuccess -> "No Object Detected"
@@ -4012,6 +4015,7 @@ private suspend fun generateOCRPayload(
             AiMode.HAND_DETECTION -> "palmprint_result"
             AiMode.FACE_DETECTION -> "face_result"
             AiMode.VERIFIED_AUTO_CAPTURE -> "verified_auto_capture_result"
+            AiMode.IDENTITY_VERIFICATION -> "identity_verification_result"
             AiMode.POSE_DETECTION -> "pose_result"
             AiMode.SELFIE_SEGMENTATION -> "selfie_segmentation_result"
             AiMode.SUBJECT_SEGMENTATION -> "subject_segmentation_result"
@@ -4032,7 +4036,7 @@ private suspend fun generateOCRPayload(
                 put("runtime", "tflite")
                 put("model", "hand_landmarker.task")
             }
-            AiMode.FACE_DETECTION, AiMode.VERIFIED_AUTO_CAPTURE -> {
+            AiMode.FACE_DETECTION, AiMode.VERIFIED_AUTO_CAPTURE, AiMode.IDENTITY_VERIFICATION -> {
                 put("engine", "mlkit")
                 put("version", "face-detection")
                 put("runtime", "gms")
@@ -4075,7 +4079,7 @@ private suspend fun generateOCRPayload(
         put("use_gpu", mode.useGpu)
     }
     payload.put("engine_info", engineInfo)
-    if (aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+    if (aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
         payload.put("pipeline", "sequential_verification")
         val flowArray = org.json.JSONArray()
         flowArray.put("1. Pose Detection (Hand/Wrist Obstruction Check)")
@@ -4102,7 +4106,7 @@ private suspend fun generateOCRPayload(
     try {
         val benchmarkArr = JSONArray(jsonResult)
 
-        if (aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+        if (aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) {
             // Palmprint/Face structure
             payload.put("result", JSONObject().apply {
                 put(if (aiMode == AiMode.HAND_DETECTION) "palms" else "faces", benchmarkArr)

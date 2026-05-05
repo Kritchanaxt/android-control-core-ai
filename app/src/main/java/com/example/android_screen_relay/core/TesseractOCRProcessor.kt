@@ -62,7 +62,7 @@ class TesseractOCRProcessor : AIProcessor {
     fun getRawJson(bitmap: Bitmap): String? {
         try {
             if (bitmap.isRecycled) return "[]"
-            val result = process(bitmap)
+            val result = process(bitmap, emptyMap())
             if (!result.success || result.items.isEmpty()) return "[]"
             
             val jsonArray = org.json.JSONArray()
@@ -72,14 +72,12 @@ class TesseractOCRProcessor : AIProcessor {
                 obj.put("prob", item.confidence.toDouble())
                 
                 val r = item.boundingBox
-                obj.put("x0", r.left.toDouble())
-                obj.put("y0", r.top.toDouble())
-                obj.put("x1", r.right.toDouble())
-                obj.put("y1", r.top.toDouble())
-                obj.put("x2", r.right.toDouble())
-                obj.put("y2", r.bottom.toDouble())
-                obj.put("x3", r.left.toDouble())
-                obj.put("y3", r.bottom.toDouble())
+                val boxArray = org.json.JSONArray()
+                boxArray.put(org.json.JSONArray().put(r.left.toDouble()).put(r.top.toDouble()))
+                boxArray.put(org.json.JSONArray().put(r.right.toDouble()).put(r.top.toDouble()))
+                boxArray.put(org.json.JSONArray().put(r.right.toDouble()).put(r.bottom.toDouble()))
+                boxArray.put(org.json.JSONArray().put(r.left.toDouble()).put(r.bottom.toDouble()))
+                obj.put("box", boxArray)
                 
                 jsonArray.put(obj)
             }

@@ -54,7 +54,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 enum class ScanMode {
-    PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE, SUBJECT
+    PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE, SUBJECT, IDENTITY_VERIFICATION
 }
 
 enum class HandSide {
@@ -139,11 +139,15 @@ fun AIScannerScreen() {
             RealtimeCameraPreview(
                 mode = currentMode,
                 targetHand = targetHand,
+                status = resultJson,
                 onDetected = { detected, meta ->
                     isDetected = detected
                     if (isDetected && snappedImage == null) {
                         resultJson = meta
                     }
+                },
+                onStatusUpdate = { msg ->
+                    resultJson = msg // Overuse resultJson for status display if it's not detected yet
                 },
                 onSnap = { bitmap ->
                     if (snappedImage == null) {
@@ -165,7 +169,7 @@ fun AIScannerScreen() {
             ) {
                 // Mode Toggle
                 SegmentedButtonUI(
-                    options = listOf("OCR", "Hand", "Face", "Pose", "Selfie", "Subj"),
+                    options = listOf("OCR", "Hand", "Face", "Pose", "Selfie", "Subj", "Verify"),
                     selectedIndex = currentMode.ordinal,
                     onSelect = { index ->
                         currentMode = ScanMode.values()[index]
@@ -234,6 +238,8 @@ fun RealtimeCameraPreview(
     mode: ScanMode,
     targetHand: HandSide,
     onDetected: (Boolean, String) -> Unit,
+    onStatusUpdate: (String) -> Unit = {},
+    status: String = "",
     onSnap: (Bitmap) -> Unit
 ) {
     val context = LocalContext.current
@@ -273,6 +279,7 @@ fun RealtimeCameraPreview(
             try {
                 val result = AIManager.process(rotatedBitmap)
                 if (result != null) {
+                    onStatusUpdate(result.errorMessage ?: "")
                     latestDetections = result.items
                     var criteriaMet = false
                     var metaStr = "{}"
@@ -289,7 +296,26 @@ fun RealtimeCameraPreview(
                                 put("side", handMatch.extra["side"])
                             }.toString()
                         }
-                    } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
+                    } else if (mode == ScanMode.IDENTITY_VERIFICATION) {
+                        val identityItem = result.items.find { it.label == "IDENTITY_VERIFICATION" }
+                        if (identityItem != null) {
+                            criteriaMet = true
+                            metaStr = identityItem.extra["verification_metrics"] as? String ?: "{}"
+                            
+                            // Prioritize Card Face, then Card, then full frame
+                            val cardFaceBmp = identityItem.extra["card_face_bitmap"] as? Bitmap
+                            val cardBmp = identityItem.extra["card_bitmap"] as? Bitmap
+                            
+                            val finalBmp = cardFaceBmp ?: cardBmp
+                            
+                            if (finalBmp != null) {
+                                onSnap(finalBmp.copy(finalBmp.config ?: Bitmap.Config.ARGB_8888, true))
+                                consecutiveDetections.set(-9999)
+                                onDetected(true, metaStr)
+                                return@FrameProcessingRunnable
+                            }
+                        }
+                    } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR && mode != ScanMode.IDENTITY_VERIFICATION) {
                         if (result.success && result.items.isNotEmpty()) {
                             criteriaMet = true
                             metaStr = JSONObject().apply {
@@ -416,7 +442,26 @@ fun RealtimeCameraPreview(
                                                         put("side", handMatch.extra["side"])
                                                     }.toString()
                                                 }
-                                            } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
+                                            } else if (mode == ScanMode.IDENTITY_VERIFICATION) {
+                                                val identityItem = result.items.find { it.label == "IDENTITY_VERIFICATION" }
+                                                if (identityItem != null) {
+                                                    criteriaMet = true
+                                                    metaStr = identityItem.extra["verification_metrics"] as? String ?: "{}"
+                                                    
+                                                    // Prioritize Card Face, then Card, then full frame
+                                                    val cardFaceBmp = identityItem.extra["card_face_bitmap"] as? Bitmap
+                                                    val cardBmp = identityItem.extra["card_bitmap"] as? Bitmap
+                                                    
+                                                    val finalBmp = cardFaceBmp ?: cardBmp
+                                                    
+                                                    if (finalBmp != null) {
+                                                        onSnap(finalBmp.copy(finalBmp.config ?: Bitmap.Config.ARGB_8888, true))
+                                                        consecutiveDetections.set(-9999)
+                                                        onDetected(true, metaStr)
+                                                        return@setAnalyzer
+                                                    }
+                                                }
+                                            } else if (mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR && mode != ScanMode.IDENTITY_VERIFICATION) {
                                                 if (result.success && result.items.isNotEmpty()) {
                                                     criteriaMet = true
                                                     metaStr = JSONObject().apply {
@@ -526,7 +571,7 @@ fun RealtimeCameraPreview(
                             style = Stroke(width = 4.dp.toPx())
                         )
                     }
-                    ScanMode.PADDLE_OCR, ScanMode.TESSERACT_FAST_OCR -> {
+                    ScanMode.PADDLE_OCR, ScanMode.TESSERACT_FAST_OCR, ScanMode.IDENTITY_VERIFICATION -> {
                         val rect = item.boundingBox
                         drawRect(
                             color = Color.Cyan.copy(alpha = 0.8f),
@@ -560,16 +605,20 @@ fun RealtimeCameraPreview(
                 drawText("Latency: ${AIManager.getLastLatency()}ms", 40f, yStart + 50f, paint)
                 drawText("Mode: ${mode.name}", 40f, yStart + 100f, paint)
                 
+                // Draw Status Message
+                paint.color = android.graphics.Color.YELLOW
+                drawText("Status: $status", 40f, yStart + 150f, paint)
+                
                 if (latestDetections.isEmpty() && mode != ScanMode.PADDLE_OCR && mode != ScanMode.TESSERACT_FAST_OCR) {
                     paint.color = android.graphics.Color.RED
                     drawText("No Object Detected", 40f, yStart + 150f, paint)
                 }
             }
 
-            // Default UI Guide Box (For OCR/Palm)
-            if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR || mode == ScanMode.HAND_DETECTION) {
-                val boxWidth = if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR) size.width * 0.85f else size.width * 0.7f
-                val boxHeight = if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
+            if (mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR || mode == ScanMode.HAND_DETECTION || mode == ScanMode.IDENTITY_VERIFICATION) {
+                val isCardMode = mode == ScanMode.PADDLE_OCR || mode == ScanMode.TESSERACT_FAST_OCR || mode == ScanMode.IDENTITY_VERIFICATION
+                val boxWidth = if (isCardMode) size.width * 0.85f else size.width * 0.7f
+                val boxHeight = if (isCardMode) boxWidth * (5.4f / 8.5f) else boxWidth * 1.2f
                 val left = (size.width - boxWidth) / 2
                 val top = (size.height - boxHeight) / 2
                 drawRoundRect(
