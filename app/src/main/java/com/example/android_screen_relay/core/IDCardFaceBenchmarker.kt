@@ -54,7 +54,7 @@ class IDCardFaceBenchmarker {
                 val startTime = System.currentTimeMillis()
                 try {
                     // 1. Scale Up
-                    val scaledBmp = Bitmap.createScaledBitmap(
+                    val scaledBmp = com.example.android_screen_relay.core.safeCreateScaledBitmap(
                         faceCrop,
                         (faceCrop.width * scale).toInt(),
                         (faceCrop.height * scale).toInt(),

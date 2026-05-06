@@ -162,7 +162,7 @@ class RelayService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             } else {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // API 30
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 } else {
                     0 // Default on older versions
                 }

@@ -24,7 +24,7 @@ object OCROptimizer {
         val newWidth = Math.round(ratio * width)
         val newHeight = Math.round(ratio * height)
         
-        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
+        return com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, newWidth, newHeight, true)
     }
     
     /**

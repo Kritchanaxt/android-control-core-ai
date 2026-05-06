@@ -305,7 +305,7 @@ class Camera2Controller(
 
                                 // ปรับขนาด (Scale Down) ให้พอดิบพอดีเป๊ะๆ ตามตัวเลข (เช่น 1920x1920)
                                 if (bitmap.width != targetW || bitmap.height != targetH) {
-                                    val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
+                                    val scaledBitmap = com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, targetW, targetH, true)
                                     if (scaledBitmap != bitmap) {
                                         bitmap.recycle()
                                         bitmap = scaledBitmap

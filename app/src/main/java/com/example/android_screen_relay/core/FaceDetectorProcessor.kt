@@ -144,7 +144,7 @@ class FaceDetectorProcessor : AIProcessor {
         // Adaptive Upscaling Check for ROI
         val finalRoiBitmap = if (w < 300 || h < 300) {
             val scale = 2.0f
-            Bitmap.createScaledBitmap(roiBitmap, (w * scale).toInt(), (h * scale).toInt(), true)
+            com.example.android_screen_relay.core.safeCreateScaledBitmap(roiBitmap, (w * scale).toInt(), (h * scale).toInt(), true)
         } else roiBitmap
 
         val image = InputImage.fromBitmap(finalRoiBitmap, 0)

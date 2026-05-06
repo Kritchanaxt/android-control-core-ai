@@ -1,5 +1,7 @@
 package com.example.android_screen_relay.core
 
+import android.graphics.Bitmap
+import android.util.Log
 import android.util.Size
 
 enum class UiAspectRatio(
@@ -65,3 +67,33 @@ val predefinedResolutionsByRatio: Map<UiAspectRatio, List<String>> = mapOf(
         "1440x2560", "1701x3024", "2160x3840", "2268x4032"
     ).sortedWith(compareByDescending { it.split("x").first().toInt() })
 )
+
+/**
+ * 🌟 Prevents OutOfMemoryError crashes on devices with large camera resolutions
+ * by wrapping the scaling in a try-catch and enforcing a maximum dimension constraint.
+ */
+fun safeCreateScaledBitmap(src: Bitmap, dstWidth: Int, dstHeight: Int, filter: Boolean): Bitmap {
+    if (src.isRecycled) return src
+    return try {
+        // Enforce safe memory boundary (approx. 4K texture limit for generic devices)
+        val maxDim = 4096
+        var w = dstWidth
+        var h = dstHeight
+        if (w > maxDim || h > maxDim) {
+            val scale = minOf(maxDim.toFloat() / w, maxDim.toFloat() / h)
+            w = (w * scale).toInt()
+            h = (h * scale).toInt()
+            Log.w("BitmapUtils", "OOM Prevented: Capped bitmap to $w x $h")
+        }
+        if (w <= 0) w = 1
+        if (h <= 0) h = 1
+        Bitmap.createScaledBitmap(src, w, h, filter)
+    } catch (e: OutOfMemoryError) {
+        Log.e("BitmapUtils", "OOM Exception caught during createScaledBitmap! Returning original.", e)
+        src
+    } catch (e: Exception) {
+        Log.e("BitmapUtils", "Exception during createScaledBitmap.", e)
+        src
+    }
+}
+

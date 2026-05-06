@@ -404,7 +404,7 @@ fun AIScreenLayout() {
                                 if (processor != null) {
                                     val scale = 480f / maxOf(bitmap.width, bitmap.height)
                                     val processBitmap = if (scale < 1f) {
-                                        Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                        com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
                                     } else bitmap
 
                                     val res = processor.process(processBitmap, options)
@@ -432,7 +432,7 @@ fun AIScreenLayout() {
                         try {
                             val scale = 720f / maxOf(bitmap.width, bitmap.height)
                             val scaled = if (scale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(scaled, options)
@@ -481,7 +481,7 @@ fun AIScreenLayout() {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(aiBitmap, options)
@@ -506,7 +506,7 @@ fun AIScreenLayout() {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(aiBitmap, options)
@@ -550,7 +550,7 @@ fun AIScreenLayout() {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(aiBitmap, options)
@@ -603,7 +603,7 @@ fun AIScreenLayout() {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(aiBitmap, options)
@@ -649,7 +649,7 @@ fun AIScreenLayout() {
                             // This prevents ML Kit from failing or being too slow on high-res bitmaps
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
-                                Bitmap.createScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
                             } else bitmap
 
                             val result = AIManager.process(aiBitmap, options)
@@ -766,7 +766,7 @@ fun AIScreenLayout() {
 
                                         // 🌟 Apply zoomScale to final crop
                                         if (zoomScale > 1.0f) {
-                                            val scaled = Bitmap.createScaledBitmap(resultBmp, (resultBmp.width * zoomScale).toInt(), (resultBmp.height * zoomScale).toInt(), true)
+                                            val scaled = com.example.android_screen_relay.core.safeCreateScaledBitmap(resultBmp, (resultBmp.width * zoomScale).toInt(), (resultBmp.height * zoomScale).toInt(), true)
                                             resultBmp.recycle()
                                             scaled
                                         } else resultBmp
@@ -782,7 +782,7 @@ fun AIScreenLayout() {
                                             val cropped = Bitmap.createBitmap(bitmap, left, top, width, height)
                                             // 🌟 Apply zoomScale to final crop
                                             if (zoomScale > 1.0f) {
-                                                val scaled = Bitmap.createScaledBitmap(cropped, (width * zoomScale).toInt(), (height * zoomScale).toInt(), true)
+                                                val scaled = com.example.android_screen_relay.core.safeCreateScaledBitmap(cropped, (width * zoomScale).toInt(), (height * zoomScale).toInt(), true)
                                                 cropped.recycle()
                                                 scaled
                                             } else cropped
@@ -921,7 +921,7 @@ fun AIScreenLayout() {
                                     // 🌟 PREVENT MASSIVE UPSCALING OOM: Map max dimension to safe limits
                                     val scaleLimit = if (maxOf(roiWidth, roiHeight) > 600) 1f else 3f
                                     
-                                    processingBitmap = Bitmap.createScaledBitmap(faceCrop, (roiWidth * scaleLimit).toInt(), (roiHeight * scaleLimit).toInt(), true)
+                                    processingBitmap = com.example.android_screen_relay.core.safeCreateScaledBitmap(faceCrop, (roiWidth * scaleLimit).toInt(), (roiHeight * scaleLimit).toInt(), true)
                                     if (faceCrop !== processingBitmap && !faceCrop.isRecycled) faceCrop.recycle()
                                     
                                     roiLeftOffset = roiLeft.toFloat()
@@ -933,7 +933,7 @@ fun AIScreenLayout() {
                                     val currentMax = maxOf(bitmap.width, bitmap.height).toFloat()
                                     if (currentMax > maxDim) {
                                         scaleFactor = maxDim / currentMax
-                                        processingBitmap = Bitmap.createScaledBitmap(bitmap, (bitmap.width * scaleFactor).toInt(), (bitmap.height * scaleFactor).toInt(), true)
+                                        processingBitmap = com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * scaleFactor).toInt(), (bitmap.height * scaleFactor).toInt(), true)
                                     }
                                 }
 
@@ -994,7 +994,7 @@ fun AIScreenLayout() {
 
                                         // 🌟 Apply zoomScale to final crop
                                         val scaledResult = if (zoomScale > 1.0f) {
-                                            val scaled = Bitmap.createScaledBitmap(finalResult, (finalResult.width * zoomScale).toInt(), (finalResult.height * zoomScale).toInt(), true)
+                                            val scaled = com.example.android_screen_relay.core.safeCreateScaledBitmap(finalResult, (finalResult.width * zoomScale).toInt(), (finalResult.height * zoomScale).toInt(), true)
                                             if (scaled !== finalResult) finalResult.recycle()
                                             scaled
                                         } else finalResult
@@ -1131,7 +1131,7 @@ fun AIScreenLayout() {
                                     }
                                     maskBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(maskPixels))
 
-                                    val scaledMask = Bitmap.createScaledBitmap(maskBitmap, bitmap.width, bitmap.height, true)
+                                    val scaledMask = com.example.android_screen_relay.core.safeCreateScaledBitmap(maskBitmap, bitmap.width, bitmap.height, true)
                                     val scaledMaskPixels = IntArray(bitmap.width * bitmap.height)
 
                                     // Use a temporary bitmap to get alpha values
@@ -1314,14 +1314,14 @@ fun AIScreenLayout() {
 
                                     // 🌟 Apply zoomScale to final crop
                                     if (zoomScale > 1.0f) {
-                                        val scaled = android.graphics.Bitmap.createScaledBitmap(initialCrop, (safeW * zoomScale).toInt(), (safeH * zoomScale).toInt(), true)
+                                        val scaled = com.example.android_screen_relay.core.safeCreateScaledBitmap(initialCrop, (safeW * zoomScale).toInt(), (safeH * zoomScale).toInt(), true)
                                         if (initialCrop !== bitmap) initialCrop.recycle()
                                         scaled
                                     } else initialCrop
                                 } else {
                                     // Full Image Mode: Use original bitmap but still respect zoom if applicable
                                     if (!useCropMode && zoomScale > 1.0f) {
-                                        android.graphics.Bitmap.createScaledBitmap(bitmap, (bitmap.width * zoomScale).toInt(), (bitmap.height * zoomScale).toInt(), true)
+                                        com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * zoomScale).toInt(), (bitmap.height * zoomScale).toInt(), true)
                                     } else {
                                         bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                     }
@@ -1598,7 +1598,7 @@ fun CameraPreviewScreen(
                         
                         var baseBitmap = if (currentMax > maxDetectionDim) {
                             val scale = maxDetectionDim / currentMax
-                            Bitmap.createScaledBitmap(rawBitmap, (rawBitmap.width * scale).toInt(), (rawBitmap.height * scale).toInt(), true).also {
+                            com.example.android_screen_relay.core.safeCreateScaledBitmap(rawBitmap, (rawBitmap.width * scale).toInt(), (rawBitmap.height * scale).toInt(), true).also {
                                 rawBitmap.recycle()
                             }
                         } else {
@@ -1661,14 +1661,14 @@ fun CameraPreviewScreen(
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
                                 val blurH = (bitmap.height * scale).toInt().coerceAtLeast(1)
 
-                                val tiny = Bitmap.createScaledBitmap(bitmap, blurW, blurH, true)
+                                val tiny = com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, blurW, blurH, true)
 
                                 if (tiny != null && !tiny.isRecycled) {
                                     withContext(Dispatchers.Main) {
                                         val oldBlur = blurredFrame.value
                                         // 🌟 ALWAYS create new bitmap to trigger Compose recompose
                                         // createScaledBitmap with filtering=true provides a fast blur effect
-                                        val newBlurred = Bitmap.createScaledBitmap(tiny, bitmap.width, bitmap.height, true)
+                                        val newBlurred = com.example.android_screen_relay.core.safeCreateScaledBitmap(tiny, bitmap.width, bitmap.height, true)
                                         
                                         blurredFrame.value = newBlurred
                                         
@@ -4454,7 +4454,7 @@ fun applyBlur(context: Context, bitmap: Bitmap, radius: Float = 25f): Bitmap {
     val scale = if (currentMax > maxDim) maxDim / currentMax else 1f
     
     val smallBitmap = if (scale < 1f) {
-        Bitmap.createScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
+        com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true)
     } else {
         bitmap.copy(Bitmap.Config.ARGB_8888, true)
     }
@@ -4473,7 +4473,7 @@ fun applyBlur(context: Context, bitmap: Bitmap, radius: Float = 25f): Bitmap {
     if (smallBitmap !== bitmap) smallBitmap.recycle()
     
     val finalBitmap = if (scale < 1f) {
-        val scaledBack = Bitmap.createScaledBitmap(outBitmap, bitmap.width, bitmap.height, true)
+        val scaledBack = com.example.android_screen_relay.core.safeCreateScaledBitmap(outBitmap, bitmap.width, bitmap.height, true)
         outBitmap.recycle()
         scaledBack
     } else {

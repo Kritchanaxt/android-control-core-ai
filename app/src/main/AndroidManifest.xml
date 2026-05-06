@@ -53,7 +53,7 @@
             android:name=".RelayService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|dataSync" />
+            android:foregroundServiceType="mediaProjection|dataSync|camera" />
 
         <activity
             android:name=".MainActivity"
