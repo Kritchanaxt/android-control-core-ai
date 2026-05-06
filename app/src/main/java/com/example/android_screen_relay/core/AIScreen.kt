@@ -599,6 +599,10 @@ fun AIScreenLayout() {
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 6. Special Handling for Verified Auto Capture or Identity Verification
+                    // 🌟 FIX: Trust the Processor's result directly.
+                    // VerifiedAutoCaptureProcessor already runs: Pose (Hand Filter) -> Face (4-Pillar).
+                    // IdentityVerificationProcessor already runs: OCR -> Face -> Stability internally.
+                    // We must NOT re-do face checks here, or we bypass the hand rejection logic.
                     else if (currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE || currentAiMode == AiMode.IDENTITY_VERIFICATION) {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
@@ -609,35 +613,21 @@ fun AIScreenLayout() {
                             val result = AIManager.process(aiBitmap, options)
                             if (aiBitmap !== bitmap) aiBitmap.recycle()
 
+                            // 🌟 KEY FIX: If the processor returned success=false (e.g. HAND_DETECTED, 
+                            // FACE_NOT_FOUND, or stability not yet met), we REJECT this frame.
+                            // This ensures the Pose hand filter actually works.
                             if (result != null && result.success && result.items.isNotEmpty()) {
                                 val face = result.items.first()
                                 val box = face.boundingBox
 
-                                // Map back to original resolution
+                                // Map back to original resolution for UI overlay drawing
                                 val originalBox = if (aiScale < 1f) {
                                     android.graphics.RectF(box.left / aiScale, box.top / aiScale, box.right / aiScale, box.bottom / aiScale)
                                 } else box
 
-                                // Rule 1: Position centered & Rule 2: Size fit (roughly > 15% of frame)
-                                val centerX = originalBox.centerX()
-                                val centerY = originalBox.centerY()
-                                val frameCenterX = bitmap.width / 2f
-                                val frameCenterY = bitmap.height / 2f
-                                val isCentered = kotlin.math.abs(centerX - frameCenterX) < (bitmap.width * 0.15f) &&
-                                                kotlin.math.abs(centerY - frameCenterY) < (bitmap.height * 0.15f)
-                                val isProperSize = (originalBox.width() * originalBox.height()) > (bitmap.width * bitmap.height * 0.15f)
-
-                                // Rule 3: Face angles <= 25 degrees
-                                val yaw = (face.extra["head_euler_y"] as? Float) ?: 0f
-                                val pitch = (face.extra["head_euler_x"] as? Float) ?: 0f
-                                val roll = (face.extra["head_euler_z"] as? Float) ?: 0f
-                                val isStraight = kotlin.math.abs(yaw) < 25f &&
-                                                kotlin.math.abs(pitch) < 25f &&
-                                                kotlin.math.abs(roll) < 25f
-
-                                val finalSuccess = isCentered && isProperSize && isStraight
-                                Pair(finalSuccess, listOf(face.copy(boundingBox = originalBox)))
+                                Pair(true, listOf(face.copy(boundingBox = originalBox)))
                             } else {
+                                // Processor rejected: hand detected, face not found, angles bad, etc.
                                 Pair(false, emptyList())
                             }
                         } catch (e: Throwable) { Pair(false, emptyList()) }
@@ -1269,6 +1259,55 @@ fun AIScreenLayout() {
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             }
                         }
+                    } else if (currentAiMode == AiMode.IDENTITY_VERIFICATION || currentAiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                val result = AIManager.runWithProcessor { proc ->
+                                    proc?.process(bitmap, mapOf("is_front" to isFront))
+                                } ?: com.example.android_screen_relay.core.AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+
+                                val item = result.items.firstOrNull()
+                                val jsonStr = if (item != null) {
+                                    val arr = org.json.JSONArray()
+                                    val obj = org.json.JSONObject()
+                                    obj.put("label", item.label)
+                                    obj.put("confidence", item.confidence)
+                                    obj.put("verification_metrics", org.json.JSONObject(item.extra["verification_metrics"] as? String ?: "{}"))
+                                    obj.put("id_info", item.extra["id_info"])
+                                    obj.put("name_info", item.extra["name_info"])
+                                    obj.put("dob_info", item.extra["dob_info"])
+                                    obj.put("text", item.extra["text"])
+                                    arr.put(obj)
+                                    arr.toString()
+                                } else "[]"
+
+                                val faceOnCard = item?.extra?.get("card_face_bitmap") as? Bitmap
+                                val facePerson = item?.extra?.get("face_bitmap") as? Bitmap
+                                
+                                val finalDisplayImage = if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
+                                    faceOnCard ?: facePerson ?: bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                } else {
+                                    facePerson ?: bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = jsonStr
+                                    currentImage = finalDisplayImage
+                                    if (!bitmap.isRecycled && currentImage !== bitmap) bitmap.recycle()
+                                    isProcessing = false
+                                }
+
+                                val payload = generateOCRPayload(context, finalDisplayImage, jsonStr, pbElapsedMs, currentAiMode)
+                                RelayService.getInstance()?.broadcastMessage(payload.toString())
+                            } catch (e: Exception) {
+                                Log.e("Verification", "Final capture error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            }
+                        }
                     } else {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
@@ -1292,9 +1331,9 @@ fun AIScreenLayout() {
                                 // บังคับตัดภาพคงที่ (Fixed Crop) ตั้งแต่เลขบัตร จนถึง วันเดือนปีเกิด
                                 // อ้างอิงขนาดประมาณการ: x เริ่มที่ 2%, y เริ่มที่ 12%, กว้าง 93%, สูงลงมาถึงตำแหน่งประมาณ 75-80% 
                                 val calculatedRect = androidx.compose.ui.geometry.Rect(
-                                    left = 0.20f,     // เริ่มที่ขอบซ้าย 20%
+                                    left = 0.28f,     // เริ่มที่ขอบซ้าย 28%
                                     top = 0.10f,      // เริ่มต่ำลงมา 10% (ครอบคลุมเลขบัตร)
-                                    right = 0.98f,    // ไปจนสุดขอบขวา 98%
+                                    right = 0.99f,    // ไปจนสุดขอบขวา 99%
                                     bottom = 0.62f    // ลงมาจนถึง 62% ของบัตร (ครอบคลุมวันเดือนปีเกิดแน่นอน)
                                 )
 
@@ -1606,7 +1645,8 @@ fun CameraPreviewScreen(
                         }
 
                         // 🌟 CROP MODE: If enabled, crop to the centered frame area
-                        val bitmap = if (useCropMode) {
+                        // 🌟 FIX: Skip crop for VERIFIED_AUTO_CAPTURE — Pose Detection needs full body visible
+                        val bitmap = if (useCropMode && aiMode != AiMode.VERIFIED_AUTO_CAPTURE) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
 
@@ -1655,7 +1695,9 @@ fun CameraPreviewScreen(
                         (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(memoryInfo)
 
                         // 🌟 GENERATE LIVE BLUR: Safe Main-thread update
-                        if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
+                        // 🌟 FIX: Only for FACE_DETECTION normal mode. Removed VERIFIED_AUTO_CAPTURE/IDENTITY_VERIFICATION
+                        // because blur prevents Pose Detection from seeing the body for hand detection.
+                        if (aiMode == AiMode.FACE_DETECTION && targetFaceMode == "normal" && !isUltraLowRAM && !memoryInfo.lowMemory) {
                             try {
                                 val scale = 0.05f
                                 val blurW = (bitmap.width * scale).toInt().coerceAtLeast(1)
@@ -1836,28 +1878,25 @@ fun CameraPreviewScreen(
 
                         var passedToCapture = false
                         // Disable Auto-Snap for specific preview-only modes as requested
-                        val isPreviewOnlyMode = aiMode == AiMode.POSE_DETECTION ||
-                                                aiMode == AiMode.OBJECT_DETECTION ||
+                        // POSE_DETECTION removed to allow T+2 Capture
+                        val isPreviewOnlyMode = aiMode == AiMode.OBJECT_DETECTION ||
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
                             val elapsedSinceStart = System.currentTimeMillis() - iterationStart
                             stableTime += elapsedSinceStart
 
-                            // Rule 4: Buffer at 2s for Face and Hand Detection
-                            if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && stableTime in 1900..2100) {
+                            // Rule 4: Buffer at 2s (T+2) for all modes except Object Detect
+                            if (aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION && stableTime in 1900..2100) {
                                 if (faceBuffer2s == null) {
                                     faceBuffer2s = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
                             }
 
                             val targetStableTime = when(aiMode) {
-                                AiMode.FACE_DETECTION -> 3000L
-                                AiMode.HAND_DETECTION -> 3000L
-                                AiMode.VERIFIED_AUTO_CAPTURE -> 3000L
-                                AiMode.IDENTITY_VERIFICATION -> 3000L
-                                AiMode.SUBJECT_SEGMENTATION -> 1000L
-                                else -> 500L
+                                AiMode.IDENTITY_VERIFICATION -> 100L // Fast trigger since internal stabilization is already 3s
+                                AiMode.OBJECT_DETECTION, AiMode.CUSTOM_OBJECT_DETECTION -> 500L // Excluded from T+2
+                                else -> 3000L // Standard T+2 rule: 3s stability
                             }
 
                             if (stableTime >= targetStableTime) {
@@ -1865,7 +1904,7 @@ fun CameraPreviewScreen(
                                 isPreviewPaused = true
                                 passedToCapture = true
 
-                                var captureBitmap = if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && faceBuffer2s != null) {
+                                var captureBitmap = if (faceBuffer2s != null) {
                                     // Always copy from buffer to leave buffer intact for potential recycle check
                                     faceBuffer2s!!.copy(Bitmap.Config.ARGB_8888, true)
                                 } else {
@@ -2053,25 +2092,7 @@ fun CameraPreviewScreen(
                                      val cardRect = android.graphics.RectF(cardLeft, cardTop, cardLeft + cardW, cardTop + cardH)
                                      drawContext.canvas.nativeCanvas.drawRoundRect(cardRect, 30f, 30f, guidePaint)
 
-                                     // 2. Draw Face Area Guide within the card based on camera
-                                     // (Matches logic in onImageCaptured: left if front, right if back)
-                                     val faceAreaW = cardW * 0.35f
-                                     val faceAreaH = cardH * 0.8f
-                                     val faceAreaLeft = if (isFrontCamera) {
-                                         cardLeft + (cardW * 0.05f)
-                                     } else {
-                                         cardLeft + (cardW * 0.60f)
-                                     }
-                                     val faceAreaTop = cardTop + (cardH * 0.1f)
-                                     val faceAreaRect = android.graphics.RectF(faceAreaLeft, faceAreaTop, faceAreaLeft + faceAreaW, faceAreaTop + faceAreaH)
 
-                                     val faceAreaPaint = android.graphics.Paint(guidePaint).apply {
-                                         pathEffect = null
-                                         alpha = 100
-                                         style = android.graphics.Paint.Style.STROKE
-                                         strokeWidth = 4f
-                                     }
-                                     drawContext.canvas.nativeCanvas.drawRoundRect(faceAreaRect, 15f, 15f, faceAreaPaint)
 
                                      // Instructions
                                      val textPaint = android.graphics.Paint().apply {
@@ -3587,7 +3608,15 @@ fun OCRResultScreen(
                                         
                                         if (pStep0 != null) {
                                             rawText += "\n\n   [OCR Verification]"
+                                            rawText += "\n     - ID: ${pStep0.optString("id_found", "N/A")}"
+                                            rawText += "\n     - Name: ${pStep0.optString("name_found", "N/A")}"
+                                            rawText += "\n     - DOB: ${pStep0.optString("dob_found", "N/A")}"
                                             rawText += "\n     - Extracted: ${pStep0.optString("text_extracted", "N/A")}"
+                                        }
+
+                                        if (pStep1 != null) {
+                                            rawText += "\n\n   [Pose Verification]"
+                                            rawText += "\n     - Hand Detected: ${pStep1.optBoolean("hand_detected")}"
                                         }
 
                                         rawText += "\n   [Face 4-Pillar Verification]"
@@ -4110,6 +4139,15 @@ private suspend fun generateOCRPayload(
             // Palmprint/Face structure
             payload.put("result", JSONObject().apply {
                 put(if (aiMode == AiMode.HAND_DETECTION) "palms" else "faces", benchmarkArr)
+                
+                // Add identity metadata at result level if available
+                if (aiMode == AiMode.IDENTITY_VERIFICATION && benchmarkArr.length() > 0) {
+                    val first = benchmarkArr.getJSONObject(0)
+                    put("id_found", first.optString("id_info"))
+                    put("name_found", first.optString("name_info"))
+                    put("dob_found", first.optString("dob_info"))
+                    put("full_text", first.optString("text"))
+                }
             })
 
             // add resource info directly to palmprint summary so the google script logs it properly
@@ -4117,6 +4155,10 @@ private suspend fun generateOCRPayload(
             payload.put("summary", JSONObject().apply {
                 put(if (aiMode == AiMode.HAND_DETECTION) "palms_detected" else "faces_detected", benchmarkArr.length())
                 put("total_latency_ms", timeMs)
+                if (aiMode == AiMode.IDENTITY_VERIFICATION && benchmarkArr.length() > 0) {
+                    val first = benchmarkArr.getJSONObject(0)
+                    put("id_found", first.optString("id_info"))
+                }
             })
 
             // Append memory usage manually at ROOT level so Google Sheet script can use `data.cpu_usage` fallback block

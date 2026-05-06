@@ -232,8 +232,8 @@ class IdentityVerificationProcessor : AIProcessor {
                          }
                      }
                      
-                     // End of stability at 1.5 seconds
-                     if (elapsed >= 1500) {
+                     // End of stability at 3.0 seconds
+                     if (elapsed >= 3000) {
                          currentState = VerificationState.RESULT_SUMMARY
                      }
                      

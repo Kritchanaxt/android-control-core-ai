@@ -96,6 +96,37 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 val roll = (faceItem.extra["head_euler_z"] as? Float) ?: 0f
                 val isStraight = kotlin.math.abs(yaw) < 25f && kotlin.math.abs(pitch) < 25f && kotlin.math.abs(roll) < 25f
                 
+                // 🌟 STEP 2.5: Eye-based Occlusion Detection (Fallback for when Pose can't see body)
+                // If one eye is much more closed than the other, it's likely a hand blocking half the face.
+                val leftEyeProb = (faceItem.extra["left_eye_open_prob"] as? Float) ?: -1f
+                val rightEyeProb = (faceItem.extra["right_eye_open_prob"] as? Float) ?: -1f
+                
+                var isOccluded = false
+                var occlusionReason = ""
+                
+                if (leftEyeProb >= 0f && rightEyeProb >= 0f) {
+                    // Case 1: One eye blocked, other open → partial occlusion (hand blocking half face)
+                    val eyeDiff = kotlin.math.abs(leftEyeProb - rightEyeProb)
+                    if (eyeDiff > 0.35f && (leftEyeProb < 0.3f || rightEyeProb < 0.3f)) {
+                        isOccluded = true
+                        occlusionReason = "PARTIAL_OCCLUSION (L:${String.format("%.2f", leftEyeProb)} R:${String.format("%.2f", rightEyeProb)})"
+                    }
+                    // Case 2: Both eyes very low → heavy occlusion
+                    if (leftEyeProb < 0.15f && rightEyeProb < 0.15f) {
+                        isOccluded = true
+                        occlusionReason = "HEAVY_OCCLUSION (L:${String.format("%.2f", leftEyeProb)} R:${String.format("%.2f", rightEyeProb)})"
+                    }
+                }
+                
+                if (isOccluded) {
+                    return AIResult(
+                        success = false,
+                        items = emptyList(),
+                        processTimeMs = System.currentTimeMillis() - start,
+                        errorMessage = "FACE_OCCLUDED: $occlusionReason"
+                    )
+                }
+                
                 val metricsJson = org.json.JSONObject().apply {
                     put("step_1_pose", org.json.JSONObject(if (poseMetrics.isNotEmpty() && poseMetrics != "{}") poseMetrics else "{\"hand_detected\": false}"))
                     put("step_2_face", org.json.JSONObject().apply {
@@ -108,6 +139,9 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                         put("yaw", yaw)
                         put("pitch", pitch)
                         put("roll", roll)
+                        put("left_eye_prob", leftEyeProb)
+                        put("right_eye_prob", rightEyeProb)
+                        put("is_occluded", false)
                         put("4_pillars_passed", isCentered && isProperSize && isStraight)
                     })
                 }
@@ -116,10 +150,10 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 updatedExtra["verification_metrics"] = metricsJson.toString()
 
                 return AIResult(
-                    success = true,
+                    success = isCentered && isProperSize && isStraight,
                     items = listOf(faceItem.copy(extra = updatedExtra)),
                     processTimeMs = System.currentTimeMillis() - start,
-                    errorMessage = null
+                    errorMessage = if (isCentered && isProperSize && isStraight) null else "FACE_4PILLAR_FAILED"
                 )
             }
             

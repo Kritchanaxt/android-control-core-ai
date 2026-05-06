@@ -177,7 +177,10 @@ class FaceDetectorProcessor : AIProcessor {
                     "tracking_id" to (face.trackingId ?: -1),
                     "head_euler_x" to face.headEulerAngleX, // Pitch
                     "head_euler_y" to face.headEulerAngleY, // Yaw
-                    "head_euler_z" to face.headEulerAngleZ  // Roll
+                    "head_euler_z" to face.headEulerAngleZ, // Roll
+                    "left_eye_open_prob" to (face.leftEyeOpenProbability ?: -1f),
+                    "right_eye_open_prob" to (face.rightEyeOpenProbability ?: -1f),
+                    "smiling_prob" to (face.smilingProbability ?: -1f)
                 )
             )
         }
