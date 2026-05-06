@@ -44,8 +44,14 @@ class ScreenCaptureManager(private val context: Context) {
         val screenWidth = Resources.getSystem().displayMetrics.widthPixels
         val screenHeight = Resources.getSystem().displayMetrics.heightPixels
         
-        when(qualityMode) {
-            0 -> { // Low (Fast) - 480p approx
+        val isPortrait = screenHeight > screenWidth
+        val maxSafeWidth = if (isPortrait) 1080 else 1920
+        val maxSafeHeight = if (isPortrait) 1920 else 1080
+        val maxUltraWidth = if (isPortrait) 1440 else 2560
+        val maxUltraHeight = if (isPortrait) 2560 else 1440
+
+        when (qualityMode) {
+            0 -> { // Low (SD)
                 val scale = 0.4f
                 targetWidth = (screenWidth * scale).toInt()
                 targetHeight = (screenHeight * scale).toInt()
@@ -58,14 +64,19 @@ class ScreenCaptureManager(private val context: Context) {
                 jpegQuality = 60
             }
             2 -> { // High (Full HD)
-                val scale = 1.0f // Native
-                targetWidth = screenWidth
-                targetHeight = screenHeight
+                val scaleW = maxSafeWidth.toFloat() / screenWidth
+                val scaleH = maxSafeHeight.toFloat() / screenHeight
+                val scale = minOf(scaleW, scaleH, 1.0f)
+                targetWidth = (screenWidth * scale).toInt()
+                targetHeight = (screenHeight * scale).toInt()
                 jpegQuality = 75
             }
             3 -> { // Ultra (2K/Native High Quality)
-                targetWidth = screenWidth
-                targetHeight = screenHeight
+                val scaleW = maxUltraWidth.toFloat() / screenWidth
+                val scaleH = maxUltraHeight.toFloat() / screenHeight
+                val scale = minOf(scaleW, scaleH, 1.0f)
+                targetWidth = (screenWidth * scale).toInt()
+                targetHeight = (screenHeight * scale).toInt()
                 jpegQuality = 90
             }
             else -> {
@@ -94,50 +105,55 @@ class ScreenCaptureManager(private val context: Context) {
             }
         }, backgroundHandler)
 
-        // Setup ImageReader
-        imageReader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
-        
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture",
-            targetWidth, targetHeight, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, backgroundHandler
-        )
-        
-        val width = targetWidth
-        val height = targetHeight
+        try {
+            // Setup ImageReader
+            imageReader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
+            
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture",
+                targetWidth, targetHeight, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader!!.surface, null, backgroundHandler
+            )
+            
+            val width = targetWidth
+            val height = targetHeight
 
-        imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * width
-                
-                val totalWidth = width + rowPadding / pixelStride
+            imageReader?.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                try {
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * width
+                    
+                    val totalWidth = width + rowPadding / pixelStride
 
-                if (reusableBitmap == null || reusableBitmap!!.width != totalWidth || reusableBitmap!!.height != height) {
-                    reusableBitmap?.recycle()
-                    reusableBitmap = Bitmap.createBitmap(totalWidth, height, Bitmap.Config.ARGB_8888)
+                    if (reusableBitmap == null || reusableBitmap!!.width != totalWidth || reusableBitmap!!.height != height) {
+                        reusableBitmap?.recycle()
+                        reusableBitmap = Bitmap.createBitmap(totalWidth, height, Bitmap.Config.ARGB_8888)
+                    }
+
+                    reusableBitmap!!.copyPixelsFromBuffer(buffer)
+                    
+                    if (rowPadding == 0) {
+                        sendBitmap(reusableBitmap!!)
+                    } else { 
+                        val croppedBitmap = Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
+                        sendBitmap(croppedBitmap)
+                        croppedBitmap.recycle()
+                    }
+                } catch (e: Throwable) {
+                    // Log.e("ScreenCapture", "Error processing image: ${e.message}")
+                } finally {
+                    image.close()
                 }
-
-                reusableBitmap!!.copyPixelsFromBuffer(buffer)
-                
-                if (rowPadding == 0) {
-                    sendBitmap(reusableBitmap!!)
-                } else { 
-                    val croppedBitmap = Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
-                    sendBitmap(croppedBitmap)
-                    croppedBitmap.recycle()
-                }
-            } catch (e: Exception) {
-                // Log.e("ScreenCapture", "Error processing image: ${e.message}")
-            } finally {
-                image.close()
-            }
-        }, backgroundHandler) 
+            }, backgroundHandler)
+        } catch (e: Throwable) {
+            android.util.Log.e("ScreenCaptureManager", "Fatal error starting VirtualDisplay", e)
+            stopCapture()
+        } 
     }
 
     private fun sendBitmap(bitmap: Bitmap) {
@@ -146,7 +162,7 @@ class ScreenCaptureManager(private val context: Context) {
             bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream)
             val imageBytes = outputStream.toByteArray()
             onFrameCaptured?.invoke(imageBytes)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         }
     }

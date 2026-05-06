@@ -1199,7 +1199,7 @@ fun AIScreenLayout() {
                                 val payload = generateOCRPayload(context, foreground, ocrResultJson, ocrTimeMs, currentAiMode)
                                 RelayService.getInstance()?.broadcastMessage(payload.toString())
 
-                                // 🌟 FIX: Free memory from intermediate ML Kit Subject bitmaps
+                                // 🌟 FIX: Free memory from intermediate ML Kit Subject bitmaps (all items)
                                 result.items.forEach { item ->
                                     (item.extra["mask_bitmap"] as? Bitmap)?.recycle()
                                     (item.extra["subject_bitmap"] as? Bitmap)?.recycle()
@@ -1620,6 +1620,15 @@ fun CameraPreviewScreen(
 
             while (isActive && !isProcessingBusy) {
                 val iterationStart = System.currentTimeMillis()
+
+                // 🌟 ML KIT VISION QUICKSTART OPTIMIZATION: 
+                // Skip frame if AI is still processing the previous one. 
+                // This prevents 'Memory Bloat' (~200MB/s) from redundant Bitmap creations.
+                if (AIManager.isBusy()) {
+                    kotlinx.coroutines.delay(10)
+                    continue
+                }
+
                 if (isPreviewPaused) {
                     kotlinx.coroutines.delay(500)
                     continue
@@ -1770,6 +1779,18 @@ fun CameraPreviewScreen(
                                 )
                                 item.copy(boundingBox = expandedRect)
                             }
+                        }
+
+                        // 🌟 FIX: Explicitly recycle old bitmaps before assigning new ones to prevent Native memory leak
+                        val oldItems = when (aiMode) {
+                            AiMode.SELFIE_SEGMENTATION -> latestItemsSelfie.value
+                            AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value
+                            else -> null
+                        }
+                        oldItems?.forEach { oldItem ->
+                            (oldItem.extra["mask_bitmap"] as? Bitmap)?.recycle()
+                            (oldItem.extra["subject_bitmap"] as? Bitmap)?.recycle()
+                            (oldItem.extra["combined_subject_bitmap"] as? Bitmap)?.recycle()
                         }
 
                         // Map items to preview states for drawing using .value

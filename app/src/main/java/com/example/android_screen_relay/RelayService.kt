@@ -173,7 +173,7 @@ class RelayService : Service() {
                 } else {
                     startForeground(1, notification, fgsType)
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e("RelayService", "Error starting foreground service", e)
                 showForegroundRequiredAlert()
                 stopSelf()
@@ -182,7 +182,7 @@ class RelayService : Service() {
         } else {
             try {
                 startForeground(1, notification)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e("RelayService", "Error starting foreground service", e)
                 showForegroundRequiredAlert()
                 stopSelf()
@@ -191,21 +191,23 @@ class RelayService : Service() {
         }
         
         // Show Overlay
-        overlayManager.showOverlay()
+        if (android.provider.Settings.canDrawOverlays(this)) {
+            overlayManager.showOverlay()
+        } else {
+            android.util.Log.e("RelayService", "Cannot show overlay: SYSTEM_ALERT_WINDOW permission missing")
+        }
 
         // Start Screen Capture if data is present
         if (hasProjectionData && dataIntent != null) {
             try {
                 val quality = intent?.getIntExtra("QUALITY_MODE", 1) ?: 1 // Default to Medium (1)
                 android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
-                /*
-                // TEMPORARILY DISABLED SCREEN CAPTURE TO TEST COMMAND STABILITY
+                
                 screenCaptureManager.startCapture(resultCode, dataIntent, quality) { imageBytes ->
                     // Pass raw bytes to authenticated clients
                     relayServer?.broadcastToAuthenticated(imageBytes)
                 }
-                */
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 android.util.Log.e("RelayService", "Error starting capture: ${e.message}")
                 e.printStackTrace()
             }

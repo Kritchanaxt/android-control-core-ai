@@ -382,6 +382,14 @@ fun RealtimeCameraPreview(
                                     return@setAnalyzer
                                 }
 
+                                // 🌟 VISION QUICKSTART OPTIMIZATION:
+                                // Skip frame BEFORE any expensive Bitmap allocations (toBitmap / rotate)
+                                // if the AI processor is already busy.
+                                if (AIManager.isBusy()) {
+                                    image.close()
+                                    return@setAnalyzer
+                                }
+
                                 previewWidth = image.width
                                 previewHeight = image.height
                                 

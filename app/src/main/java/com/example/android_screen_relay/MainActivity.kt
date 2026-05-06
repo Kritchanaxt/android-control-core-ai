@@ -120,10 +120,19 @@ class MainActivity : ComponentActivity() {
             putExtra("DATA_INTENT", data)
             putExtra("QUALITY_MODE", qualityMode)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Failed to start foreground service", e)
+            try {
+                startService(intent)
+            } catch (e2: Exception) {
+                android.util.Log.e("MainActivity", "Fallback startService also failed", e2)
+            }
         }
     }
 
@@ -219,10 +228,9 @@ fun AppNavigation(
                         isBroadcasting = isBroadcasting,
                         onStartService = { quality ->
                             // Check permissions first!
-                            val isOverlay = Settings.canDrawOverlays(context)
                             val isBattery = checkBatteryOptimization(context)
                             
-                            if (isOverlay && isBattery) {
+                            if (isBattery) {
                                 onStartService(quality)
                                 isBroadcasting = true
                             } else {

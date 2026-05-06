@@ -48,6 +48,12 @@ object AIManager {
     // A flag to quickly skip processing during transitions
     @Volatile
     private var isSwitching = false
+
+    // 🌟 Performance: Busy flag to allow frame skipping before expensive Bitmap operations
+    @Volatile
+    private var isBusy = false
+
+    fun isBusy(): Boolean = isBusy || isSwitching
     
     fun switchProcessor(processor: AIProcessor, context: android.content.Context, config: AIConfig): Boolean {
         // Use write lock to ensure no one is processing or reading while we switch
@@ -175,6 +181,7 @@ object AIManager {
             return block(null)
         }
         
+        isBusy = true
         return try {
             if (isSwitching) {
                 block(null)
@@ -182,6 +189,7 @@ object AIManager {
                 block(activeProcessor)
             }
         } finally {
+            isBusy = false
             readLock.unlock()
         }
     }
@@ -213,9 +221,11 @@ object AIManager {
             return null
         }
         
+        isBusy = true
         val result = try {
             activeProcessor?.process(bitmap, options)
         } finally {
+            isBusy = false
             readLock.unlock()
         }
         
