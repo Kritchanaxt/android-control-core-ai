@@ -92,7 +92,7 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
-enum class AiMode { PREVIEW, PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION, VERIFIED_AUTO_CAPTURE }
+enum class AiMode { PREVIEW, PADDLE_OCR, TESSERACT_FAST_OCR, HAND_DETECTION, FACE_DETECTION, POSE_DETECTION, SELFIE_SEGMENTATION, SUBJECT_SEGMENTATION, OBJECT_DETECTION, CUSTOM_OBJECT_DETECTION, TEXT_RECOGNITION, VERIFIED_AUTO_CAPTURE, IDENTITY_VERIFICATION }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -149,12 +149,17 @@ fun AIScreenLayout() {
 
 
     LaunchedEffect(currentAiMode, selectedOcrModel) {
-        if ((currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR) && selectedOcrModel.isEmpty()) {
+        if ((currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.IDENTITY_VERIFICATION) && selectedOcrModel.isEmpty()) {
             // Wait for user to select OCR model
         } else {
             isProcessing = true
             withContext(Dispatchers.Default) {
-                AIManager.switchProcessor(context, currentAiMode.name, mapOf("ocr_engine" to selectedOcrModel))
+                val modeToSwitch = if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
+                    if (selectedOcrModel == "Tesseract fast") AiMode.TESSERACT_FAST_OCR.name else "OCR"
+                } else {
+                    currentAiMode.name
+                }
+                AIManager.switchProcessor(context, modeToSwitch, mapOf("ocr_engine" to selectedOcrModel))
             }
             isProcessing = false
         }
@@ -263,6 +268,7 @@ fun AIScreenLayout() {
                 computeMode = it
                 ComputeModeManager.setMode(it)
             },
+            selectedOcrModel = selectedOcrModel,
             onClear = {
                 currentImage?.recycle()
                 leftPalmImage?.recycle()
@@ -373,7 +379,12 @@ fun AIScreenLayout() {
         if (hasPermission) {
             CameraPreviewScreen(
                 aiMode = currentAiMode,
-                onAiModeChange = { currentAiMode = it },
+                onAiModeChange = { 
+                    if (it == AiMode.IDENTITY_VERIFICATION) {
+                        selectedOcrModel = "" // Reset model selection for Identity Verification
+                    }
+                    currentAiMode = it 
+                },
                 targetHand = targetHand,
                 onTargetHandChange = { targetHand = it },
                 targetFaceMode = targetFaceMode,
@@ -435,7 +446,7 @@ fun AIScreenLayout() {
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 2. Handling for OCR (Using centralized process and custom card check)
-                    else if (currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR) {
+                    else if (currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.IDENTITY_VERIFICATION) {
                         try {
                             val scale = 720f / maxOf(bitmap.width, bitmap.height)
                             val scaled = if (scale < 1f) {
@@ -473,7 +484,7 @@ fun AIScreenLayout() {
                                     } else item
                                 }
 
-                                val foundId = if (currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.PADDLE_OCR) {
+                                val foundId = if (currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.IDENTITY_VERIFICATION) {
                                     hasNumber && hasNameInfo && hasDateInfo
                                 } else {
                                     hasNumber && hasNameInfo
@@ -1311,7 +1322,7 @@ fun AIScreenLayout() {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             try {
-                                if ((currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR) && selectedOcrModel.isEmpty()) {
+                                if ((currentAiMode == AiMode.PADDLE_OCR || currentAiMode == AiMode.TESSERACT_FAST_OCR || currentAiMode == AiMode.IDENTITY_VERIFICATION) && selectedOcrModel.isEmpty()) {
                                     withContext(Dispatchers.Main) { isProcessing = false }
                                     return@launch
                                 }
@@ -1667,7 +1678,7 @@ fun CameraPreviewScreen(
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
 
-                            val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
+                            val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) {
                                 val maxW = cw * 0.9f
                                 val idealH = ch * 0.6f
                                 if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -1676,7 +1687,7 @@ fun CameraPreviewScreen(
                             } else {
                                 min(cw, ch) * 0.8f // Use 0.8f for better Subject/Selfie visibility
                             }
-                            val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
+                            val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) frameW / 1.58f else frameW
                             val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                             val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                             val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -1803,7 +1814,7 @@ fun CameraPreviewScreen(
 
                         // Map items to preview states for drawing using .value
                         when (aiMode) {
-                            AiMode.PADDLE_OCR -> latestItemsOcr.value = items
+                            AiMode.PADDLE_OCR, AiMode.IDENTITY_VERIFICATION -> latestItemsOcr.value = items
                             AiMode.HAND_DETECTION -> latestItemsPalm.value = items
                             AiMode.FACE_DETECTION -> latestItemsFace.value = items
                             AiMode.POSE_DETECTION -> latestItemsPose.value = items
@@ -1821,7 +1832,7 @@ fun CameraPreviewScreen(
                         // 🌟 Stabilization: Always update latestDetections for UI drawing
                         latestDetections = items
 
-                        var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
+                        var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
                             success
                         } else {
                             items.isNotEmpty()
@@ -1834,7 +1845,7 @@ fun CameraPreviewScreen(
                                 val ch = baseBitmap.height.toFloat()
                                 // Expand frame by 20%
                                 val expansion = 1.20f
-                                val frameW = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
+                                val frameW = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) {
                                     val maxW = cw * 0.9f
                                     val idealH = ch * 0.6f
                                     if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -1844,7 +1855,7 @@ fun CameraPreviewScreen(
                                     min(cw, ch) * 0.6f
                                 }) * expansion
 
-                                val frameH = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / (1.58f * expansion) else frameW) * expansion
+                                val frameH = (if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) frameW / (1.58f * expansion) else frameW) * expansion
                                 val left = ((cw - frameW) / 2).toInt().coerceAtLeast(0)
                                 val top = ((ch - frameH) / 2).toInt().coerceAtLeast(0)
                                 val width = frameW.toInt().coerceAtMost(baseBitmap.width - left)
@@ -2050,9 +2061,9 @@ fun CameraPreviewScreen(
                                             aiMode == AiMode.SELFIE_SEGMENTATION ||
                                             aiMode == AiMode.SUBJECT_SEGMENTATION
 
-                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
+                    if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.HAND_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
                         // OCR matches bounds, PALMPRINT uses a smaller centered box
-                        val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
+                        val frameW = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -2061,7 +2072,7 @@ fun CameraPreviewScreen(
                         } else {
                             min(cw, ch) * 0.6f
                         }
-                        val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
+                        val frameH = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) frameW / 1.58f else frameW
 
                         val left = (cw - frameW) / 2
                         val top = (ch - frameH) / 2
@@ -2079,7 +2090,7 @@ fun CameraPreviewScreen(
                             typeface = android.graphics.Typeface.DEFAULT_BOLD
                         }
 
-                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             // Main ID card border (Landscape)
                             val rect = android.graphics.RectF(left, top, right, bottom)
                             drawContext.canvas.nativeCanvas.drawRoundRect(rect, 40f, 40f, paint)
@@ -2237,7 +2248,7 @@ fun CameraPreviewScreen(
                     val frameW = if (useCropMode) {
                         val cw = size.width
                         val ch = size.height
-                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) {
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) {
                             val maxW = cw * 0.9f
                             val idealH = ch * 0.6f
                             if (idealH * 1.58f > maxW) maxW else idealH * 1.58f
@@ -2249,7 +2260,7 @@ fun CameraPreviewScreen(
                     } else size.width
 
                     val frameH = if (useCropMode) {
-                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR) frameW / 1.58f else frameW
+                        if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION) frameW / 1.58f else frameW
                     } else size.height
 
                     val leftOffset = if (useCropMode) (size.width - frameW) / 2f else 0f
@@ -2286,7 +2297,7 @@ fun CameraPreviewScreen(
                         )
                         if (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) {
                             drawContext.canvas.nativeCanvas.drawRoundRect(mappedRect, 16f, 16f, facePaint)
-                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
+                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION) {                            drawContext.canvas.nativeCanvas.drawRect(mappedRect, ocrPaint)
                         } else if (aiMode == AiMode.OBJECT_DETECTION || aiMode == AiMode.CUSTOM_OBJECT_DETECTION) {
                             // White box as requested
                             val objPaint = android.graphics.Paint().apply {
@@ -2467,6 +2478,8 @@ fun CameraPreviewScreen(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
+                Spacer(modifier = Modifier.width(8.dp))
+
                 // Manual Flip Toggles
                 IconButton(
                     onClick = { onHorizontalFlipChange(!horizontalFlip) },
@@ -2616,6 +2629,7 @@ fun CameraPreviewScreen(
                                 AiMode.OBJECT_DETECTION -> "Object Detect"
                                 AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
                                 AiMode.TEXT_RECOGNITION -> "Text Recognition"
+                                AiMode.IDENTITY_VERIFICATION -> "Identity Verification"
                                 else -> aiMode.name
                             }
                             Text(
@@ -2630,6 +2644,47 @@ fun CameraPreviewScreen(
                                 tint = Color.White.copy(alpha = 0.6f),
                                 modifier = Modifier.size(16.dp)
                             )
+                        }
+                    }
+
+                    if (aiMode == AiMode.IDENTITY_VERIFICATION) {
+                        // OCR Model Selection Dropdown (For Identity Verification)
+                        var showOcrModelMenu by remember { mutableStateOf(false) }
+                        Box {
+                            Surface(
+                                onClick = { showOcrModelMenu = true },
+                                color = if (selectedOcrModel.isEmpty()) Color(0xFFFF9500).copy(alpha = 0.8f) else Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(100.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        if (selectedOcrModel.isEmpty()) "SELECT OCR MODEL" else selectedOcrModel.uppercase(),
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                    Icon(Icons.Default.ArrowDropDown, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showOcrModelMenu,
+                                onDismissRequest = { showOcrModelMenu = false }
+                            ) {
+                                listOf("PaddleOCR", "Tesseract fast").forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model) },
+                                        onClick = {
+                                            onSelectedOcrModelChange(model)
+                                            showOcrModelMenu = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -2942,6 +2997,7 @@ fun AiModeBottomSheet(
                     AiMode.OBJECT_DETECTION -> "Object Detection"
                     AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object Detection"
                     AiMode.TEXT_RECOGNITION -> "Text Recognition"
+                    AiMode.IDENTITY_VERIFICATION -> "Identity Verification"
                     else -> mode.name
                 }
 
@@ -3020,7 +3076,8 @@ fun OCRResultScreen(
     onClear: () -> Unit,
     onRunModel: () -> Unit,
     onSendWs: () -> Unit,
-    onGalleryClick: () -> Unit
+    onGalleryClick: () -> Unit,
+    selectedOcrModel: String
 ) {
     var showJsonDialog by remember { mutableStateOf(false) }
     var fullJsonOutput by remember { mutableStateOf("") }
@@ -3040,6 +3097,7 @@ fun OCRResultScreen(
                             AiMode.SELFIE_SEGMENTATION -> "Selfie Result"
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Result"
                             AiMode.TEXT_RECOGNITION -> "ML Kit Result"
+                            AiMode.IDENTITY_VERIFICATION -> "Identity Verification Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleMedium)
@@ -3051,6 +3109,7 @@ fun OCRResultScreen(
                             AiMode.SELFIE_SEGMENTATION -> "ML Kit Selfie Segmentation"
                             AiMode.SUBJECT_SEGMENTATION -> "ML Kit Subject Segmentation"
                             AiMode.TEXT_RECOGNITION -> "ML Kit Text Recognition"
+                            AiMode.IDENTITY_VERIFICATION -> "Identity Verification ($selectedOcrModel)"
                             else -> "PaddleOCRv5"
                         }
                         Text(
@@ -3192,7 +3251,7 @@ fun OCRResultScreen(
                                                         else -> "OCR"
                                                     },
                                                     "use_gpu" to computeMode.useGpu,
-                                                    "model_paddle_loaded" to (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR),
+                                                    "model_paddle_loaded" to (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION),
                                                     "model_mlkit_text_loaded" to (aiMode == AiMode.TEXT_RECOGNITION),
                                                     "model_mediapipe_loaded" to (aiMode == AiMode.HAND_DETECTION),
                                                     "snap_image_active" to true,
@@ -3529,7 +3588,7 @@ fun OCRResultScreen(
                 Text(
                     if (showPayload) "Review the generated data structure" else "Review the processed ${
                         when (aiMode) {
-                            AiMode.PADDLE_OCR, AiMode.TESSERACT_FAST_OCR -> "OCR text"
+                            AiMode.PADDLE_OCR, AiMode.TESSERACT_FAST_OCR, AiMode.IDENTITY_VERIFICATION -> "OCR text"
                             AiMode.FACE_DETECTION -> "face data"
                             AiMode.VERIFIED_AUTO_CAPTURE -> "face data"
                             AiMode.SELFIE_SEGMENTATION -> "selfie data"
@@ -3721,7 +3780,7 @@ fun OCRResultScreen(
                             val statusText = when {
                                 (aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && isSuccess -> "Face Detected"
                                 aiMode == AiMode.HAND_DETECTION && isSuccess -> "Palmprint Detected"
-                                (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
+                                (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION) && isSuccess -> "Text Extracted"
                                 !isSuccess -> "No Object Detected"
                                 else -> "Inference Completed"
                             }
