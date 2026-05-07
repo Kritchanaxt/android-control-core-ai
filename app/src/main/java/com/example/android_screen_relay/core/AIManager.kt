@@ -131,6 +131,7 @@ object AIManager {
             modeName.contains("CUSTOM_OBJECT", ignoreCase = true) && current is CustomObjectDetectorProcessor -> true
             modeName.contains("OBJECT", ignoreCase = true) && current is ObjectDetectorProcessor -> true
             modeName.contains("TEXT", ignoreCase = true) && current is TextRecognitionProcessor -> true
+            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) && current is IdentityVerificationProcessor -> true
             modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) && current is VerifiedAutoCaptureProcessor -> true
             else -> false
         }
@@ -160,6 +161,7 @@ object AIManager {
             modeName.contains("CUSTOM_OBJECT", ignoreCase = true) -> CustomObjectDetectorProcessor()
             modeName.contains("OBJECT", ignoreCase = true) -> ObjectDetectorProcessor()
             modeName.contains("TEXT", ignoreCase = true) -> TextRecognitionProcessor()
+            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) -> IdentityVerificationProcessor()
             modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) -> VerifiedAutoCaptureProcessor()
             else -> return false
         }

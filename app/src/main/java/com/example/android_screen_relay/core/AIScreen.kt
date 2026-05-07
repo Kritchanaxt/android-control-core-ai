@@ -154,11 +154,8 @@ fun AIScreenLayout() {
         } else {
             isProcessing = true
             withContext(Dispatchers.Default) {
-                val modeToSwitch = if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
-                    if (selectedOcrModel == "Tesseract fast") AiMode.TESSERACT_FAST_OCR.name else "OCR"
-                } else {
-                    currentAiMode.name
-                }
+                val modeToSwitch = currentAiMode.name
+
                 AIManager.switchProcessor(context, modeToSwitch, mapOf("ocr_engine" to selectedOcrModel))
             }
             isProcessing = false
@@ -518,6 +515,11 @@ fun AIScreenLayout() {
                                 Pair(finalItems.isNotEmpty(), finalItems)
                             } else Pair(false, emptyList())
                         } catch (e: Exception) { Pair(false, emptyList()) }
+                    }
+                    else if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
+                        // Sequential Pipeline: Bypass realtime AI to save memory and avoid "flicker"
+                        // Return true with a dummy item to trigger the 2s countdown
+                        Pair(true, listOf(AIDetectedItem("STABILIZING", 1f, android.graphics.RectF(), emptyMap())))
                     }
                     // 4. Special Handling for Face Detection (Rules: Center, Size, Angle)
                     else if (currentAiMode == AiMode.FACE_DETECTION) {
@@ -1342,14 +1344,24 @@ fun AIScreenLayout() {
 
                                 val jsonArr = org.json.JSONArray(resultJsonStr)
 
-                                // บังคับตัดภาพคงที่ (Fixed Crop) ตั้งแต่เลขบัตร จนถึง วันเดือนปีเกิด
-                                // อ้างอิงขนาดประมาณการ: x เริ่มที่ 2%, y เริ่มที่ 12%, กว้าง 93%, สูงลงมาถึงตำแหน่งประมาณ 75-80% 
-                                val calculatedRect = androidx.compose.ui.geometry.Rect(
-                                    left = 0.28f,     // เริ่มที่ขอบซ้าย 28%
-                                    top = 0.10f,      // เริ่มต่ำลงมา 10% (ครอบคลุมเลขบัตร)
-                                    right = 0.99f,    // ไปจนสุดขอบขวา 99%
-                                    bottom = 0.62f    // ลงมาจนถึง 62% ของบัตร (ครอบคลุมวันเดือนปีเกิดแน่นอน)
-                                )
+                                // บังคับตัดภาพคงที่ (Fixed Crop) 
+                                // พิกัดสำหรับ Identity Verification (เน้นกว้างเพื่อให้เห็นทั้งข้อมูลและใบหน้า)
+                                val calculatedRect = if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
+                                    androidx.compose.ui.geometry.Rect(
+                                        left = 0.28f,
+                                        top = 0.10f,
+                                        right = 0.99f,
+                                        bottom = 0.90f
+                                    )
+                                } else {
+                                    // พิกัดเดิมสำหรับโหมด OCR อื่นๆ (เน้นตัดเฉพาะส่วนตัวหนังสือ)
+                                    androidx.compose.ui.geometry.Rect(
+                                        left = 0.28f,
+                                        top = 0.10f,
+                                        right = 0.99f,
+                                        bottom = 0.62f
+                                    )
+                                }
 
                                 // Auto Crop without UI
                                 val croppedResult = if (useCropMode && calculatedRect != null) {
@@ -1395,21 +1407,66 @@ fun AIScreenLayout() {
                                 try {
                                     val st = System.currentTimeMillis()
                                     // 🌟 Fix: Use runWithProcessor to ensure thread-safe access to the active processor
-                                    val rawOcrRes = AIManager.runWithProcessor { proc ->
-                                        if (proc is OCRProcessor) {
-                                            proc.getRawJson(optimizedCrop)
-                                        } else if (proc is TesseractOCRProcessor) {
-                                            proc.getRawJson(optimizedCrop)
-                                        } else {
-                                            "[]"
+                                    if (currentAiMode == AiMode.IDENTITY_VERIFICATION) {
+                                        // Sequential Logic for Identity Verification: Snap -> OCR -> Face
+                                        val options = mapOf("ocr_engine" to selectedOcrModel)
+                                        val aiResult = AIManager.process(optimizedCrop, options)
+                                        
+                                        if (aiResult != null && aiResult.success) {
+                                            // Convert AIResult items to JSON format expected by OCRResultScreen
+                                            val jsonArray = JSONArray()
+                                            aiResult.items.forEach { item ->
+                                                val obj = org.json.JSONObject()
+                                                obj.put("label", item.label)
+                                                obj.put("prob", item.confidence.toDouble())
+                                                
+                                                if (item.label == "Face") {
+                                                    val b = item.boundingBox
+                                                    val bArr = JSONArray()
+                                                    bArr.put(b.left.toDouble()); bArr.put(b.top.toDouble())
+                                                    bArr.put(b.right.toDouble()); bArr.put(b.bottom.toDouble())
+                                                    obj.put("bbox", bArr)
+                                                    
+                                                    // Pass contours if available
+                                                    (item.extra["contours"] as? org.json.JSONObject)?.let {
+                                                        obj.put("contours", it)
+                                                    }
+                                                } else {
+                                                    // Standard OCR format
+                                                    obj.put("x0", item.boundingBox.left.toDouble())
+                                                    obj.put("y0", item.boundingBox.top.toDouble())
+                                                    obj.put("x1", item.boundingBox.right.toDouble())
+                                                    obj.put("y1", item.boundingBox.top.toDouble())
+                                                    obj.put("x2", item.boundingBox.right.toDouble())
+                                                    obj.put("y2", item.boundingBox.bottom.toDouble())
+                                                    obj.put("x3", item.boundingBox.left.toDouble())
+                                                    obj.put("y3", item.boundingBox.bottom.toDouble())
+                                                }
+                                                jsonArray.put(obj)
+                                            }
+                                            
+                                            finalJsonStr = OCRFormatter.formatLabelsInJsonArray(jsonArray.toString())
+                                            finalLatencyMs = aiResult.processTimeMs
+                                            isSuccess = true
                                         }
-                                    } ?: "[]"
+                                    } else {
+                                        // Existing separate processor logic
+                                        val rawOcrRes = AIManager.runWithProcessor { proc ->
+                                            if (proc is OCRProcessor) {
+                                                proc.getRawJson(optimizedCrop)
+                                            } else if (proc is TesseractOCRProcessor) {
+                                                proc.getRawJson(optimizedCrop)
+                                            } else {
+                                                "[]"
+                                            }
+                                        } ?: "[]"
 
-                                    if (rawOcrRes != "[]") {
-                                        finalJsonStr = OCRFormatter.formatLabelsInJsonArray(rawOcrRes)
-                                        val en = System.currentTimeMillis()
-                                        finalLatencyMs = en - st
-                                        isSuccess = true
+                                        if (rawOcrRes != "[]") {
+                                            finalJsonStr = OCRFormatter.formatLabelsInJsonArray(rawOcrRes)
+                                            val en = System.currentTimeMillis()
+                                            finalLatencyMs = en - st
+                                            isSuccess = true
+                                        }
                                     }
                                 } catch (e: Exception) {
                                     Log.e("OCR", "Auto processing error", e)
@@ -1936,6 +1993,7 @@ fun CameraPreviewScreen(
 
                             val targetStableTime = when(aiMode) {
                                 AiMode.OBJECT_DETECTION, AiMode.CUSTOM_OBJECT_DETECTION -> 500L // Excluded from T+2
+                                AiMode.IDENTITY_VERIFICATION -> 2000L // User explicitly asked for 2nd second
                                 else -> 3000L // Standard T+2 rule: 3s stability
                             }
 
@@ -2997,7 +3055,7 @@ fun AiModeBottomSheet(
                     AiMode.OBJECT_DETECTION -> "Object Detection"
                     AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object Detection"
                     AiMode.TEXT_RECOGNITION -> "Text Recognition"
-                    AiMode.IDENTITY_VERIFICATION -> "Identity Verification"
+                    AiMode.IDENTITY_VERIFICATION -> "Identity Verification (OCR + Face)"
                     else -> mode.name
                 }
 
@@ -3472,7 +3530,7 @@ fun OCRResultScreen(
                                         drawContext.canvas.nativeCanvas.drawText(label, p0X, p0Y - (5f / scale), textPaint)
                                     }
                                 }
-                            } else if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE) && boxObj.has("bbox")) {
+                            } else if ((aiMode == AiMode.FACE_DETECTION || aiMode == AiMode.VERIFIED_AUTO_CAPTURE || aiMode == AiMode.IDENTITY_VERIFICATION) && boxObj.has("bbox")) {
                                 // Draw BBox for face
                                 val bArr = boxObj.getJSONArray("bbox")
                                 val l = bArr.getDouble(0).toFloat()
