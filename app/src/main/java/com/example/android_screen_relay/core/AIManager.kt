@@ -117,7 +117,7 @@ object AIManager {
     /**
      * Helper to switch processor by name (string)
      */
-    fun switchProcessor(context: android.content.Context, modeName: String): Boolean {
+    fun switchProcessor(context: android.content.Context, modeName: String, extraOptions: Map<String, Any> = emptyMap()): Boolean {
         // 🌟 Fix: Avoid redundant switching if the current processor matches the requested mode
         val current = getActiveProcessor()
         val alreadyActive = when {
@@ -132,11 +132,13 @@ object AIManager {
             modeName.contains("OBJECT", ignoreCase = true) && current is ObjectDetectorProcessor -> true
             modeName.contains("TEXT", ignoreCase = true) && current is TextRecognitionProcessor -> true
             modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) && current is VerifiedAutoCaptureProcessor -> true
-            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) && current is IdentityVerificationProcessor -> true
             else -> false
         }
         
-        if (alreadyActive) {
+        // 🌟 KEY: For some modes, we might need to RE-INIT if options changed.
+        var forceReinit = false
+
+        if (alreadyActive && !forceReinit && extraOptions.isEmpty()) {
             Log.d("AIManager", "Processor for $modeName is already active. Skipping switch.")
             return true
         }
@@ -145,7 +147,7 @@ object AIManager {
         val config = AIConfig(
             useGpu = true, // Force GPU as requested
             threads = if (isLowSpec) 4 else 6, // Increase threads even on low spec if GPU fails
-            options = mapOf("low_spec_mode" to isLowSpec, "force_gpu" to true)
+            options = mapOf("low_spec_mode" to isLowSpec, "force_gpu" to true) + extraOptions
         )
         val processor: AIProcessor = when {
             modeName.contains("TESSERACT_FAST", ignoreCase = true) -> TesseractOCRProcessor()
@@ -159,7 +161,6 @@ object AIManager {
             modeName.contains("OBJECT", ignoreCase = true) -> ObjectDetectorProcessor()
             modeName.contains("TEXT", ignoreCase = true) -> TextRecognitionProcessor()
             modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) -> VerifiedAutoCaptureProcessor()
-            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) -> IdentityVerificationProcessor()
             else -> return false
         }
         return switchProcessor(processor, context, config)
