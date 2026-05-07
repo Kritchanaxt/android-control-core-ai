@@ -234,6 +234,7 @@ fun AIScreenLayout() {
                     cpu = SystemMonitor.getCurrentResourceUsage(context).cpuUsage,
                     status = "✅ Snap success!",
                     inputSize = if (currentImage != null) "${currentImage!!.width}x${currentImage!!.height}" else "--",
+                    scanRes = "${selectedResolution?.width ?: 0}x${selectedResolution?.height ?: 0}",
                     fps = 0,
                     frameLatency = 0,
                     detectorLatency = ocrTimeMs
@@ -1862,7 +1863,8 @@ fun CameraPreviewScreen(
                                         RelayService.getInstance()?.overlayManager?.updateMetrics(
                                             ramUsed = ramUsed, ramTotal = ramTotal, cpu = cpuUsage,
                                             status = "✨ Found in Expanded View!",
-                                            scanRes = "${expandedBitmap.width}x${expandedBitmap.height} (Expanded)"
+                                            inputSize = "${expandedBitmap.width}x${expandedBitmap.height} (Expanded)",
+                                            scanRes = "${selectedResolution?.width ?: 0}x${selectedResolution?.height ?: 0}"
                                         )
                                     }
                                 } finally {
@@ -1892,8 +1894,8 @@ fun CameraPreviewScreen(
                                 cpu = cpuUsage,
                                 model = aiMode.name,
                                 status = if (isProcessingBusy) "Processing..." else if (isCapturing) "Capturing..." else if (stableTime > 0) "Stabilizing..." else "Searching...",
-                                inputSize = "${baseBitmap.width}x${baseBitmap.height}",
-                                scanRes = "${bitmap.width}x${bitmap.height}",
+                                inputSize = "${bitmap.width}x${bitmap.height}",
+                                scanRes = "${selectedResolution?.width ?: 0}x${selectedResolution?.height ?: 0}",
                                 fps = fps,
                                 frameLatency = frameLatency,
                                 detectorLatency = detectorLatency
