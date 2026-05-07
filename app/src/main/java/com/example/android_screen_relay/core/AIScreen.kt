@@ -1478,7 +1478,10 @@ fun CameraPreviewScreen(
 
     // State for Settings
     val availableCameras = remember {
-        (context.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager).cameraIdList.toList()
+        val tempController = Camera2Controller(context) { _, _ -> }
+        val list = tempController.enumerateCameras()
+        tempController.close()
+        list
     }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
@@ -2707,7 +2710,8 @@ fun CameraPreviewScreen(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    availableCameras.forEachIndexed { index, id ->
+                    availableCameras.forEachIndexed { index, cameraInfo ->
+                        val id = cameraInfo.cameraId
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -2722,7 +2726,7 @@ fun CameraPreviewScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column {
                                 Text(
-                                    text = if (id == "0") "Back Camera" else if (id == "1") "Front Camera" else "Camera ID: $id",
+                                    text = cameraInfo.cameraType,
                                     style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.Medium
                                 )

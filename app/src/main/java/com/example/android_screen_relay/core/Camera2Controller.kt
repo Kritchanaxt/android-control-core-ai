@@ -728,21 +728,9 @@ class Camera2Controller(
 
         Log.i(TAG, "Total camera IDs: $numberOfActualCameras. IDs: ${allCameraIds.joinToString()}")
 
-        val predefinedCameraTypes = listOf(
-            "Front Camera",
-            "Front Ultra Wide Camera",
-            "Back Camera (Main)",
-            "Back Triple Camera",
-            "Back Dual Camera",
-            "Back Dual Wide Camera",
-            "Back Ultra Wide Camera",
-            "Back Telephoto Camera",
-            "External Camera"
-        )
-
         // Thresholds
-        val ultraWideFocalLengthThreshold = 2.2f
-        val telephotoFocalLengthThreshold = 7.5f
+        val ultraWideFocalLengthThreshold = 2.4f
+        val telephotoFocalLengthThreshold = 7.0f
 
         allCameraIds.forEach { id ->
             try {
@@ -750,7 +738,6 @@ class Camera2Controller(
                 val orientation = characteristics.get(CameraCharacteristics.LENS_FACING)
                 val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
                 val focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                val hardwareLevel = characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
 
                 val isLogicalMultiCamera = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                     capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
@@ -767,7 +754,7 @@ class Camera2Controller(
                 var determinedType: String? = null
                 when (orientation) {
                     CameraCharacteristics.LENS_FACING_FRONT -> {
-                        determinedType = if (focalLengths != null && focalLengths.size == 1 && focalLengths[0] < ultraWideFocalLengthThreshold) {
+                        determinedType = if (focalLengths != null && focalLengths.any { it < ultraWideFocalLengthThreshold }) {
                             "Front Ultra Wide Camera"
                         } else {
                             "Front Camera"
@@ -784,55 +771,35 @@ class Camera2Controller(
                             determinedType = when {
                                 focalLengths?.any { it > telephotoFocalLengthThreshold } == true -> "Back Telephoto Camera"
                                 focalLengths?.any { it < ultraWideFocalLengthThreshold } == true -> "Back Ultra Wide Camera"
-                                else -> "Back Camera (Main)"
+                                else -> "Back Camera"
                             }
                         }
                     }
                     CameraCharacteristics.LENS_FACING_EXTERNAL -> determinedType = "External Camera"
                 }
 
-                if (determinedType != null) {
-                    // Logic to avoid overwriting unless logical multicamera preferred
-                    if (!detectedCamerasMap.containsKey(determinedType) || isLogicalMultiCamera) {
-                         detectedCamerasMap[determinedType] = CameraInfo(
-                            title = "$determinedType (ID: $id)",
-                            cameraId = id,
-                            cameraType = determinedType,
-                            isAvailable = true,
-                            physicalCameraIds = physicalCameraIds
-                        )
-                    }
+                if (determinedType == null) {
+                    determinedType = "Camera $id"
                 }
+
+                detectedCamerasMap[id] = CameraInfo(
+                    title = "$determinedType (ID: $id)",
+                    cameraId = id,
+                    cameraType = determinedType!!,
+                    isAvailable = true,
+                    physicalCameraIds = physicalCameraIds
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing camera ID $id: ${e.message}", e)
             }
         }
 
-        // Construct final list
-        val finalDisplayList = mutableListOf<CameraInfo>()
-
-        predefinedCameraTypes.forEach { typeName ->
-            val detectedItem = detectedCamerasMap[typeName]
-            if (detectedItem != null) {
-                 if (!finalDisplayList.any { it.cameraId == detectedItem.cameraId }) {
-                     finalDisplayList.add(detectedItem)
-                 }
-            }
-        }
-
-        // Add others
-        detectedCamerasMap.values.forEach { detectedItem ->
-            if (finalDisplayList.none { it.cameraType == detectedItem.cameraType }) {
-                finalDisplayList.add(detectedItem)
-            }
-        }
-
-        // Sorting logic from snippet
-         return finalDisplayList.sortedWith(compareBy {
+        // Construct final list and sort it
+         return detectedCamerasMap.values.sortedWith(compareBy {
             when (it.cameraType) {
                 "Front Camera" -> 0
                 "Front Ultra Wide Camera" -> 1
-                "Back Camera (Main)" -> 2
+                "Back Camera" -> 2
                 "Back Triple Camera" -> 3
                 "Back Dual Camera" -> 4
                 "Back Dual Wide Camera" -> 5
