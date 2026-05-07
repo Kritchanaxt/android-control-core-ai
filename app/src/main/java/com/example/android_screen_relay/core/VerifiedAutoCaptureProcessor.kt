@@ -51,8 +51,10 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                     // or very close to the nose Y, we consider it blocking/raised hands.
                     val shoulderY = minOf(leftShoulder?.y ?: Float.MAX_VALUE, rightShoulder?.y ?: Float.MAX_VALUE)
                     
-                    val isLeftHandRaised = (leftWrist != null && leftWrist.y < shoulderY) || (leftIndex != null && leftIndex.y < shoulderY)
-                    val isRightHandRaised = (rightWrist != null && rightWrist.y < shoulderY) || (rightIndex != null && rightIndex.y < shoulderY)
+                    // FIX: Only trigger hand raised if we actually detected a shoulder. 
+                    // Otherwise, holding a card will always trigger HAND_DETECTED.
+                    val isLeftHandRaised = (shoulderY != Float.MAX_VALUE) && ((leftWrist != null && leftWrist.y < shoulderY) || (leftIndex != null && leftIndex.y < shoulderY))
+                    val isRightHandRaised = (shoulderY != Float.MAX_VALUE) && ((rightWrist != null && rightWrist.y < shoulderY) || (rightIndex != null && rightIndex.y < shoulderY))
                     
                     if (isLeftHandRaised || isRightHandRaised) {
                         return AIResult(
@@ -78,7 +80,7 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
             if (faceResult != null && faceResult.success && faceResult.items.isNotEmpty()) {
                 val faceItem = faceResult.items.first()
                 
-                // Calculate 4 Pillar Metrics
+                // Calculate 4 Pillar Metrics (Size constraint removed per request)
                 val box = faceItem.boundingBox
                 val centerX = box.centerX()
                 val centerY = box.centerY()
@@ -86,15 +88,19 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 val frameCenterY = bitmap.height / 2f
                 val offsetXPct = kotlin.math.abs(centerX - frameCenterX) / bitmap.width
                 val offsetYPct = kotlin.math.abs(centerY - frameCenterY) / bitmap.height
-                val isCentered = offsetXPct < 0.15f && offsetYPct < 0.15f
+                
+                // Relaxed centering requirement for ID cards
+                val isCentered = offsetXPct < 0.40f && offsetYPct < 0.40f
                 
                 val faceAreaPct = (box.width() * box.height()) / (bitmap.width * bitmap.height).toFloat()
-                val isProperSize = faceAreaPct > 0.15f
+                // isProperSize constraint is removed (always true essentially or just removed from checks)
                 
                 val yaw = (faceItem.extra["head_euler_y"] as? Float) ?: 0f
                 val pitch = (faceItem.extra["head_euler_x"] as? Float) ?: 0f
                 val roll = (faceItem.extra["head_euler_z"] as? Float) ?: 0f
-                val isStraight = kotlin.math.abs(yaw) < 25f && kotlin.math.abs(pitch) < 25f && kotlin.math.abs(roll) < 25f
+                
+                // Relaxed straightness requirement
+                val isStraight = kotlin.math.abs(yaw) < 35f && kotlin.math.abs(pitch) < 35f && kotlin.math.abs(roll) < 35f
                 
                 // 🌟 STEP 2.5: Eye-based Occlusion Detection (Fallback for when Pose can't see body)
                 // If one eye is much more closed than the other, it's likely a hand blocking half the face.
@@ -107,12 +113,12 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 if (leftEyeProb >= 0f && rightEyeProb >= 0f) {
                     // Case 1: One eye blocked, other open → partial occlusion (hand blocking half face)
                     val eyeDiff = kotlin.math.abs(leftEyeProb - rightEyeProb)
-                    if (eyeDiff > 0.35f && (leftEyeProb < 0.3f || rightEyeProb < 0.3f)) {
+                    if (eyeDiff > 0.45f && (leftEyeProb < 0.2f || rightEyeProb < 0.2f)) {
                         isOccluded = true
                         occlusionReason = "PARTIAL_OCCLUSION (L:${String.format("%.2f", leftEyeProb)} R:${String.format("%.2f", rightEyeProb)})"
                     }
                     // Case 2: Both eyes very low → heavy occlusion
-                    if (leftEyeProb < 0.15f && rightEyeProb < 0.15f) {
+                    if (leftEyeProb < 0.10f && rightEyeProb < 0.10f) {
                         isOccluded = true
                         occlusionReason = "HEAVY_OCCLUSION (L:${String.format("%.2f", leftEyeProb)} R:${String.format("%.2f", rightEyeProb)})"
                     }
@@ -133,7 +139,6 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                         put("is_centered", isCentered)
                         put("center_offset_x_pct", offsetXPct)
                         put("center_offset_y_pct", offsetYPct)
-                        put("is_proper_size", isProperSize)
                         put("face_area_pct", faceAreaPct)
                         put("is_straight", isStraight)
                         put("yaw", yaw)
@@ -142,7 +147,7 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                         put("left_eye_prob", leftEyeProb)
                         put("right_eye_prob", rightEyeProb)
                         put("is_occluded", false)
-                        put("4_pillars_passed", isCentered && isProperSize && isStraight)
+                        put("4_pillars_passed", isCentered && isStraight)
                     })
                 }
 
@@ -150,10 +155,10 @@ class VerifiedAutoCaptureProcessor : AIProcessor {
                 updatedExtra["verification_metrics"] = metricsJson.toString()
 
                 return AIResult(
-                    success = isCentered && isProperSize && isStraight,
+                    success = isCentered && isStraight,
                     items = listOf(faceItem.copy(extra = updatedExtra)),
                     processTimeMs = System.currentTimeMillis() - start,
-                    errorMessage = if (isCentered && isProperSize && isStraight) null else "FACE_4PILLAR_FAILED"
+                    errorMessage = if (isCentered && isStraight) null else "FACE_4PILLAR_FAILED"
                 )
             }
             
