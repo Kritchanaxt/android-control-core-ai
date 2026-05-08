@@ -49,9 +49,15 @@ object AIManager {
     @Volatile
     private var isSwitching = false
 
-    // 🌟 Performance: Busy flag to allow frame skipping before expensive Bitmap operations
     @Volatile
     private var isBusy = false
+
+    // 🌟 Standardized 720p scaling toggle
+    private var use720pScaling = true
+
+    fun setScalingEnabled(enabled: Boolean) {
+        use720pScaling = enabled
+    }
 
     fun isBusy(): Boolean = isBusy || isSwitching
     
@@ -211,25 +217,86 @@ object AIManager {
     fun getLastLatency(): Long = lastDetectorTimeMs
 
     /**
-     * Thread-safe process call
+     * Thread-safe process call with automatic 720p scaling for performance and memory stability.
      */
     fun process(bitmap: Bitmap, options: Map<String, Any> = emptyMap()): AIResult? {
         if (isSwitching) return null
         
         val start = System.currentTimeMillis()
         
+        // 1. Resize if needed (Target 720p)
+        var processingBitmap = bitmap
+        var scaleX = 1.0f
+        var scaleY = 1.0f
+        var wasResized = false
+
+        if (use720pScaling) {
+            val minDim = minOf(bitmap.width, bitmap.height)
+            if (minDim > 720) {
+                val ratio = 720f / minDim
+                val targetW = (bitmap.width * ratio).toInt()
+                val targetH = (bitmap.height * ratio).toInt()
+                
+                try {
+                    processingBitmap = Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
+                    scaleX = bitmap.width.toFloat() / targetW
+                    scaleY = bitmap.height.toFloat() / targetH
+                    wasResized = true
+                } catch (e: Exception) {
+                    Log.e("AIManager", "Resize failed, using original", e)
+                    processingBitmap = bitmap
+                }
+            }
+        }
+
         // Use read lock to allow multiple detections in parallel but block switching
         val readLock = lock.readLock()
         if (!readLock.tryLock(2, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (wasResized) processingBitmap.recycle()
             return null
         }
         
         isBusy = true
-        val result = try {
-            activeProcessor?.process(bitmap, options)
+        var result = try {
+            activeProcessor?.process(processingBitmap, options)
         } finally {
             isBusy = false
             readLock.unlock()
+        }
+
+        // 2. Scale back coordinates if was resized
+        if (result != null && wasResized) {
+            val scaledItems = result.items.map { item ->
+                val originalBox = CoordinateMapper.scaleRect(item.boundingBox, scaleX, scaleY)
+                
+                // Also handle extra bitmaps if any (e.g. masks in SubjectSegmenter)
+                val newExtra = item.extra.toMutableMap()
+                if (newExtra.containsKey("mask_bitmap")) {
+                    val mask = newExtra["mask_bitmap"] as? Bitmap
+                    if (mask != null) {
+                        val targetW = (mask.width * scaleX).toInt()
+                        val targetH = (mask.height * scaleY).toInt()
+                        newExtra["mask_bitmap"] = Bitmap.createScaledBitmap(mask, targetW, targetH, true)
+                        mask.recycle()
+                    }
+                }
+                if (newExtra.containsKey("combined_subject_bitmap")) {
+                    val combined = newExtra["combined_subject_bitmap"] as? Bitmap
+                    if (combined != null) {
+                        val targetW = (combined.width * scaleX).toInt()
+                        val targetH = (combined.height * scaleY).toInt()
+                        newExtra["combined_subject_bitmap"] = Bitmap.createScaledBitmap(combined, targetW, targetH, true)
+                        combined.recycle()
+                    }
+                }
+
+                item.copy(boundingBox = originalBox, extra = newExtra)
+            }
+            result = result.copy(items = scaledItems)
+        }
+
+        if (wasResized) {
+            processingBitmap.recycle()
         }
         
         val end = System.currentTimeMillis()

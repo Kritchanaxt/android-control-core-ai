@@ -46,6 +46,18 @@ object CoordinateMapper {
     }
     
     /**
+     * Scales a RectF by given horizontal and vertical factors.
+     */
+    fun scaleRect(rect: RectF, scaleX: Float, scaleY: Float): RectF {
+        return RectF(
+            rect.left * scaleX,
+            rect.top * scaleY,
+            rect.right * scaleX,
+            rect.bottom * scaleY
+        )
+    }
+
+    /**
      * Flips the X coordinate for mirrored views (e.g., front camera).
      */
     fun flipX(relativeX: Float): Float {
