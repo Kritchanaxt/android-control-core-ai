@@ -130,27 +130,26 @@ class MultiClassSelfieSegmenterProcessor : AIProcessor {
                         }
                     }
 
-                    val bbox = if (found) {
+                    if (found) {
                         val scaleX = bitmap.width.toFloat() / maskWidth
                         val scaleY = bitmap.height.toFloat() / maskHeight
-                        android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
-                    } else {
-                        android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
-                    }
-
-                    items.add(
-                        AIDetectedItem(
-                            label = "Multi-Class Selfie Mask",
-                            confidence = 1.0f,
-                            boundingBox = bbox,
-                            extra = mapOf(
-                                "width" to maskWidth,
-                                "height" to maskHeight,
-                                "mask_bitmap" to maskBitmap,
-                                "output_type" to "category"
+                        val bbox = android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
+                        items.add(
+                            AIDetectedItem(
+                                label = "Multi-Class Selfie Mask",
+                                confidence = 1.0f,
+                                boundingBox = bbox,
+                                extra = mapOf(
+                                    "width" to maskWidth,
+                                    "height" to maskHeight,
+                                    "mask_bitmap" to maskBitmap,
+                                    "output_type" to "category"
+                                )
                             )
                         )
-                    )
+                    } else {
+                        maskBitmap.recycle()
+                    }
                 }
             } else {
                 // Confidence Mask mode: Show only the selected class
@@ -208,28 +207,27 @@ class MultiClassSelfieSegmenterProcessor : AIProcessor {
                         }
                     }
 
-                    val bbox = if (found) {
+                    if (found) {
                         val scaleX = bitmap.width.toFloat() / maskWidth
                         val scaleY = bitmap.height.toFloat() / maskHeight
-                        android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
-                    } else {
-                        android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
-                    }
-
-                    items.add(
-                        AIDetectedItem(
-                            label = "Confidence Mask: $selectClassStr",
-                            confidence = 1.0f,
-                            boundingBox = bbox,
-                            extra = mapOf(
-                                "width" to maskWidth,
-                                "height" to maskHeight,
-                                "mask_bitmap" to maskBitmap,
-                                "output_type" to "confidence",
-                                "selected_class" to selectedClassIndex
+                        val bbox = android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
+                        items.add(
+                            AIDetectedItem(
+                                label = "Confidence Mask: $selectClassStr",
+                                confidence = 1.0f,
+                                boundingBox = bbox,
+                                extra = mapOf(
+                                    "width" to maskWidth,
+                                    "height" to maskHeight,
+                                    "mask_bitmap" to maskBitmap,
+                                    "output_type" to "confidence",
+                                    "selected_class" to selectedClassIndex
+                                )
                             )
                         )
-                    )
+                    } else {
+                        maskBitmap.recycle()
+                    }
                 }
             }
 

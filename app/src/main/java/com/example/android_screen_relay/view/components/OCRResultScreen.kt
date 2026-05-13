@@ -52,6 +52,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -134,7 +135,7 @@ fun OCRResultScreen(
                             AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Selfie Segmentation Result"
                             else -> "OCR Result"
                         }
-                        Text(title, style = MaterialTheme.typography.titleMedium)
+                        Text(title, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp))
                         val modelName = when (aiMode) {
                             AiMode.TESSERACT_FAST_OCR -> "Tesseract Fast OCR"
                             AiMode.HAND_DETECTION -> "MediaPipe Hand Gesture"
@@ -149,8 +150,10 @@ fun OCRResultScreen(
                         }
                         Text(
                             modelName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            color = Color.Gray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
