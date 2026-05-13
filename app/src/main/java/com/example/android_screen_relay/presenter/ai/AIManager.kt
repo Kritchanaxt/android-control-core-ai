@@ -132,6 +132,7 @@ object AIManager {
             modeName.contains("HAND", ignoreCase = true) && current is PalmprintProcessor -> true
             modeName.contains("FACE", ignoreCase = true) && current is FaceDetectorProcessor -> true
             modeName.contains("POSE", ignoreCase = true) && current is PoseDetectorProcessor -> true
+            modeName.contains("MULTI_CLASS_SELFIE", ignoreCase = true) && current is MultiClassSelfieSegmenterProcessor -> true
             modeName.contains("SELFIE", ignoreCase = true) && current is SelfieSegmenterProcessor -> true
             modeName.contains("SUBJECT", ignoreCase = true) && current is SubjectSegmenterProcessor -> true
             modeName.contains("CUSTOM_OBJECT", ignoreCase = true) && current is CustomObjectDetectorProcessor -> true
@@ -162,6 +163,7 @@ object AIManager {
             modeName.contains("HAND", ignoreCase = true) -> PalmprintProcessor()
             modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()
             modeName.contains("POSE", ignoreCase = true) -> PoseDetectorProcessor()
+            modeName.contains("MULTI_CLASS_SELFIE", ignoreCase = true) -> MultiClassSelfieSegmenterProcessor()
             modeName.contains("SELFIE", ignoreCase = true) -> SelfieSegmenterProcessor()
             modeName.contains("SUBJECT", ignoreCase = true) -> SubjectSegmenterProcessor()
             modeName.contains("CUSTOM_OBJECT", ignoreCase = true) -> CustomObjectDetectorProcessor()

@@ -122,7 +122,7 @@ fun CameraPreviewScreen(
     onHorizontalFlipChange: (Boolean) -> Unit = {},
     verticalFlip: Boolean = false,
     onVerticalFlipChange: (Boolean) -> Unit = {},
-    selectedOcrModel: String,
+    selfieOutputType: String, selfieSelectClass: String, onSelfieOutputTypeChange: (String) -> Unit, onSelfieSelectClassChange: (String) -> Unit, selectedOcrModel: String,
     onSelectedOcrModelChange: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -163,6 +163,10 @@ fun CameraPreviewScreen(
     var bitmapWidth by remember { mutableStateOf(720f) }
     var bitmapHeight by remember { mutableStateOf(1280f) }
     var isFrontCamera by remember { mutableStateOf(false) }
+
+    var showOutputTypeMenu by remember { mutableStateOf(false) }
+    var showSelectClassMenu by remember { mutableStateOf(false) }
+
 
     // Performance monitoring states
     var fps by remember { mutableStateOf(0) }
@@ -311,7 +315,7 @@ fun CameraPreviewScreen(
 
                         // 🌟 CROP MODE: If enabled, crop to the centered frame area
                         // 🌟 FIX: Skip crop for VERIFIED_AUTO_CAPTURE — Pose Detection needs full body visible
-                        val bitmap = if (useCropMode && aiMode != AiMode.VERIFIED_AUTO_CAPTURE) {
+                        val bitmap = if (useCropMode && aiMode != AiMode.VERIFIED_AUTO_CAPTURE && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
 
@@ -439,7 +443,7 @@ fun CameraPreviewScreen(
 
                         // 🌟 FIX: Explicitly recycle old bitmaps before assigning new ones to prevent Native memory leak
                         val oldItems = when (aiMode) {
-                            AiMode.SELFIE_SEGMENTATION -> latestItemsSelfie.value
+                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> latestItemsSelfie.value
                             AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value
                             else -> null
                         }
@@ -455,7 +459,7 @@ fun CameraPreviewScreen(
                             AiMode.HAND_DETECTION -> latestItemsPalm.value = items
                             AiMode.FACE_DETECTION -> latestItemsFace.value = items
                             AiMode.POSE_DETECTION -> latestItemsPose.value = items
-                            AiMode.SELFIE_SEGMENTATION -> {
+                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> {
                                 latestItemsSelfie.value = items
                             }
                             AiMode.SUBJECT_SEGMENTATION -> {
@@ -469,14 +473,16 @@ fun CameraPreviewScreen(
                         // 🌟 Stabilization: Always update latestDetections for UI drawing
                         latestDetections = items
 
-                        var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
+                        var criteriaMet = if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                            false
+                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
                             success
                         } else {
                             items.isNotEmpty()
                         }
 
                         // 🌟 MULTI-SCALE INFERENCE: If initial crop failed, try a 20% larger crop
-                        if (!criteriaMet && useCropMode) {
+                        if (!criteriaMet && useCropMode && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && aiMode != AiMode.SELFIE_SEGMENTATION && aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION) {
                             val expandedBitmap = try {
                                 val cw = baseBitmap.width.toFloat()
                                 val ch = baseBitmap.height.toFloat()
@@ -558,6 +564,8 @@ fun CameraPreviewScreen(
                         // Disable Auto-Snap for specific preview-only modes as requested
                         // POSE_DETECTION removed to allow T+2 Capture
                         val isPreviewOnlyMode = aiMode == AiMode.OBJECT_DETECTION ||
+                                                aiMode == AiMode.SELFIE_SEGMENTATION ||
+                                                aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION ||
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {
@@ -1046,7 +1054,7 @@ fun CameraPreviewScreen(
                                     } catch (e: Exception) {}
                                 }
                             }
-                        } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                        } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
                             val maskBitmap = item.extra["mask_bitmap"] as? Bitmap
 
                             // 🌟 Draw bounding box as fallback/debug for Subject
@@ -1061,7 +1069,12 @@ fun CameraPreviewScreen(
                             }
 
                             if (maskBitmap != null && !maskBitmap.isRecycled) {
-                                val destRect = mappedRect
+                                // 🌟 Multi-class selfie mask covers full preview (bitmap is always full-frame, not cropped)
+                                val destRect = if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                                    android.graphics.RectF(0f, 0f, size.width, size.height)
+                                } else {
+                                    mappedRect
+                                }
                                 val maskPaint = android.graphics.Paint().apply {
                                     isFilterBitmap = true
                                     isAntiAlias = true
@@ -1268,6 +1281,7 @@ fun CameraPreviewScreen(
                                 AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object"
                                 AiMode.TEXT_RECOGNITION -> "Text Recognition"
                                 AiMode.IDENTITY_VERIFICATION -> "Identity Verification"
+                                AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-Class Selfie"
                                 else -> aiMode.name
                             }
                             Text(
@@ -1284,6 +1298,85 @@ fun CameraPreviewScreen(
                             )
                         }
                     }
+
+                    if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                        Box {
+                            Surface(
+                                onClick = { showOutputTypeMenu = true },
+                                color = Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(100.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        selfieOutputType,
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                    Icon(Icons.Default.ArrowDropDown, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showOutputTypeMenu,
+                                onDismissRequest = { showOutputTypeMenu = false }
+                            ) {
+                                listOf("Category Mask", "Confidence Mask").forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model) },
+                                        onClick = {
+                                            onSelfieOutputTypeChange(model)
+                                            showOutputTypeMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && selfieOutputType == "Confidence Mask") {
+                        Box {
+                            Surface(
+                                onClick = { showSelectClassMenu = true },
+                                color = Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(100.dp),
+                                modifier = Modifier.height(26.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        selfieSelectClass,
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                    Icon(Icons.Default.ArrowDropDown, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                            DropdownMenu(
+                                expanded = showSelectClassMenu,
+                                onDismissRequest = { showSelectClassMenu = false }
+                            ) {
+                                listOf("0 - background", "1 - hair", "2 - body-skin", "3 - face-skin", "4 - clothes", "5 - others").forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model) },
+                                        onClick = {
+                                            onSelfieSelectClassChange(model)
+                                            showSelectClassMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
 
                     if (aiMode == AiMode.IDENTITY_VERIFICATION) {
                         // OCR Model Selection Dropdown (For Identity Verification)

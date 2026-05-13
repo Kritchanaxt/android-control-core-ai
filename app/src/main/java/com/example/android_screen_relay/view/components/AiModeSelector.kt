@@ -150,6 +150,7 @@ fun AiModeBottomSheet(
                     AiMode.VERIFIED_AUTO_CAPTURE -> "Verified Auto Capture (Pose + Face)"
                     AiMode.POSE_DETECTION -> "Pose Detection"
                     AiMode.SELFIE_SEGMENTATION -> "Selfie Segmentation"
+                    AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-class Selfie Segmentation"
                     AiMode.SUBJECT_SEGMENTATION -> "Subject Segmentation"
                     AiMode.OBJECT_DETECTION -> "Object Detection"
                     AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object Detection"

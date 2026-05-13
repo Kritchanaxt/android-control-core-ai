@@ -143,6 +143,9 @@ fun AIScreenLayout() {
     var processingResultMsg by remember { mutableStateOf<String?>(null) }
     var horizontalFlip by remember { mutableStateOf(false) }
     var verticalFlip by remember { mutableStateOf(false) }
+    var selfieOutputType by remember { mutableStateOf("Category Mask") }
+    var selfieSelectClass by remember { mutableStateOf("0 - background") }
+
     var selectedOcrModel by remember { mutableStateOf("") }
 
 
@@ -400,7 +403,7 @@ fun AIScreenLayout() {
                 onHorizontalFlipChange = { horizontalFlip = it },
                 verticalFlip = verticalFlip,
                 onVerticalFlipChange = { verticalFlip = it },
-                selectedOcrModel = selectedOcrModel,
+                selfieOutputType = selfieOutputType, selfieSelectClass = selfieSelectClass, onSelfieOutputTypeChange = { selfieOutputType = it }, onSelfieSelectClassChange = { selfieSelectClass = it }, selectedOcrModel = selectedOcrModel,
                 onSelectedOcrModelChange = { selectedOcrModel = it },
                 onStableDetection = { bitmap, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
@@ -646,7 +649,40 @@ fun AIScreenLayout() {
                             }
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
-                    // 7. General Handling for other modes (POSE, etc.)
+                    // 7. Multi-Class Selfie Segmentation (MediaPipe ImageSegmenter)
+                    else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                        try {
+                            val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+                            val aiBitmap = if (aiScale < 1f) {
+                                com.example.android_screen_relay.core.safeCreateScaledBitmap(bitmap, (bitmap.width * aiScale).toInt(), (bitmap.height * aiScale).toInt(), false)
+                            } else bitmap
+
+                            // Pass output type and selected class to the processor
+                            val multiClassOptions = options + mapOf(
+                                "output_type" to selfieOutputType,
+                                "select_class" to selfieSelectClass
+                            )
+
+                            val result = AIManager.process(aiBitmap, multiClassOptions)
+                            if (aiBitmap !== bitmap) aiBitmap.recycle()
+
+                            if (result != null && result.success) {
+                                val finalItems = if (aiScale < 1f) {
+                                    result.items.map { item ->
+                                        val r = item.boundingBox
+                                        item.copy(boundingBox = android.graphics.RectF(
+                                            r.left / aiScale, r.top / aiScale,
+                                            r.right / aiScale, r.bottom / aiScale
+                                        ))
+                                    }
+                                } else result.items
+                                Pair(finalItems.isNotEmpty(), finalItems)
+                            } else {
+                                Pair(false, emptyList())
+                            }
+                        } catch (e: Throwable) { Pair(false, emptyList()) }
+                    }
+                    // 8. General Handling for other modes (POSE, etc.)
                     else {
                         try {
                             // 🌟 Smart Scaling for AI: ML Kit works best with reasonable sizes (e.g. max 720px)
