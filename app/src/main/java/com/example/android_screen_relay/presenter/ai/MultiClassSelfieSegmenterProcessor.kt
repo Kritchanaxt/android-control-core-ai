@@ -102,7 +102,7 @@ class MultiClassSelfieSegmenterProcessor : AIProcessor {
 
                     for (i in 0 until totalPixels) {
                         val classIndex = (byteBuffer.get().toInt() and 0xFF)
-                        pixels[i] = if (classIndex in CLASS_COLORS.indices) {
+                        pixels[i] = if (classIndex > 0 && classIndex < CLASS_COLORS.size) {
                             CLASS_COLORS[classIndex]
                         } else {
                             Color.TRANSPARENT
