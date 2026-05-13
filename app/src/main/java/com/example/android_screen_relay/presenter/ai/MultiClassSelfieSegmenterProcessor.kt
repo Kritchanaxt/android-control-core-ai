@@ -110,11 +110,39 @@ class MultiClassSelfieSegmenterProcessor : AIProcessor {
                     }
                     maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
 
+                    // Calculate Bounding Box for Category Mask (All non-background classes)
+                    var minX = maskWidth
+                    var minY = maskHeight
+                    var maxX = -1
+                    var maxY = -1
+                    var found = false
+
+                    for (y in 0 until maskHeight) {
+                        for (x in 0 until maskWidth) {
+                            val pixel = pixels[y * maskWidth + x]
+                            if (pixel != Color.TRANSPARENT && pixel != CLASS_COLORS[0]) { // 0 is background
+                                if (x < minX) minX = x
+                                if (x > maxX) maxX = x
+                                if (y < minY) minY = y
+                                if (y > maxY) maxY = y
+                                found = true
+                            }
+                        }
+                    }
+
+                    val bbox = if (found) {
+                        val scaleX = bitmap.width.toFloat() / maskWidth
+                        val scaleY = bitmap.height.toFloat() / maskHeight
+                        android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
+                    } else {
+                        android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+                    }
+
                     items.add(
                         AIDetectedItem(
                             label = "Multi-Class Selfie Mask",
                             confidence = 1.0f,
-                            boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
+                            boundingBox = bbox,
                             extra = mapOf(
                                 "width" to maskWidth,
                                 "height" to maskHeight,
@@ -160,11 +188,39 @@ class MultiClassSelfieSegmenterProcessor : AIProcessor {
                     }
                     maskBitmap.setPixels(pixels, 0, maskWidth, 0, 0, maskWidth, maskHeight)
 
+                    // Calculate Bounding Box for Confidence Mask
+                    var minX = maskWidth
+                    var minY = maskHeight
+                    var maxX = -1
+                    var maxY = -1
+                    var found = false
+
+                    for (y in 0 until maskHeight) {
+                        for (x in 0 until maskWidth) {
+                            val pixel = pixels[y * maskWidth + x]
+                            if (pixel != Color.TRANSPARENT) {
+                                if (x < minX) minX = x
+                                if (x > maxX) maxX = x
+                                if (y < minY) minY = y
+                                if (y > maxY) maxY = y
+                                found = true
+                            }
+                        }
+                    }
+
+                    val bbox = if (found) {
+                        val scaleX = bitmap.width.toFloat() / maskWidth
+                        val scaleY = bitmap.height.toFloat() / maskHeight
+                        android.graphics.RectF(minX * scaleX, minY * scaleY, (maxX + 1) * scaleX, (maxY + 1) * scaleY)
+                    } else {
+                        android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
+                    }
+
                     items.add(
                         AIDetectedItem(
                             label = "Confidence Mask: $selectClassStr",
                             confidence = 1.0f,
-                            boundingBox = android.graphics.RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat()),
+                            boundingBox = bbox,
                             extra = mapOf(
                                 "width" to maskWidth,
                                 "height" to maskHeight,

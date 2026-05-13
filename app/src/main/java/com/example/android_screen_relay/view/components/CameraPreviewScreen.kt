@@ -473,9 +473,7 @@ fun CameraPreviewScreen(
                         // 🌟 Stabilization: Always update latestDetections for UI drawing
                         latestDetections = items
 
-                        var criteriaMet = if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
-                            false
-                        } else if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
+                        var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
                             success
                         } else {
                             items.isNotEmpty()
@@ -565,7 +563,6 @@ fun CameraPreviewScreen(
                         // POSE_DETECTION removed to allow T+2 Capture
                         val isPreviewOnlyMode = aiMode == AiMode.OBJECT_DETECTION ||
                                                 aiMode == AiMode.SELFIE_SEGMENTATION ||
-                                                aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION ||
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {

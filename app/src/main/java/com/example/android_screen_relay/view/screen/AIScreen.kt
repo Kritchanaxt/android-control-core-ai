@@ -1138,6 +1138,79 @@ fun AIScreenLayout() {
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             }
                         }
+                    } else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                        isProcessing = true
+                        scope.launch(Dispatchers.Default) {
+                            try {
+                                val pbStartMs = System.currentTimeMillis()
+                                val multiClassOptions = mapOf(
+                                    "is_front" to isFront,
+                                    "output_type" to selfieOutputType,
+                                    "select_class" to selfieSelectClass
+                                )
+                                val result = AIManager.runWithProcessor { proc ->
+                                    val processor = proc as? MultiClassSelfieSegmenterProcessor
+                                    processor?.process(bitmap, multiClassOptions)
+                                } ?: AIResult(false, emptyList(), 0, "Processor unavailable")
+                                val pbElapsedMs = System.currentTimeMillis() - pbStartMs
+
+                                val item = result.items.firstOrNull()
+                                val maskBitmap = item?.extra?.get("mask_bitmap") as? Bitmap
+                                val bbox = item?.boundingBox
+
+                                val finalImage = if (useCropMode && maskBitmap != null && bbox != null) {
+                                    // 1. Create a bitmap for the extracted foreground
+                                    val foreground = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+                                    val canvas = android.graphics.Canvas(foreground)
+                                    
+                                    // 2. Scale mask to match original bitmap size
+                                    val scaledMask = com.example.android_screen_relay.core.safeCreateScaledBitmap(maskBitmap, bitmap.width, bitmap.height, true)
+                                    
+                                    // 3. Draw original bitmap using mask as alpha
+                                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+                                    canvas.drawBitmap(bitmap, 0f, 0f, paint)
+                                    
+                                    // Use Xfermode to keep only pixels where mask is present
+                                    paint.xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+                                    canvas.drawBitmap(scaledMask, 0f, 0f, paint)
+                                    
+                                    scaledMask.recycle()
+
+                                    // 4. Crop to Bounding Box
+                                    val pad = 20
+                                    val left = (bbox.left - pad).toInt().coerceAtLeast(0)
+                                    val top = (bbox.top - pad).toInt().coerceAtLeast(0)
+                                    val right = (bbox.right + pad).toInt().coerceAtMost(bitmap.width)
+                                    val bottom = (bbox.bottom + pad).toInt().coerceAtMost(bitmap.height)
+                                    val w = (right - left).coerceAtLeast(1)
+                                    val h = (bottom - top).coerceAtLeast(1)
+
+                                    val cropped = Bitmap.createBitmap(foreground, left, top, w, h)
+                                    foreground.recycle()
+                                    cropped
+                                } else {
+                                    bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    ocrTimeMs = pbElapsedMs
+                                    ocrResultJson = "[\n  {\n    \"label\": \"Multi-Class Selfie Extracted\",\n    \"confidence\": 1.0\n  }\n]"
+                                    currentImage = finalImage
+                                    if (!bitmap.isRecycled) bitmap.recycle()
+                                }
+
+                                val payload = generateOCRPayload(context, finalImage, ocrResultJson, ocrTimeMs, currentAiMode)
+                                RelayService.getInstance()?.broadcastMessage(payload.toString())
+
+                                // Free mask bitmap
+                                maskBitmap?.recycle()
+
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            } catch (e: Exception) {
+                                Log.e("MultiSelfie", "Extraction error", e)
+                                withContext(Dispatchers.Main) { isProcessing = false }
+                            }
+                        }
                     } else if (currentAiMode == AiMode.SELFIE_SEGMENTATION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
