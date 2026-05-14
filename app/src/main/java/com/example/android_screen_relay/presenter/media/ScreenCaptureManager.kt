@@ -16,7 +16,14 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.BufferOverflow
 import java.io.ByteArrayOutputStream
+import android.graphics.Canvas
+import com.example.android_screen_relay.presenter.AiStateManager
+import com.example.android_screen_relay.presenter.WatchdogStatus
 
 class ScreenCaptureManager(private val context: Context) {
     private var mediaProjection: MediaProjection? = null
@@ -35,6 +42,13 @@ class ScreenCaptureManager(private val context: Context) {
     private val density = Resources.getSystem().displayMetrics.densityDpi
     
     private var reusableBitmap: Bitmap? = null
+    private var reusableCroppedBitmap: Bitmap? = null
+    private var reusableCanvas: Canvas? = null
+
+    private var frameChannel: Channel<ByteArray>? = null
+    private var senderJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private var lastFrameTimeMs = 0L
 
     @SuppressLint("WrongConstant")
     fun startCapture(resultCode: Int, data: Intent, qualityMode: Int, onFrameCaptured: (ByteArray) -> Unit) {
@@ -95,6 +109,14 @@ class ScreenCaptureManager(private val context: Context) {
         backgroundThread?.start()
         backgroundHandler = android.os.Handler(backgroundThread!!.looper)
 
+        frameChannel = Channel(capacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        senderJob = scope.launch {
+            for (bytes in frameChannel!!) {
+                if (!isActive) break
+                onFrameCaptured?.invoke(bytes)
+            }
+        }
+
         val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpManager.getMediaProjection(resultCode, data)
 
@@ -122,6 +144,20 @@ class ScreenCaptureManager(private val context: Context) {
             imageReader?.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
+                    // FPS Throttling via Watchdog
+                    val now = System.currentTimeMillis()
+                    val watchdogStatus = AiStateManager.state.value.watchdogStatus
+                    val targetFps = when (watchdogStatus) {
+                        WatchdogStatus.NORMAL -> 30
+                        WatchdogStatus.WARNING -> 15
+                        WatchdogStatus.CRITICAL -> 5
+                    }
+                    val frameIntervalMs = 1000L / targetFps
+                    if (now - lastFrameTimeMs < frameIntervalMs) {
+                        return@setOnImageAvailableListener
+                    }
+                    lastFrameTimeMs = now
+
                     val planes = image.planes
                     val buffer = planes[0].buffer
                     val pixelStride = planes[0].pixelStride
@@ -140,9 +176,14 @@ class ScreenCaptureManager(private val context: Context) {
                     if (rowPadding == 0) {
                         sendBitmap(reusableBitmap!!)
                     } else { 
-                        val croppedBitmap = Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
-                        sendBitmap(croppedBitmap)
-                        croppedBitmap.recycle()
+                        // Zero-Allocation Cropping
+                        if (reusableCroppedBitmap == null || reusableCroppedBitmap!!.width != width || reusableCroppedBitmap!!.height != height) {
+                            reusableCroppedBitmap?.recycle()
+                            reusableCroppedBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                            reusableCanvas = Canvas(reusableCroppedBitmap!!)
+                        }
+                        reusableCanvas?.drawBitmap(reusableBitmap!!, 0f, 0f, null)
+                        sendBitmap(reusableCroppedBitmap!!)
                     }
                 } catch (e: Throwable) {
                     // Log.e("ScreenCapture", "Error processing image: ${e.message}")
@@ -161,7 +202,7 @@ class ScreenCaptureManager(private val context: Context) {
             val outputStream = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, outputStream)
             val imageBytes = outputStream.toByteArray()
-            onFrameCaptured?.invoke(imageBytes)
+            frameChannel?.trySend(imageBytes)
         } catch (e: Throwable) {
             e.printStackTrace()
         }
@@ -187,7 +228,15 @@ class ScreenCaptureManager(private val context: Context) {
         backgroundThread = null // Don't join, just let it die
         backgroundHandler = null
         
+        senderJob?.cancel()
+        senderJob = null
+        frameChannel?.close()
+        frameChannel = null
+
         reusableBitmap?.recycle()
         reusableBitmap = null
+        reusableCroppedBitmap?.recycle()
+        reusableCroppedBitmap = null
+        reusableCanvas = null
     }
 }
