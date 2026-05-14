@@ -157,6 +157,7 @@ suspend fun generateOCRPayload(
             AiMode.OBJECT_DETECTION -> "object_detection_result"
             AiMode.CUSTOM_OBJECT_DETECTION -> "custom_object_detection_result"
             AiMode.TEXT_RECOGNITION -> "text_recognition_result"
+            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "multi_class_selfie_segmentation_result"
             else -> "ocr_result"
         }
     )
@@ -170,6 +171,12 @@ suspend fun generateOCRPayload(
                 put("version", "tasks-vision")
                 put("runtime", "tflite")
                 put("model", "hand_landmarker.task")
+            }
+            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> {
+                put("engine", "mediapipe")
+                put("version", "tasks-vision")
+                put("runtime", "tflite")
+                put("model", "selfie_segmenter.task")
             }
             AiMode.FACE_DETECTION, AiMode.VERIFIED_AUTO_CAPTURE -> {
                 put("engine", "mlkit")

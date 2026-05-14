@@ -132,7 +132,7 @@ fun OCRResultScreen(
                             AiMode.SUBJECT_SEGMENTATION -> "Subject Result"
                             AiMode.TEXT_RECOGNITION -> "ML Kit Result"
                             AiMode.IDENTITY_VERIFICATION -> "Identity Verification Result"
-                            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Selfie Segmentation Result"
+                            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-Class Selfie Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp))
