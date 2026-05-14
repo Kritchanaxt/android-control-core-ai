@@ -1,5 +1,6 @@
 package com.example.android_screen_relay.core
 
+import com.example.android_screen_relay.presenter.AiStateManager
 import android.Manifest
 import android.app.ActivityManager
 import android.content.Context
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,6 +94,51 @@ import kotlin.math.min
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 
+    // Performance monitoring states delegated to AiStateManager
+    
+    
+    
+    
+    
+    
+    
+
+
+
+
+
+
+
+class CameraStateWrapper(private val composeState: androidx.compose.runtime.State<com.example.android_screen_relay.presenter.AiState>) {
+    var fps: Int
+        get() = composeState.value.fps
+        set(value) { AiStateManager.updateState { it.copy(fps = value) } }
+    var detectorLatency: Long
+        get() = composeState.value.detectorLatency
+        set(value) { AiStateManager.updateState { it.copy(detectorLatency = value) } }
+    var frameLatency: Long
+        get() = composeState.value.frameLatency
+        set(value) { AiStateManager.updateState { it.copy(frameLatency = value) } }
+    var ramUsed: Long
+        get() = composeState.value.ramUsed
+        set(value) { AiStateManager.updateState { it.copy(ramUsed = value) } }
+    var ramTotal: Long
+        get() = composeState.value.ramTotal
+        set(value) { AiStateManager.updateState { it.copy(ramTotal = value) } }
+    var freeRamMb: Long
+        get() = composeState.value.freeRamMb
+        set(value) { AiStateManager.updateState { it.copy(freeRamMb = value) } }
+    var cpuUsage: String
+        get() = composeState.value.cpuUsage
+        set(value) { AiStateManager.updateState { it.copy(cpuUsage = value) } }
+    var isCapturing: Boolean
+    get() = composeState.value.isCapturing
+    set(value) { AiStateManager.updateState { it.copy(isCapturing = value) } }
+    var isFrontCamera: Boolean
+    get() = composeState.value.isFrontCamera
+    set(value) { AiStateManager.updateState { it.copy(isFrontCamera = value) } }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraPreviewScreen(
@@ -138,7 +185,7 @@ fun CameraPreviewScreen(
     }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var isCapturing by remember { mutableStateOf(false) }
+
     var showAiModeSheet by remember { mutableStateOf(false) }
     var isPreviewPaused by remember { mutableStateOf(false) }
     var stableTime by remember { mutableStateOf(0L) }
@@ -162,20 +209,16 @@ fun CameraPreviewScreen(
     var latestDetections by remember { mutableStateOf<List<AIDetectedItem>>(emptyList()) }
     var bitmapWidth by remember { mutableStateOf(720f) }
     var bitmapHeight by remember { mutableStateOf(1280f) }
-    var isFrontCamera by remember { mutableStateOf(false) }
+
 
     var showOutputTypeMenu by remember { mutableStateOf(false) }
     var showSelectClassMenu by remember { mutableStateOf(false) }
 
 
-    // Performance monitoring states
-    var fps by remember { mutableStateOf(0) }
-    var detectorLatency by remember { mutableStateOf(0L) }
-    var frameLatency by remember { mutableStateOf(0L) }
-    var ramUsed by remember { mutableStateOf(0L) }
-    var ramTotal by remember { mutableStateOf(0L) }
-    var freeRamMb by remember { mutableStateOf(1000L) }
-    var cpuUsage by remember { mutableStateOf("0.0%") }
+    val composeState = AiStateManager.state.collectAsState()
+    val trigger = composeState.value
+    val wrapper = remember(composeState) { CameraStateWrapper(composeState) }
+    with(wrapper) {
 
     // Loop for System info (RAM, CPU)
     LaunchedEffect(Unit) {
@@ -1663,3 +1706,5 @@ fun CameraPreviewScreen(
     }
 }
 
+
+}
