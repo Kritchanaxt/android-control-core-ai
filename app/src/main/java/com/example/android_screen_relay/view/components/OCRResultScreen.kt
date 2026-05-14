@@ -133,6 +133,7 @@ fun OCRResultScreen(
                             AiMode.TEXT_RECOGNITION -> "ML Kit Result"
                             AiMode.IDENTITY_VERIFICATION -> "Identity Verification Result"
                             AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-Class Selfie Result"
+                            AiMode.VERIFICATION_SEGMENTATION -> "Verification Segmetation Result"
                             else -> "OCR Result"
                         }
                         Text(title, style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.sp))
@@ -146,6 +147,7 @@ fun OCRResultScreen(
                             AiMode.TEXT_RECOGNITION -> "ML Kit Text Recognition"
                             AiMode.IDENTITY_VERIFICATION -> "Identity Verification ($selectedOcrModel)"
                             AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "MediaPipe Multi-Class Selfie Segmentation"
+                            AiMode.VERIFICATION_SEGMENTATION -> "Verification Segmetation (Multi-class Selfie + Hand detection)"
                             else -> "PaddleOCRv5"
                         }
                         Text(

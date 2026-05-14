@@ -151,6 +151,7 @@ fun AiModeBottomSheet(
                     AiMode.POSE_DETECTION -> "Pose Detection"
                     AiMode.SELFIE_SEGMENTATION -> "Selfie Segmentation"
                     AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-class Selfie Segmentation"
+                    AiMode.VERIFICATION_SEGMENTATION -> "Verification Segmetation (Multi-class Selfie + Hand detection)"
                     AiMode.SUBJECT_SEGMENTATION -> "Subject Segmentation"
                     AiMode.OBJECT_DETECTION -> "Object Detection"
                     AiMode.CUSTOM_OBJECT_DETECTION -> "Custom Object Detection"

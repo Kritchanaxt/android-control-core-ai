@@ -358,7 +358,7 @@ fun CameraPreviewScreen(
 
                         // 🌟 CROP MODE: If enabled, crop to the centered frame area
                         // 🌟 FIX: Skip crop for VERIFIED_AUTO_CAPTURE — Pose Detection needs full body visible
-                        val bitmap = if (useCropMode && aiMode != AiMode.VERIFIED_AUTO_CAPTURE && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                        val bitmap = if (useCropMode && aiMode != AiMode.VERIFIED_AUTO_CAPTURE && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && aiMode != AiMode.VERIFICATION_SEGMENTATION) {
                             val cw = baseBitmap.width.toFloat()
                             val ch = baseBitmap.height.toFloat()
 
@@ -486,7 +486,7 @@ fun CameraPreviewScreen(
 
                         // 🌟 FIX: Explicitly recycle old bitmaps before assigning new ones to prevent Native memory leak
                         val oldItems = when (aiMode) {
-                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> latestItemsSelfie.value
+                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION, AiMode.VERIFICATION_SEGMENTATION -> latestItemsSelfie.value
                             AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value
                             else -> null
                         }
@@ -502,7 +502,7 @@ fun CameraPreviewScreen(
                             AiMode.HAND_DETECTION -> latestItemsPalm.value = items
                             AiMode.FACE_DETECTION -> latestItemsFace.value = items
                             AiMode.POSE_DETECTION -> latestItemsPose.value = items
-                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> {
+                            AiMode.SELFIE_SEGMENTATION, AiMode.MULTI_CLASS_SELFIE_SEGMENTATION, AiMode.VERIFICATION_SEGMENTATION -> {
                                 latestItemsSelfie.value = items
                             }
                             AiMode.SUBJECT_SEGMENTATION -> {
@@ -518,12 +518,19 @@ fun CameraPreviewScreen(
 
                         var criteriaMet = if (aiMode == AiMode.PADDLE_OCR || aiMode == AiMode.TESSERACT_FAST_OCR || aiMode == AiMode.IDENTITY_VERIFICATION || aiMode == AiMode.TEXT_RECOGNITION || aiMode == AiMode.HAND_DETECTION) {
                             success
+                        } else if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.VERIFICATION_SEGMENTATION || aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                            items.isNotEmpty() && items.any { item -> 
+                                val w = item.boundingBox.width()
+                                val h = item.boundingBox.height()
+                                // Require bounding box to be at least 15% of the frame width and height to avoid false positives on noise/black screens
+                                w > bitmapWidth * 0.15f && h > bitmapHeight * 0.15f
+                            }
                         } else {
                             items.isNotEmpty()
                         }
 
                         // 🌟 MULTI-SCALE INFERENCE: If initial crop failed, try a 20% larger crop
-                        if (!criteriaMet && useCropMode && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && aiMode != AiMode.SELFIE_SEGMENTATION && aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION) {
+                        if (!criteriaMet && useCropMode && aiMode != AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && aiMode != AiMode.VERIFICATION_SEGMENTATION && aiMode != AiMode.SELFIE_SEGMENTATION && aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION) {
                             val expandedBitmap = try {
                                 val cw = baseBitmap.width.toFloat()
                                 val ch = baseBitmap.height.toFloat()
@@ -612,7 +619,7 @@ fun CameraPreviewScreen(
                             stableTime += elapsedSinceStart
 
                             // Rule 4: Buffer at 2s (T+2) for all modes except Object Detect
-                            if (aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION && stableTime in 1900..2100) {
+                            if (aiMode != AiMode.OBJECT_DETECTION && aiMode != AiMode.CUSTOM_OBJECT_DETECTION && stableTime >= 2000L) {
                                 if (faceBuffer2s == null) {
                                     faceBuffer2s = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                                 }
@@ -1093,7 +1100,7 @@ fun CameraPreviewScreen(
                                     } catch (e: Exception) {}
                                 }
                             }
-                        } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
+                        } else if (aiMode == AiMode.SELFIE_SEGMENTATION || aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.VERIFICATION_SEGMENTATION || aiMode == AiMode.SUBJECT_SEGMENTATION) {
                             val maskBitmap = item.extra["mask_bitmap"] as? Bitmap
 
                             // 🌟 Draw bounding box as fallback/debug for Subject
@@ -1109,7 +1116,7 @@ fun CameraPreviewScreen(
 
                             if (maskBitmap != null && !maskBitmap.isRecycled) {
                                 // 🌟 Multi-class selfie mask covers full preview (bitmap is always full-frame, not cropped)
-                                val destRect = if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                                val destRect = if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.VERIFICATION_SEGMENTATION) {
                                     android.graphics.RectF(0f, 0f, size.width, size.height)
                                 } else {
                                     mappedRect
@@ -1321,6 +1328,7 @@ fun CameraPreviewScreen(
                                 AiMode.TEXT_RECOGNITION -> "Text Recognition"
                                 AiMode.IDENTITY_VERIFICATION -> "Identity Verification"
                                 AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> "Multi-Class Selfie"
+                                AiMode.VERIFICATION_SEGMENTATION -> "Verification Segmetation"
                                 else -> aiMode.name
                             }
                             Text(
@@ -1338,7 +1346,7 @@ fun CameraPreviewScreen(
                         }
                     }
 
-                    if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                    if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.VERIFICATION_SEGMENTATION) {
                         Box {
                             Surface(
                                 onClick = { showOutputTypeMenu = true },
@@ -1377,7 +1385,7 @@ fun CameraPreviewScreen(
                         }
                     }
 
-                    if (aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION && selfieOutputType == "Confidence Mask") {
+                    if ((aiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || aiMode == AiMode.VERIFICATION_SEGMENTATION) && selfieOutputType == "Confidence Mask") {
                         Box {
                             Surface(
                                 onClick = { showSelectClassMenu = true },

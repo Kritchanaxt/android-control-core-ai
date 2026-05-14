@@ -739,7 +739,7 @@ fun AIScreenLayout() {
                         } catch (e: Throwable) { Pair(false, emptyList()) }
                     }
                     // 7. Multi-Class Selfie Segmentation (MediaPipe ImageSegmenter)
-                    else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                    else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || currentAiMode == AiMode.VERIFICATION_SEGMENTATION) {
                         try {
                             val aiScale = 720f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
                             val aiBitmap = if (aiScale < 1f) {
@@ -1227,7 +1227,7 @@ fun AIScreenLayout() {
                                 withContext(Dispatchers.Main) { isProcessing = false }
                             }
                         }
-                    } else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION) {
+                    } else if (currentAiMode == AiMode.MULTI_CLASS_SELFIE_SEGMENTATION || currentAiMode == AiMode.VERIFICATION_SEGMENTATION) {
                         isProcessing = true
                         scope.launch(Dispatchers.Default) {
                             try {
@@ -1235,17 +1235,20 @@ fun AIScreenLayout() {
                                 val multiClassOptions = mapOf(
                                     "is_front" to isFront,
                                     "output_type" to selfieOutputType,
-                                    "select_class" to selfieSelectClass
+                                    "select_class" to selfieSelectClass,
+                                    "is_snap" to true
                                 )
                                 val result = AIManager.runWithProcessor { proc ->
-                                    val processor = proc as? MultiClassSelfieSegmenterProcessor
-                                    processor?.process(bitmap, multiClassOptions)
+                                    proc?.process(bitmap, multiClassOptions)
                                 } ?: AIResult(false, emptyList(), 0, "Processor unavailable")
                                 val pbElapsedMs = System.currentTimeMillis() - pbStartMs
 
                                 val item = result.items.firstOrNull()
                                 val maskBitmap = item?.extra?.get("mask_bitmap") as? Bitmap
                                 val bbox = item?.boundingBox
+                                val handsSubtracted = item?.extra?.get("hands_subtracted") as? Int ?: 0
+
+                                Log.d("VerificationSeg", "Snap result: success=${result.success}, items=${result.items.size}, maskSize=${maskBitmap?.width}x${maskBitmap?.height}, hands_subtracted=$handsSubtracted, elapsed=${pbElapsedMs}ms")
 
                                 val finalImage = if (useCropMode && maskBitmap != null && bbox != null) {
                                     // 1. Create a bitmap for the extracted foreground
@@ -1283,7 +1286,7 @@ fun AIScreenLayout() {
 
                                 withContext(Dispatchers.Main) {
                                     ocrTimeMs = pbElapsedMs
-                                    ocrResultJson = "[\n  {\n    \"label\": \"Multi-Class Selfie Extracted\",\n    \"confidence\": 1.0\n  }\n]"
+                                    ocrResultJson = "[\n  {\n    \"label\": \"Verification Segmentation\",\n    \"confidence\": 1.0,\n    \"hands_subtracted\": $handsSubtracted\n  }\n]"
                                     currentImage = finalImage
                                     if (!bitmap.isRecycled) bitmap.recycle()
                                 }
