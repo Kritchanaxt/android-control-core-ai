@@ -9,6 +9,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
+enum class WatchdogStatus {
+    NORMAL,
+    WARNING,
+    CRITICAL
+}
+
 data class AiState(
     val currentAiMode: AiMode = AiMode.PREVIEW,
     val isProcessing: Boolean = false,
@@ -45,7 +51,9 @@ data class AiState(
     val freeRamMb: Long = 1000L,
     val cpuUsage: String = "0.0%",
     val isCapturing: Boolean = false,
-    val isFrontCamera: Boolean = false
+    val isFrontCamera: Boolean = false,
+    val watchdogMessage: String? = null,
+    val watchdogStatus: WatchdogStatus = WatchdogStatus.NORMAL
 )
 
 object AiStateManager {

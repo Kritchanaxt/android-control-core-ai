@@ -6,6 +6,7 @@ import android.util.Log
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+import com.example.android_screen_relay.presenter.system.ResourceWatchdog
 
 /**
  * Interface for AI Processors to allow switching and lifecycle management
@@ -265,6 +266,9 @@ object AIManager {
             isBusy = false
             readLock.unlock()
         }
+
+        // Notify watchdog that AI is still alive
+        ResourceWatchdog.notifyHeartbeat()
 
         // 2. Scale back coordinates if was resized
         if (result != null && wasResized) {

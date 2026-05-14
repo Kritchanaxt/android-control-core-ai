@@ -605,7 +605,6 @@ fun CameraPreviewScreen(
                         // Disable Auto-Snap for specific preview-only modes as requested
                         // POSE_DETECTION removed to allow T+2 Capture
                         val isPreviewOnlyMode = aiMode == AiMode.OBJECT_DETECTION ||
-                                                aiMode == AiMode.SELFIE_SEGMENTATION ||
                                                 aiMode == AiMode.CUSTOM_OBJECT_DETECTION
 
                         if (criteriaMet && !isPreviewOnlyMode) {

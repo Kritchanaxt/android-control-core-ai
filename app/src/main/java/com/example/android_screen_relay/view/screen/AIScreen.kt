@@ -43,6 +43,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
 import com.example.android_screen_relay.presenter.AiStateManager
+import com.example.android_screen_relay.presenter.WatchdogStatus
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -218,6 +219,10 @@ class AiScreenStateWrapper(private val composeState: androidx.compose.runtime.St
     var selectedOcrModel: String
         get() = composeState.value.selectedOcrModel
         set(value) { AiStateManager.updateState { it.copy(selectedOcrModel = value) } }
+    val watchdogMessage: String?
+        get() = composeState.value.watchdogMessage
+    val watchdogStatus: WatchdogStatus
+        get() = composeState.value.watchdogStatus
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -314,7 +319,8 @@ fun AIScreenLayout() {
         }
     }
 
-    if (currentImage != null || (leftPalmImage != null && rightPalmImage != null)) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (currentImage != null || (leftPalmImage != null && rightPalmImage != null)) {
         // Update floating overlay for Success state
         LaunchedEffect(Unit) {
             RelayService.getInstance()?.let { service ->
@@ -802,8 +808,7 @@ fun AIScreenLayout() {
                         return@CameraPreviewScreen // Double check Busy State Lock
                     }
 
-                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE_DETECTION ||
-                                            currentAiMode == AiMode.OBJECT_DETECTION ||
+                    val isPreviewOnlyMode = currentAiMode == AiMode.OBJECT_DETECTION ||
                                             currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION
                     if (isPreviewOnlyMode) {
                         if (!bitmap.isRecycled) bitmap.recycle()
@@ -1699,7 +1704,47 @@ fun AIScreenLayout() {
                 Text("Initializing...")
             }
         }
+        }
+        
+        watchdogMessage?.let { msg ->
+            WatchdogBanner(msg, watchdogStatus)
+        }
     }
 }
+}
 
+@Composable
+fun WatchdogBanner(message: String, status: WatchdogStatus) {
+    val bgColor = when (status) {
+        WatchdogStatus.NORMAL -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
+        WatchdogStatus.WARNING -> androidx.compose.ui.graphics.Color(0xFFFFA000)
+        WatchdogStatus.CRITICAL -> androidx.compose.ui.graphics.Color(0xFFD32F2F)
+    }
+    
+    Surface(
+        modifier = androidx.compose.ui.Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .statusBarsPadding(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+        color = bgColor,
+        shadowElevation = 4.dp
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = androidx.compose.ui.Modifier.padding(12.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (status == WatchdogStatus.NORMAL) Icons.Default.CheckCircle else Icons.Default.Warning,
+                contentDescription = null,
+                tint = androidx.compose.ui.graphics.Color.White
+            )
+            androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.width(8.dp))
+            Text(
+                text = message,
+                color = androidx.compose.ui.graphics.Color.White,
+                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
 }
