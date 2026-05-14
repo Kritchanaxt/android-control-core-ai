@@ -63,6 +63,7 @@ class RelayService : Service() {
             }
             
             relayServer?.start()
+            com.example.android_screen_relay.presenter.streaming.ScreenStreamer.attachServer(relayServer)
             android.util.Log.d("RelayService", "RelayServer started successfully on port 8887")
             // Start heartbeat for testing background connectivity
             startHeartbeat()
@@ -87,6 +88,8 @@ class RelayService : Service() {
         sInstance = this
     }
 
+    private var glPipeline: com.example.android_screen_relay.opengl.GLScreenSharingPipeline? = null
+
     override fun onDestroy() {
         super.onDestroy()
         sInstance = null
@@ -107,7 +110,14 @@ class RelayService : Service() {
         }
 
         discoveryJob?.cancel()
+        
+        glPipeline?.stop()
+        glPipeline = null
+        
         screenCaptureManager.stopCapture()
+        com.example.android_screen_relay.presenter.streaming.ScreenStreamer.stopStreaming()
+        com.example.android_screen_relay.presenter.recording.ScreenRecorder.stopRecording()
+        
         // overlayManager.hideOverlay() // Assuming this method exists or you might need to check OverlayManager content
         overlayManager.removeOverlay()
         
@@ -203,10 +213,45 @@ class RelayService : Service() {
                 val quality = intent?.getIntExtra("QUALITY_MODE", 1) ?: 1 // Default to Medium (1)
                 android.util.Log.d("RelayService", "Starting Screen Capture with Quality: $quality")
                 
+                com.example.android_screen_relay.presenter.streaming.ScreenStreamer.startStreaming()
+                
+                // 1. Setup Stream Capture (ImageReader)
                 screenCaptureManager.startCapture(resultCode, dataIntent, quality) { imageBytes ->
-                    // Pass raw bytes to authenticated clients
-                    relayServer?.broadcastToAuthenticated(imageBytes)
+                    com.example.android_screen_relay.presenter.streaming.ScreenStreamer.broadcastFrame(imageBytes)
                 }
+                val streamSurface = screenCaptureManager.getSurface()
+                
+                // 2. Setup Recording (MediaRecorder)
+                val metrics = resources.displayMetrics
+                val targetWidth = screenCaptureManager.getTargetWidth()
+                val targetHeight = screenCaptureManager.getTargetHeight()
+                
+                com.example.android_screen_relay.presenter.recording.ScreenRecorder.startRecording(
+                    this, targetWidth, targetHeight
+                ) { newRecordSurface ->
+                    // Callback when auto-split happens
+                    glPipeline?.updateSurface2(newRecordSurface)
+                }
+                val recordSurface = com.example.android_screen_relay.presenter.recording.ScreenRecorder.getSurface()
+                
+                // 3. Connect them using OpenGL sharing pipeline
+                val projection = screenCaptureManager.getMediaProjection()
+                if (projection != null && streamSurface != null && recordSurface != null) {
+                    glPipeline = com.example.android_screen_relay.opengl.GLScreenSharingPipeline(
+                        targetWidth, targetHeight, streamSurface, recordSurface
+                    )
+                    glPipeline?.start(projection, metrics.densityDpi, object : com.example.android_screen_relay.opengl.GLScreenSharingPipeline.PipelineCallback {
+                        override fun onPipelineReady() {
+                            android.util.Log.i("RelayService", "GL Pipeline ready, sharing screen to both targets.")
+                        }
+                        override fun onError(e: Exception) {
+                            android.util.Log.e("RelayService", "GL Pipeline failed", e)
+                        }
+                    })
+                } else {
+                    android.util.Log.e("RelayService", "Failed to retrieve surfaces for GL Pipeline")
+                }
+                
             } catch (e: Throwable) {
                 android.util.Log.e("RelayService", "Error starting capture: ${e.message}")
                 e.printStackTrace()

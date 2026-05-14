@@ -50,6 +50,13 @@ class ScreenCaptureManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO)
     private var lastFrameTimeMs = 0L
 
+    fun getSurface(): android.view.Surface? {
+        return imageReader?.surface
+    }
+
+    fun getTargetWidth(): Int = targetWidth
+    fun getTargetHeight(): Int = targetHeight
+
     @SuppressLint("WrongConstant")
     fun startCapture(resultCode: Int, data: Intent, qualityMode: Int, onFrameCaptured: (ByteArray) -> Unit) {
         this.onFrameCaptured = onFrameCaptured
@@ -131,13 +138,6 @@ class ScreenCaptureManager(private val context: Context) {
             // Setup ImageReader
             imageReader = ImageReader.newInstance(targetWidth, targetHeight, PixelFormat.RGBA_8888, 2)
             
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCapture",
-                targetWidth, targetHeight, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader!!.surface, null, backgroundHandler
-            )
-            
             val width = targetWidth
             val height = targetHeight
 
@@ -192,7 +192,7 @@ class ScreenCaptureManager(private val context: Context) {
                 }
             }, backgroundHandler)
         } catch (e: Throwable) {
-            android.util.Log.e("ScreenCaptureManager", "Fatal error starting VirtualDisplay", e)
+            android.util.Log.e("ScreenCaptureManager", "Fatal error starting ImageReader", e)
             stopCapture()
         } 
     }
@@ -238,5 +238,9 @@ class ScreenCaptureManager(private val context: Context) {
         reusableCroppedBitmap?.recycle()
         reusableCroppedBitmap = null
         reusableCanvas = null
+    }
+
+    fun getMediaProjection(): MediaProjection? {
+        return mediaProjection
     }
 }

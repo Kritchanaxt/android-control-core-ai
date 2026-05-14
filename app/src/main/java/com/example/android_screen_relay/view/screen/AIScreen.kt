@@ -808,7 +808,8 @@ fun AIScreenLayout() {
                         return@CameraPreviewScreen // Double check Busy State Lock
                     }
 
-                    val isPreviewOnlyMode = currentAiMode == AiMode.OBJECT_DETECTION ||
+                    val isPreviewOnlyMode = currentAiMode == AiMode.POSE_DETECTION ||
+                                            currentAiMode == AiMode.OBJECT_DETECTION ||
                                             currentAiMode == AiMode.CUSTOM_OBJECT_DETECTION
                     if (isPreviewOnlyMode) {
                         if (!bitmap.isRecycled) bitmap.recycle()

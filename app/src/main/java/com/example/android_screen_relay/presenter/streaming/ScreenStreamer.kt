@@ -1,6 +1,6 @@
 package com.example.android_screen_relay.presenter.streaming
 
-import android.content.Context
+import com.example.android_screen_relay.RelayServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -17,19 +17,28 @@ object ScreenStreamer {
     private val _state = MutableStateFlow(StreamState())
     val state = _state.asStateFlow()
 
+    private var relayServer: RelayServer? = null
+
     fun updateState(transform: (StreamState) -> StreamState) {
         _state.update(transform)
     }
 
-    fun startStreaming(context: Context, ip: String) {
-        updateState { it.copy(isStreaming = true, targetIp = ip, statusMessage = "Connecting to $ip...") }
-        // TODO: Implement actual streaming logic (e.g., MediaProjection, WebRTC, WebSocket relay)
-        // Simulated connection success:
-        updateState { it.copy(statusMessage = "Streaming to $ip") }
+    fun attachServer(server: RelayServer?) {
+        relayServer = server
+    }
+
+    fun startStreaming() {
+        updateState { it.copy(isStreaming = true, statusMessage = "Broadcasting stream...") }
+    }
+
+    fun broadcastFrame(imageBytes: ByteArray) {
+        if (_state.value.isStreaming) {
+            relayServer?.broadcastToAuthenticated(imageBytes)
+        }
     }
 
     fun stopStreaming() {
         updateState { it.copy(isStreaming = false, statusMessage = "Disconnected") }
-        // TODO: Stop streaming logic
+        relayServer = null
     }
 }
