@@ -77,17 +77,39 @@ class VerificationSegmentationProcessor : AIProcessor {
         }
     }
 
+    private val processLock = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun process(bitmap: Bitmap, options: Map<String, Any>): AIResult {
+        val isSnap = options["is_snap"] as? Boolean ?: false
+
+        if (isSnap) {
+            // For SNAP: We MUST process it. Wait until the processor is free.
+            var waitCount = 0
+            while (!processLock.compareAndSet(false, true)) {
+                Thread.sleep(10)
+                waitCount++
+                if (waitCount > 500) { // Timeout after 5 seconds to prevent deadlock
+                    return AIResult(false, emptyList(), 0, "Timeout waiting for processor")
+                }
+            }
+        } else {
+            // For PREVIEW: Strictly drop the frame if already processing to prevent concurrent crashes
+            if (!processLock.compareAndSet(false, true)) {
+                return AIResult(false, emptyList(), 0, "Dropped preview frame")
+            }
+        }
+
         val start = System.currentTimeMillis()
         return try {
             val outputType = options["output_type"] as? String ?: "Category Mask"
             val selectClassStr = options["select_class"] as? String ?: "0 - background"
             val selectedClassIndex = selectClassStr.substringBefore(" ").toIntOrNull() ?: 0
-            val isSnap = options["is_snap"] as? Boolean ?: false
 
             Log.d("VerificationSeg", "process() isSnap=$isSnap bitmap=${bitmap.width}x${bitmap.height}")
 
             val mpImage = BitmapImageBuilder(bitmap).build()
+            var freshMpImage: com.google.mediapipe.framework.image.MPImage? = null
+            var paddedMpImage: com.google.mediapipe.framework.image.MPImage? = null
 
             // ── AI 1: Selfie Segmentation ──
             val result = synchronized(lock) {
@@ -115,7 +137,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                     bitmap
                 }
 
-                val freshMpImage = BitmapImageBuilder(handBitmap).build()
+                freshMpImage = BitmapImageBuilder(handBitmap).build()
 
                 // Attempt 1: Detect on scaled image
                 var detectedResult: HandLandmarkerResult? = synchronized(lock) {
@@ -143,7 +165,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                         val offsetY = (padH - h) / 2f
                         canvas.drawBitmap(handBitmap, offsetX, offsetY, null)
 
-                        val paddedMpImage = BitmapImageBuilder(paddedBitmap).build()
+                        paddedMpImage = BitmapImageBuilder(paddedBitmap).build()
                         val paddedHandResult = synchronized(lock) { handLandmarker?.detect(paddedMpImage) }
                         paddedBitmap.recycle()
 
@@ -239,10 +261,10 @@ class VerificationSegmentationProcessor : AIProcessor {
                 classArray = ByteArray(totalPx)
                 buf.get(classArray)
 
-                // Find face-skin (class 3) bounding box
+                // Find face-skin (class 3) and hair (class 1) bounding box
                 for (i in 0 until totalPx) {
                     val cls = classArray[i].toInt() and 0xFF
-                    if (cls == 3) {
+                    if (cls == 1 || cls == 3) {
                         val x = i % catMaskWidth
                         val y = i / catMaskWidth
                         if (x < faceMinX) faceMinX = x
@@ -254,17 +276,26 @@ class VerificationSegmentationProcessor : AIProcessor {
                 }
             }
 
-            // Define "Neck Zone"
-            val faceW = if (faceFound) (faceMaxX - faceMinX) else 0
-            val faceH = if (faceFound) (faceMaxY - faceMinY) else 0
+            // Define "Square Face Zone" (Inner Box 1x) and "Outer Zone" (Outer Box 2x)
+            val rawFaceW = if (faceFound) (faceMaxX - faceMinX) else 0
+            val rawFaceH = if (faceFound) (faceMaxY - faceMinY) else 0
+            val faceSize = maxOf(rawFaceW, rawFaceH)
             val faceCenterX = if (faceFound) (faceMinX + faceMaxX) / 2 else catMaskWidth / 2
+            val faceCenterY = if (faceFound) (faceMinY + faceMaxY) / 2 else catMaskHeight / 2
 
-            val neckZoneLeft = (faceCenterX - faceW * 1.5f).toInt().coerceAtLeast(0)
-            val neckZoneRight = (faceCenterX + faceW * 1.5f).toInt().coerceAtMost(catMaskWidth)
-            val neckZoneTop = if (faceFound) faceMinY else 0
-            val neckZoneBottom = (faceMaxY + faceH * 1.5f).toInt().coerceAtMost(catMaskHeight)
+            // Inner Box (1x)
+            val innerBoxLeft = faceCenterX - faceSize / 2
+            val innerBoxRight = faceCenterX + faceSize / 2
+            val innerBoxTop = faceCenterY - faceSize / 2
+            val innerBoxBottom = faceCenterY + faceSize / 2
 
-            Log.d("VerificationSeg", "Face zone: faceFound=$faceFound, face=[$faceMinX,$faceMinY,$faceMaxX,$faceMaxY], neckZone=[$neckZoneLeft,$neckZoneTop,$neckZoneRight,$neckZoneBottom]")
+            // Outer Box (2x)
+            val outerBoxLeft = faceCenterX - faceSize
+            val outerBoxRight = faceCenterX + faceSize
+            val outerBoxTop = faceCenterY - faceSize
+            val outerBoxBottom = faceCenterY + faceSize
+
+            Log.d("VerificationSeg", "Face zone: faceFound=$faceFound, faceSize=$faceSize, innerBox=[$innerBoxLeft,$innerBoxTop,$innerBoxRight,$innerBoxBottom], outerBox=[$outerBoxLeft,$outerBoxTop,$outerBoxRight,$outerBoxBottom]")
 
             if (outputType == "Category Mask") {
                 if (catMask != null && classArray != null) {
@@ -292,15 +323,26 @@ class VerificationSegmentationProcessor : AIProcessor {
                             }
                         }
 
-                        // Spatial Heuristic: body-skin (class 2) outside neck zone = finger/hand
-                        val isBodySkinOutsideNeckZone = (classIndex == 2) && faceFound &&
-                            !(x >= neckZoneLeft && x <= neckZoneRight && y >= neckZoneTop && y <= neckZoneBottom)
+                        // Determine zones
+                        val isInsideOuter = faceFound && x >= outerBoxLeft && x <= outerBoxRight && y >= outerBoxTop && y <= outerBoxBottom
+
+                        // Spatial Heuristic filtering
+                        var keepPixel = false
+                        if (faceFound) {
+                            if (isInsideOuter) {
+                                // Keep Face (3), Hair (1), Body skin (2), and Clothes (4) if they are inside the Outer Box
+                                if (classIndex == 1 || classIndex == 2 || classIndex == 3 || classIndex == 4) keepPixel = true
+                            }
+                        } else {
+                            // Fallback if face not found
+                            if (classIndex > 0 && classIndex < CLASS_COLORS.size) keepPixel = true
+                        }
 
                         pixels[i] = if (isHandBBox) {
                             handBBoxRemoved++
                             Color.TRANSPARENT
-                        } else if (isBodySkinOutsideNeckZone) {
-                            bodySkinRemoved++
+                        } else if (!keepPixel) {
+                            bodySkinRemoved++ // Reusing counter for any removed non-background pixels
                             Color.TRANSPARENT
                         } else if (classIndex > 0 && classIndex < CLASS_COLORS.size) {
                             CLASS_COLORS[classIndex]
@@ -403,11 +445,20 @@ class VerificationSegmentationProcessor : AIProcessor {
                                 }
                             }
 
-                            // Check Spatial Heuristic for body-skin
-                            val isBodySkinOutsideNeckZone = (catClass == 2) && faceFound &&
-                                !(x >= neckZoneLeft && x <= neckZoneRight && y >= neckZoneTop && y <= neckZoneBottom)
+                            // Determine zones
+                            val isInsideOuter = faceFound && x >= outerBoxLeft && x <= outerBoxRight && y >= outerBoxTop && y <= outerBoxBottom
 
-                            if (isHandBBox || isBodySkinOutsideNeckZone) {
+                            // Check Spatial Heuristic
+                            var keepPixel = false
+                            if (faceFound) {
+                                if (isInsideOuter) {
+                                    if (catClass == 1 || catClass == 2 || catClass == 3 || catClass == 4) keepPixel = true
+                                }
+                            } else {
+                                if (catClass > 0) keepPixel = true
+                            }
+
+                            if (isHandBBox || !keepPixel) {
                                 pixels[i] = Color.TRANSPARENT
                             } else if (confidence > 0.3f) {
                                 // Vary alpha based on confidence for smoother edges
@@ -464,11 +515,22 @@ class VerificationSegmentationProcessor : AIProcessor {
                     }
                 }
             }
+            // ── CLEANUP NATIVE MEMORY TO PREVENT OOM AND BATTERY DRAIN ──
+            try {
+                // DO NOT close mpImage, freshMpImage, or paddedMpImage because closing an MPImage built from a Bitmap
+                // will call bitmap.recycle() under the hood, crashing the Camera preview loop!
+                result.categoryMask().ifPresent { it.close() }
+                result.confidenceMasks().ifPresent { masks -> masks.forEach { it.close() } }
+            } catch (e: Exception) {
+                Log.e("VerificationSeg", "Error closing MPImage", e)
+            }
 
             AIResult(true, items, duration)
         } catch (e: Exception) {
             Log.e("VerificationSeg", "Process error", e)
             AIResult(false, emptyList(), 0, e.message)
+        } finally {
+            processLock.set(false)
         }
     }
 
