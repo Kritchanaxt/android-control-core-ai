@@ -330,8 +330,18 @@ class VerificationSegmentationProcessor : AIProcessor {
                         var keepPixel = false
                         if (faceFound) {
                             if (isInsideOuter) {
-                                // Keep Face (3), Hair (1), Body skin (2), and Clothes (4) if they are inside the Outer Box
-                                if (classIndex == 1 || classIndex == 2 || classIndex == 3 || classIndex == 4) keepPixel = true
+                                if (classIndex == 1 || classIndex == 3 || classIndex == 4) {
+                                    // Keep Face (3), Hair (1), and Clothes (4) anywhere within the Outer Box
+                                    keepPixel = true
+                                } else if (classIndex == 2) {
+                                    // Body Skin (2): Keep ONLY if it is directly under the face to eliminate thumbs/arms on the sides
+                                    // (Allow a 15% upward overlap to prevent a gap at the chin)
+                                    val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
+                                    val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
+                                    if (isBelowFace && isUnderFaceHorizontally) {
+                                        keepPixel = true
+                                    }
+                                }
                             }
                         } else {
                             // Fallback if face not found
@@ -452,7 +462,15 @@ class VerificationSegmentationProcessor : AIProcessor {
                             var keepPixel = false
                             if (faceFound) {
                                 if (isInsideOuter) {
-                                    if (catClass == 1 || catClass == 2 || catClass == 3 || catClass == 4) keepPixel = true
+                                    if (catClass == 1 || catClass == 3 || catClass == 4) {
+                                        keepPixel = true
+                                    } else if (catClass == 2) {
+                                        val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
+                                        val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
+                                        if (isBelowFace && isUnderFaceHorizontally) {
+                                            keepPixel = true
+                                        }
+                                    }
                                 }
                             } else {
                                 if (catClass > 0) keepPixel = true

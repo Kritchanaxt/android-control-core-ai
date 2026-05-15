@@ -1125,7 +1125,11 @@ fun CameraPreviewScreen(
                                     isFilterBitmap = true
                                     isAntiAlias = true
                                 }
-                                drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, maskPaint)
+                                try {
+                                    drawContext.canvas.nativeCanvas.drawBitmap(maskBitmap, null, destRect, maskPaint)
+                                } catch (e: Exception) {
+                                    // Ignore: Bitmap was recycled concurrently by the background loop
+                                }
                             }
                         }
                     }
