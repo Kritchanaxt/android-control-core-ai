@@ -490,10 +490,14 @@ fun CameraPreviewScreen(
                             AiMode.SUBJECT_SEGMENTATION -> latestItemsSubject.value
                             else -> null
                         }
-                        oldItems?.forEach { oldItem ->
-                            (oldItem.extra["mask_bitmap"] as? Bitmap)?.recycle()
-                            (oldItem.extra["subject_bitmap"] as? Bitmap)?.recycle()
-                            (oldItem.extra["combined_subject_bitmap"] as? Bitmap)?.recycle()
+                        val oldItemsToRecycle = oldItems
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+                            kotlinx.coroutines.delay(150) // Wait for UI to finish rendering the old frame
+                            oldItemsToRecycle?.forEach { oldItem ->
+                                (oldItem.extra["mask_bitmap"] as? Bitmap)?.let { if (!it.isRecycled) it.recycle() }
+                                (oldItem.extra["subject_bitmap"] as? Bitmap)?.let { if (!it.isRecycled) it.recycle() }
+                                (oldItem.extra["combined_subject_bitmap"] as? Bitmap)?.let { if (!it.isRecycled) it.recycle() }
+                            }
                         }
 
                         // Map items to preview states for drawing using .value
