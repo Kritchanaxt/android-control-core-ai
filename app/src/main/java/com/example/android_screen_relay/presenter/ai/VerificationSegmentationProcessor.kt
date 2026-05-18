@@ -118,128 +118,6 @@ class VerificationSegmentationProcessor : AIProcessor {
                 currentSegmenter.segment(mpImage)
             }
 
-            // ── AI 2: Hand Detection (Only on Snap) ──
-            val handBBoxes = mutableListOf<android.graphics.Rect>()
-
-            if (isSnap) {
-                Log.d("VerificationSeg", "Running Hand Detection (Snap mode)...")
-
-                // 🌟 KEY FIX: Create a FRESH bitmap for hand detection.
-                // After segmenter.segment(mpImage), the internal MpImage buffer may be consumed/invalidated.
-                // We MUST create a new MpImage from the original bitmap for HandLandmarker.
-
-                // Scale down to 480px for better hand detection (same approach as PalmprintProcessor)
-                val handDetectMaxDim = 480f
-                val currentMax = maxOf(bitmap.width, bitmap.height).toFloat()
-                val handScale = if (currentMax > handDetectMaxDim) handDetectMaxDim / currentMax else 1f
-                val handBitmap = if (handScale < 1f) {
-                    Bitmap.createScaledBitmap(bitmap, (bitmap.width * handScale).toInt(), (bitmap.height * handScale).toInt(), true)
-                } else {
-                    bitmap
-                }
-
-                freshMpImage = BitmapImageBuilder(handBitmap).build()
-
-                // Attempt 1: Detect on scaled image
-                var detectedResult: HandLandmarkerResult? = synchronized(lock) {
-                    handLandmarker?.detect(freshMpImage)
-                }
-                var finalScale = 1.0f
-
-                Log.d("VerificationSeg", "Hand detect attempt 1 (${handBitmap.width}x${handBitmap.height}): found=${detectedResult?.landmarks()?.size ?: 0} hands")
-
-                // Attempt 2-4: Fallback with padded scaling for close-up fingers
-                if (detectedResult == null || detectedResult.landmarks().isEmpty()) {
-                    val w = handBitmap.width.toFloat()
-                    val h = handBitmap.height.toFloat()
-                    val scalesToTry = listOf(2.0f, 2.5f, 3.0f)
-                    for (scale in scalesToTry) {
-                        val padW = (w * scale).toInt()
-                        val padH = (h * scale).toInt()
-                        // Safety: skip if padded bitmap would be too large (>2000px)
-                        if (padW > 2000 || padH > 2000) continue
-
-                        val paddedBitmap = Bitmap.createBitmap(padW, padH, Bitmap.Config.ARGB_8888)
-                        val canvas = android.graphics.Canvas(paddedBitmap)
-                        canvas.drawColor(android.graphics.Color.BLACK)
-                        val offsetX = (padW - w) / 2f
-                        val offsetY = (padH - h) / 2f
-                        canvas.drawBitmap(handBitmap, offsetX, offsetY, null)
-
-                        paddedMpImage = BitmapImageBuilder(paddedBitmap).build()
-                        val paddedHandResult = synchronized(lock) { handLandmarker?.detect(paddedMpImage) }
-                        paddedBitmap.recycle()
-
-                        Log.d("VerificationSeg", "Hand detect fallback scale=$scale: found=${paddedHandResult?.landmarks()?.size ?: 0} hands")
-
-                        if (paddedHandResult != null && paddedHandResult.landmarks().isNotEmpty()) {
-                            detectedResult = paddedHandResult
-                            finalScale = scale
-                            break
-                        }
-                    }
-                }
-
-                // Recycle the scaled hand detection bitmap if we created one
-                if (handBitmap !== bitmap && !handBitmap.isRecycled) {
-                    handBitmap.recycle()
-                }
-
-                // Convert hand landmarks to mask-space bounding boxes
-                val handLandmarkResult = detectedResult
-                if (handLandmarkResult != null && handLandmarkResult.landmarks().isNotEmpty()) {
-                    // Get actual mask dimensions (typically 256x256 from selfie_multiclass model)
-                    val maskWidth = result.categoryMask().orElse(null)?.width
-                        ?: result.confidenceMasks().orElse(null)?.firstOrNull()?.width
-                        ?: bitmap.width
-                    val maskHeight = result.categoryMask().orElse(null)?.height
-                        ?: result.confidenceMasks().orElse(null)?.firstOrNull()?.height
-                        ?: bitmap.height
-
-                    // Hand landmarks are normalized [0,1] relative to the detection input image.
-                    // If we used padding, the landmarks are relative to the padded image.
-                    // We need to map them back to mask space.
-                    for ((handIdx, landmarks) in handLandmarkResult.landmarks().withIndex()) {
-                        var hMinX = Float.MAX_VALUE
-                        var hMinY = Float.MAX_VALUE
-                        var hMaxX = Float.MIN_VALUE
-                        var hMaxY = Float.MIN_VALUE
-                        for (lm in landmarks) {
-                            // If finalScale > 1 (padded), map padded coords back to unpadded
-                            val px: Float
-                            val py: Float
-                            if (finalScale > 1f) {
-                                // Padded image has the original centered with black borders
-                                px = (lm.x() * finalScale - (finalScale - 1f) / 2f) * maskWidth
-                                py = (lm.y() * finalScale - (finalScale - 1f) / 2f) * maskHeight
-                            } else {
-                                // Direct mapping: normalized [0,1] → mask [0, maskWidth/Height]
-                                px = lm.x() * maskWidth
-                                py = lm.y() * maskHeight
-                            }
-                            if (px < hMinX) hMinX = px
-                            if (px > hMaxX) hMaxX = px
-                            if (py < hMinY) hMinY = py
-                            if (py > hMaxY) hMaxY = py
-                        }
-                        val bw = hMaxX - hMinX
-                        val bh = hMaxY - hMinY
-                        // 50% padding to aggressively cover finger edges
-                        val padX = bw * 0.5f
-                        val padY = bh * 0.5f
-
-                        val left = (hMinX - padX).toInt().coerceAtLeast(0)
-                        val top = (hMinY - padY).toInt().coerceAtLeast(0)
-                        val right = (hMaxX + padX).toInt().coerceAtMost(maskWidth - 1)
-                        val bottom = (hMaxY + padY).toInt().coerceAtMost(maskHeight - 1)
-                        handBBoxes.add(android.graphics.Rect(left, top, right, bottom))
-                        Log.d("VerificationSeg", "Hand #$handIdx bbox: [$left, $top, $right, $bottom] (mask ${maskWidth}x${maskHeight})")
-                    }
-                }
-
-                Log.d("VerificationSeg", "Total hand bboxes to subtract: ${handBBoxes.size}")
-            }
-
             val duration = System.currentTimeMillis() - start
             val items = mutableListOf<AIDetectedItem>()
 
@@ -297,6 +175,137 @@ class VerificationSegmentationProcessor : AIProcessor {
             val outerBoxBottom = faceCenterY + faceSize
 
             Log.d("VerificationSeg", "Face zone: faceFound=$faceFound, faceSize=$faceSize, innerBox=[$innerBoxLeft,$innerBoxTop,$innerBoxRight,$innerBoxBottom], outerBox=[$outerBoxLeft,$outerBoxTop,$outerBoxRight,$outerBoxBottom]")
+
+            // ── AI 2: Hand Detection (Real-time optimized for 2GB RAM devices) ──
+            val handBBoxes = mutableListOf<android.graphics.Rect>()
+
+            Log.d("VerificationSeg", "Running Hand Detection...")
+
+            // Scale down to 256px for live preview (lightning fast) and 480px for snap (high res)
+            val handDetectMaxDim = if (isSnap) 480f else 256f
+            val currentMax = maxOf(bitmap.width, bitmap.height).toFloat()
+            val handScale = if (currentMax > handDetectMaxDim) handDetectMaxDim / currentMax else 1f
+            val handBitmap = if (handScale < 1f) {
+                Bitmap.createScaledBitmap(bitmap, (bitmap.width * handScale).toInt(), (bitmap.height * handScale).toInt(), true)
+            } else {
+                bitmap
+            }
+
+            freshMpImage = BitmapImageBuilder(handBitmap).build()
+
+            // Attempt 1: Detect on scaled image
+            var detectedResult: HandLandmarkerResult? = synchronized(lock) {
+                try {
+                    handLandmarker?.detect(freshMpImage)
+                } catch (e: Exception) {
+                    Log.e("VerificationSeg", "Hand detection failed", e)
+                    null
+                }
+            }
+            var finalScale = 1.0f
+
+            Log.d("VerificationSeg", "Hand detect attempt 1 (${handBitmap.width}x${handBitmap.height}): found=${detectedResult?.landmarks()?.size ?: 0} hands")
+
+            // Attempt 2-4: Fallback with padded scaling (ONLY on Snap to prevent OOM on 2GB RAM devices)
+            if (isSnap && (detectedResult == null || detectedResult!!.landmarks().isEmpty())) {
+                val w = handBitmap.width.toFloat()
+                val h = handBitmap.height.toFloat()
+                val scalesToTry = listOf(2.0f, 2.5f, 3.0f)
+                for (scale in scalesToTry) {
+                    val padW = (w * scale).toInt()
+                    val padH = (h * scale).toInt()
+                    // Safety: skip if padded bitmap would be too large (>2000px)
+                    if (padW > 2000 || padH > 2000) continue
+
+                    val paddedBitmap = Bitmap.createBitmap(padW, padH, Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(paddedBitmap)
+                    canvas.drawColor(android.graphics.Color.BLACK)
+                    val offsetX = (padW - w) / 2f
+                    val offsetY = (padH - h) / 2f
+                    canvas.drawBitmap(handBitmap, offsetX, offsetY, null)
+
+                    paddedMpImage = BitmapImageBuilder(paddedBitmap).build()
+                    val paddedHandResult = synchronized(lock) { 
+                        try { handLandmarker?.detect(paddedMpImage) } catch (e: Exception) { null } 
+                    }
+                    paddedBitmap.recycle()
+
+                    Log.d("VerificationSeg", "Hand detect fallback scale=$scale: found=${paddedHandResult?.landmarks()?.size ?: 0} hands")
+
+                    if (paddedHandResult != null && paddedHandResult.landmarks().isNotEmpty()) {
+                        detectedResult = paddedHandResult
+                        finalScale = scale
+                        break
+                    }
+                }
+            }
+
+            // Recycle the scaled hand detection bitmap if we created one
+            if (handBitmap !== bitmap && !handBitmap.isRecycled) {
+                handBitmap.recycle()
+            }
+
+            // Convert hand landmarks to mask-space bounding boxes
+            val handLandmarkResult = detectedResult
+            if (handLandmarkResult != null && handLandmarkResult.landmarks().isNotEmpty()) {
+                val maskWidth = catMaskWidth
+                val maskHeight = catMaskHeight
+
+                for ((handIdx, landmarks) in handLandmarkResult.landmarks().withIndex()) {
+                    var hMinX = Float.MAX_VALUE
+                    var hMinY = Float.MAX_VALUE
+                    var hMaxX = Float.MIN_VALUE
+                    var hMaxY = Float.MIN_VALUE
+                    for (lm in landmarks) {
+                        val px: Float
+                        val py: Float
+                        if (finalScale > 1f) {
+                            px = (lm.x() * finalScale - (finalScale - 1f) / 2f) * maskWidth
+                            py = (lm.y() * finalScale - (finalScale - 1f) / 2f) * maskHeight
+                        } else {
+                            px = lm.x() * maskWidth
+                            py = lm.y() * maskHeight
+                        }
+                        if (px < hMinX) hMinX = px
+                        if (px > hMaxX) hMaxX = px
+                        if (py < hMinY) hMinY = py
+                        if (py > hMaxY) hMaxY = py
+                    }
+                    val bw = hMaxX - hMinX
+                    val bh = hMaxY - hMinY
+                    
+                    // 1. Tight BBox for Intersection Check (0% padding)
+                    val tightLeft = hMinX.toInt().coerceAtLeast(0)
+                    val tightTop = hMinY.toInt().coerceAtLeast(0)
+                    val tightRight = hMaxX.toInt().coerceAtMost(maskWidth - 1)
+                    val tightBottom = hMaxY.toInt().coerceAtMost(maskHeight - 1)
+
+                    // 🔥 CRITICAL REQUIREMENT: If Hand overlaps Face Zone, we MUST reject capture immediately!
+                    // Using tight bbox so hands *next* to the face don't falsely trigger rejection.
+                    if (faceFound) {
+                        val intersectX = maxOf(tightLeft, innerBoxLeft) < minOf(tightRight, innerBoxRight)
+                        val intersectY = maxOf(tightTop, innerBoxTop) < minOf(tightBottom, innerBoxBottom)
+                        if (intersectX && intersectY) {
+                            Log.w("VerificationSeg", "🚨 Hand detected OVERLAPPING face zone! Rejecting capture.")
+                            return AIResult(false, emptyList(), (System.currentTimeMillis() - start), "Hand covering face")
+                        }
+                    }
+
+                    // 2. Padded BBox for Hole-Punching (20% padding to cover finger edges cleanly)
+                    val padX = bw * 0.2f
+                    val padY = bh * 0.2f
+                    val left = (hMinX - padX).toInt().coerceAtLeast(0)
+                    val top = (hMinY - padY).toInt().coerceAtLeast(0)
+                    val right = (hMaxX + padX).toInt().coerceAtMost(maskWidth - 1)
+                    val bottom = (hMaxY + padY).toInt().coerceAtMost(maskHeight - 1)
+                    
+                    val bbox = android.graphics.Rect(left, top, right, bottom)
+                    handBBoxes.add(bbox)
+                    Log.d("VerificationSeg", "Hand #$handIdx bbox: [$left, $top, $right, $bottom] (mask ${maskWidth}x${maskHeight})")
+                }
+            }
+
+            Log.d("VerificationSeg", "Total hand bboxes to subtract: ${handBBoxes.size}")
 
             if (outputType == "Category Mask") {
                 if (catMask != null && classArray != null) {
@@ -360,7 +369,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                             if (classIndex > 0 && classIndex < CLASS_COLORS.size) keepPixel = true
                         }
 
-                        pixels[i] = if (isHandBBox && isIdCardMode) {
+                        pixels[i] = if (isHandBBox) {
                             handBBoxRemoved++
                             Color.TRANSPARENT
                         } else if (!keepPixel) {
@@ -501,7 +510,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                                 if (catClass > 0) keepPixel = true
                             }
 
-                            if ((isHandBBox && isIdCardMode) || !keepPixel) {
+                            if (isHandBBox || !keepPixel) {
                                 pixels[i] = Color.TRANSPARENT
                             } else if (confidence > 0.3f) {
                                 // Vary alpha based on confidence for smoother edges
