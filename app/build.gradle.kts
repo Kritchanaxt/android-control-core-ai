@@ -106,3 +106,9 @@ dependencies {
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 }
+
+// Workaround for Android Studio "Cannot locate tasks that match ':app:testClasses'" error
+// when trying to run unit tests using the standard JUnit run configuration.
+tasks.register("testClasses") {
+    dependsOn("testDebugUnitTest")
+}

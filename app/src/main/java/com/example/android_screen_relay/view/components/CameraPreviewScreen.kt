@@ -170,7 +170,9 @@ fun CameraPreviewScreen(
     verticalFlip: Boolean = false,
     onVerticalFlipChange: (Boolean) -> Unit = {},
     selfieOutputType: String, selfieSelectClass: String, onSelfieOutputTypeChange: (String) -> Unit, onSelfieSelectClassChange: (String) -> Unit, selectedOcrModel: String,
-    onSelectedOcrModelChange: (String) -> Unit
+    onSelectedOcrModelChange: (String) -> Unit,
+    isIdCardMode: Boolean,
+    onIsIdCardModeChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -1389,6 +1391,28 @@ fun CameraPreviewScreen(
                                         }
                                     )
                                 }
+                            }
+                        }
+                    }
+
+                    if (aiMode == AiMode.VERIFICATION_SEGMENTATION) {
+                        Surface(
+                            onClick = { onIsIdCardModeChange(!isIdCardMode) },
+                            color = if (isIdCardMode) Color(0xFFFF9500) else Color(0xFF34C759),
+                            shape = RoundedCornerShape(100.dp),
+                            modifier = Modifier.height(26.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxHeight().padding(horizontal = 14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    if (isIdCardMode) "ID CARD MODE" else "LIVE FACE MODE",
+                                    color = Color.White,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Black,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
                             }
                         }
                     }

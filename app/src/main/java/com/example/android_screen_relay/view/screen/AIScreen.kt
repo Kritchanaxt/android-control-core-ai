@@ -216,6 +216,9 @@ class AiScreenStateWrapper(private val composeState: androidx.compose.runtime.St
     var selfieSelectClass: String
         get() = composeState.value.selfieSelectClass
         set(value) { AiStateManager.updateState { it.copy(selfieSelectClass = value) } }
+    var isIdCardMode: Boolean
+        get() = composeState.value.isIdCardMode
+        set(value) { AiStateManager.updateState { it.copy(isIdCardMode = value) } }
     var selectedOcrModel: String
         get() = composeState.value.selectedOcrModel
         set(value) { AiStateManager.updateState { it.copy(selectedOcrModel = value) } }
@@ -494,6 +497,8 @@ fun AIScreenLayout() {
                 onVerticalFlipChange = { verticalFlip = it },
                 selfieOutputType = selfieOutputType, selfieSelectClass = selfieSelectClass, onSelfieOutputTypeChange = { selfieOutputType = it }, onSelfieSelectClassChange = { selfieSelectClass = it }, selectedOcrModel = selectedOcrModel,
                 onSelectedOcrModelChange = { selectedOcrModel = it },
+                isIdCardMode = isIdCardMode,
+                onIsIdCardModeChange = { isIdCardMode = it },
                 onStableDetection = { bitmap, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf(
@@ -749,7 +754,8 @@ fun AIScreenLayout() {
                             // Pass output type and selected class to the processor
                             val multiClassOptions = options + mapOf(
                                 "output_type" to selfieOutputType,
-                                "select_class" to selfieSelectClass
+                                "select_class" to selfieSelectClass,
+                                "is_id_card_mode" to isIdCardMode
                             )
 
                             val result = AIManager.process(aiBitmap, multiClassOptions)
@@ -1236,7 +1242,8 @@ fun AIScreenLayout() {
                                     "is_front" to isFront,
                                     "output_type" to selfieOutputType,
                                     "select_class" to selfieSelectClass,
-                                    "is_snap" to true
+                                    "is_snap" to true,
+                                    "is_id_card_mode" to isIdCardMode
                                 )
                                 val result = AIManager.runWithProcessor { proc ->
                                     proc?.process(bitmap, multiClassOptions)

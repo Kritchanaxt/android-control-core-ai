@@ -43,6 +43,7 @@ data class AiState(
     val isThrottled: Boolean = false,
     val selfieOutputType: String = "Category Mask",
     val selfieSelectClass: String = "0 - background",
+    val isIdCardMode: Boolean = true,
     val fps: Int = 0,
     val detectorLatency: Long = 0L,
     val frameLatency: Long = 0L,

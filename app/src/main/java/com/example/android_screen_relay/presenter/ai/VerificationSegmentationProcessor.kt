@@ -104,8 +104,9 @@ class VerificationSegmentationProcessor : AIProcessor {
             val outputType = options["output_type"] as? String ?: "Category Mask"
             val selectClassStr = options["select_class"] as? String ?: "0 - background"
             val selectedClassIndex = selectClassStr.substringBefore(" ").toIntOrNull() ?: 0
+            val isIdCardMode = options["is_id_card_mode"] as? Boolean ?: true
 
-            Log.d("VerificationSeg", "process() isSnap=$isSnap bitmap=${bitmap.width}x${bitmap.height}")
+            Log.d("VerificationSeg", "process() isSnap=$isSnap isIdCardMode=$isIdCardMode bitmap=${bitmap.width}x${bitmap.height}")
 
             val mpImage = BitmapImageBuilder(bitmap).build()
             var freshMpImage: com.google.mediapipe.framework.image.MPImage? = null
@@ -329,16 +330,27 @@ class VerificationSegmentationProcessor : AIProcessor {
                         // Spatial Heuristic filtering
                         var keepPixel = false
                         if (faceFound) {
-                            if (isInsideOuter) {
+                            if (isIdCardMode) {
+                                // Strict ID Card Mode: Must be inside Outer Box
+                                if (isInsideOuter) {
+                                    if (classIndex == 1 || classIndex == 3 || classIndex == 4) {
+                                        keepPixel = true
+                                    } else if (classIndex == 2) {
+                                        val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
+                                        val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
+                                        if (isBelowFace && isUnderFaceHorizontally) {
+                                            keepPixel = true
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Live Face Mode: No Outer Box constraint, allow full body/shoulders
                                 if (classIndex == 1 || classIndex == 3 || classIndex == 4) {
-                                    // Keep Face (3), Hair (1), and Clothes (4) anywhere within the Outer Box
                                     keepPixel = true
                                 } else if (classIndex == 2) {
-                                    // Body Skin (2): Keep ONLY if it is directly under the face to eliminate thumbs/arms on the sides
-                                    // (Allow a 15% upward overlap to prevent a gap at the chin)
+                                    // Body skin only allowed below face to prevent covering face
                                     val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
-                                    val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
-                                    if (isBelowFace && isUnderFaceHorizontally) {
+                                    if (isBelowFace) {
                                         keepPixel = true
                                     }
                                 }
@@ -348,7 +360,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                             if (classIndex > 0 && classIndex < CLASS_COLORS.size) keepPixel = true
                         }
 
-                        pixels[i] = if (isHandBBox) {
+                        pixels[i] = if (isHandBBox && isIdCardMode) {
                             handBBoxRemoved++
                             Color.TRANSPARENT
                         } else if (!keepPixel) {
@@ -461,13 +473,26 @@ class VerificationSegmentationProcessor : AIProcessor {
                             // Check Spatial Heuristic
                             var keepPixel = false
                             if (faceFound) {
-                                if (isInsideOuter) {
+                                if (isIdCardMode) {
+                                    // Strict ID Card Mode
+                                    if (isInsideOuter) {
+                                        if (catClass == 1 || catClass == 3 || catClass == 4) {
+                                            keepPixel = true
+                                        } else if (catClass == 2) {
+                                            val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
+                                            val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
+                                            if (isBelowFace && isUnderFaceHorizontally) {
+                                                keepPixel = true
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Live Face Mode
                                     if (catClass == 1 || catClass == 3 || catClass == 4) {
                                         keepPixel = true
                                     } else if (catClass == 2) {
                                         val isBelowFace = y >= (innerBoxBottom - faceSize * 0.15f)
-                                        val isUnderFaceHorizontally = x >= innerBoxLeft && x <= innerBoxRight
-                                        if (isBelowFace && isUnderFaceHorizontally) {
+                                        if (isBelowFace) {
                                             keepPixel = true
                                         }
                                     }
@@ -476,7 +501,7 @@ class VerificationSegmentationProcessor : AIProcessor {
                                 if (catClass > 0) keepPixel = true
                             }
 
-                            if (isHandBBox || !keepPixel) {
+                            if ((isHandBBox && isIdCardMode) || !keepPixel) {
                                 pixels[i] = Color.TRANSPARENT
                             } else if (confidence > 0.3f) {
                                 // Vary alpha based on confidence for smoother edges
