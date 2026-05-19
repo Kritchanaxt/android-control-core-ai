@@ -109,7 +109,7 @@ object ResourceWatchdog {
                 
                 // 2. Re-init
                 Log.i(TAG, "Re-initializing ${currentMode.name}")
-                com.example.android_screen_relay.core.AIManager.switchProcessor(context, currentMode.name)
+                com.example.android_screen_relay.core.AIManager.switchProcessor(context, currentMode)
                 
                 notifyHeartbeat()
                 

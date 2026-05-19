@@ -170,7 +170,7 @@ fun AiModeBottomSheet(
                             switchingJob.value = scope.launch(Dispatchers.Default) {
                                 isSwitching.value = true
                                 try {
-                                    AIManager.switchProcessor(context, mode.name)
+                                    AIManager.switchProcessor(context, mode)
                                 } catch (e: Exception) {
                                     Log.e("AIScreen", "Switch AI Error", e)
                                 } finally {

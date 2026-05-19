@@ -122,61 +122,79 @@ object AIManager {
     }
 
     /**
-     * Helper to switch processor by name (string)
+     * 🌟 Type-safe processor switch using AiMode enum.
+     * This is the preferred method — eliminates fragile string matching.
      */
-    fun switchProcessor(context: android.content.Context, modeName: String, extraOptions: Map<String, Any> = emptyMap()): Boolean {
-        // 🌟 Fix: Avoid redundant switching if the current processor matches the requested mode
+    fun switchProcessor(context: android.content.Context, mode: AiMode, extraOptions: Map<String, Any> = emptyMap()): Boolean {
+        // Avoid redundant switching if the current processor already matches
         val current = getActiveProcessor()
-        val alreadyActive = when {
-            modeName.contains("TESSERACT_FAST", ignoreCase = true) && current is TesseractOCRProcessor -> true
-            modeName.contains("OCR", ignoreCase = true) && current is OCRProcessor -> true
-            modeName.contains("HAND", ignoreCase = true) && current is PalmprintProcessor -> true
-            modeName.contains("FACE", ignoreCase = true) && current is FaceDetectorProcessor -> true
-            modeName.contains("POSE", ignoreCase = true) && current is PoseDetectorProcessor -> true
-            modeName.contains("MULTI_CLASS_SELFIE", ignoreCase = true) && current is MultiClassSelfieSegmenterProcessor -> true
-            modeName.contains("VERIFICATION_SEGMENTATION", ignoreCase = true) && current is VerificationSegmentationProcessor -> true
-            modeName.contains("SELFIE", ignoreCase = true) && current is SelfieSegmenterProcessor -> true
-            modeName.contains("SUBJECT", ignoreCase = true) && current is SubjectSegmenterProcessor -> true
-            modeName.contains("CUSTOM_OBJECT", ignoreCase = true) && current is CustomObjectDetectorProcessor -> true
-            modeName.contains("OBJECT", ignoreCase = true) && current is ObjectDetectorProcessor -> true
-            modeName.contains("TEXT", ignoreCase = true) && current is TextRecognitionProcessor -> true
-            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) && current is IdentityVerificationProcessor -> true
-            modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) && current is VerifiedAutoCaptureProcessor -> true
-            else -> false
+        val alreadyActive = when (mode) {
+            AiMode.TESSERACT_FAST_OCR -> current is TesseractOCRProcessor
+            AiMode.PADDLE_OCR -> current is OCRProcessor
+            AiMode.HAND_DETECTION -> current is PalmprintProcessor
+            AiMode.FACE_DETECTION -> current is FaceDetectorProcessor
+            AiMode.POSE_DETECTION -> current is PoseDetectorProcessor
+            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> current is MultiClassSelfieSegmenterProcessor
+            AiMode.VERIFICATION_SEGMENTATION -> current is VerificationSegmentationProcessor
+            AiMode.SELFIE_SEGMENTATION -> current is SelfieSegmenterProcessor
+            AiMode.SUBJECT_SEGMENTATION -> current is SubjectSegmenterProcessor
+            AiMode.CUSTOM_OBJECT_DETECTION -> current is CustomObjectDetectorProcessor
+            AiMode.OBJECT_DETECTION -> current is ObjectDetectorProcessor
+            AiMode.TEXT_RECOGNITION -> current is TextRecognitionProcessor
+            AiMode.IDENTITY_VERIFICATION -> current is IdentityVerificationProcessor
+            AiMode.VERIFIED_AUTO_CAPTURE -> current is VerifiedAutoCaptureProcessor
+            AiMode.PREVIEW -> return true // No processor needed for preview
         }
-        
-        // 🌟 KEY: For some modes, we might need to RE-INIT if options changed.
-        var forceReinit = false
 
-        if (alreadyActive && !forceReinit && extraOptions.isEmpty()) {
-            Log.d("AIManager", "Processor for $modeName is already active. Skipping switch.")
+        if (alreadyActive && extraOptions.isEmpty()) {
+            Log.d("AIManager", "Processor for ${mode.name} is already active. Skipping switch.")
             return true
         }
 
         val isLowSpec = SystemMonitor.isLowSpecDevice(context)
         val config = AIConfig(
-            useGpu = true, // Force GPU as requested
-            threads = if (isLowSpec) 4 else 6, // Increase threads even on low spec if GPU fails
+            useGpu = true,
+            threads = if (isLowSpec) 4 else 6,
             options = mapOf("low_spec_mode" to isLowSpec, "force_gpu" to true) + extraOptions
         )
-        val processor: AIProcessor = when {
-            modeName.contains("TESSERACT_FAST", ignoreCase = true) -> TesseractOCRProcessor()
-            modeName.contains("OCR", ignoreCase = true) -> OCRProcessor()
-            modeName.contains("HAND", ignoreCase = true) -> PalmprintProcessor()
-            modeName.contains("FACE", ignoreCase = true) -> FaceDetectorProcessor()
-            modeName.contains("POSE", ignoreCase = true) -> PoseDetectorProcessor()
-            modeName.contains("MULTI_CLASS_SELFIE", ignoreCase = true) -> MultiClassSelfieSegmenterProcessor()
-            modeName.contains("VERIFICATION_SEGMENTATION", ignoreCase = true) -> VerificationSegmentationProcessor()
-            modeName.contains("SELFIE", ignoreCase = true) -> SelfieSegmenterProcessor()
-            modeName.contains("SUBJECT", ignoreCase = true) -> SubjectSegmenterProcessor()
-            modeName.contains("CUSTOM_OBJECT", ignoreCase = true) -> CustomObjectDetectorProcessor()
-            modeName.contains("OBJECT", ignoreCase = true) -> ObjectDetectorProcessor()
-            modeName.contains("TEXT", ignoreCase = true) -> TextRecognitionProcessor()
-            modeName.contains("IDENTITY_VERIFICATION", ignoreCase = true) -> IdentityVerificationProcessor()
-            modeName.contains("VERIFIED_AUTO_CAPTURE", ignoreCase = true) -> VerifiedAutoCaptureProcessor()
-            else -> return false
+
+        val processor: AIProcessor = when (mode) {
+            AiMode.TESSERACT_FAST_OCR -> TesseractOCRProcessor()
+            AiMode.PADDLE_OCR -> OCRProcessor()
+            AiMode.HAND_DETECTION -> PalmprintProcessor()
+            AiMode.FACE_DETECTION -> FaceDetectorProcessor()
+            AiMode.POSE_DETECTION -> PoseDetectorProcessor()
+            AiMode.MULTI_CLASS_SELFIE_SEGMENTATION -> MultiClassSelfieSegmenterProcessor()
+            AiMode.VERIFICATION_SEGMENTATION -> VerificationSegmentationProcessor()
+            AiMode.SELFIE_SEGMENTATION -> SelfieSegmenterProcessor()
+            AiMode.SUBJECT_SEGMENTATION -> SubjectSegmenterProcessor()
+            AiMode.CUSTOM_OBJECT_DETECTION -> CustomObjectDetectorProcessor()
+            AiMode.OBJECT_DETECTION -> ObjectDetectorProcessor()
+            AiMode.TEXT_RECOGNITION -> TextRecognitionProcessor()
+            AiMode.IDENTITY_VERIFICATION -> IdentityVerificationProcessor()
+            AiMode.VERIFIED_AUTO_CAPTURE -> VerifiedAutoCaptureProcessor()
+            AiMode.PREVIEW -> return true
         }
         return switchProcessor(processor, context, config)
+    }
+
+    /**
+     * Legacy bridge: switch processor by name string.
+     * Delegates to the type-safe AiMode version.
+     * @deprecated Use switchProcessor(context, AiMode, extraOptions) instead.
+     */
+    fun switchProcessor(context: android.content.Context, modeName: String, extraOptions: Map<String, Any> = emptyMap()): Boolean {
+        val mode = try {
+            AiMode.valueOf(modeName)
+        } catch (e: IllegalArgumentException) {
+            // Fallback: try matching by substring for backward compatibility
+            AiMode.entries.firstOrNull { modeName.contains(it.name, ignoreCase = true) }
+                ?: run {
+                    Log.e("AIManager", "Unknown mode name: $modeName")
+                    return false
+                }
+        }
+        return switchProcessor(context, mode, extraOptions)
     }
     
     fun getActiveProcessor(): AIProcessor? = lock.read { activeProcessor }

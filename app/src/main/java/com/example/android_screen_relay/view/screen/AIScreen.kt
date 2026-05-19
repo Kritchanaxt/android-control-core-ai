@@ -249,9 +249,7 @@ fun AIScreenLayout() {
         } else {
             isProcessing = true
             withContext(Dispatchers.Default) {
-                val modeToSwitch = currentAiMode.name
-
-                AIManager.switchProcessor(context, modeToSwitch, mapOf("ocr_engine" to selectedOcrModel))
+                AIManager.switchProcessor(context, currentAiMode, mapOf("ocr_engine" to selectedOcrModel))
             }
             isProcessing = false
         }
@@ -383,7 +381,7 @@ fun AIScreenLayout() {
                         try {
                             // 🌟 Fix: Use AIManager to switch/ensure OCR is loaded
                             // This prevents native JNI state collision and respects the global lock
-                            val switchSuccess = AIManager.switchProcessor(context, "OCR")
+                            val switchSuccess = AIManager.switchProcessor(context, AiMode.PADDLE_OCR)
                             if (!switchSuccess) {
                                 withContext(Dispatchers.Main) {
                                     Toast.makeText(context, "Failed to load OCR model", Toast.LENGTH_LONG).show()
