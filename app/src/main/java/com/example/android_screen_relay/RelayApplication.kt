@@ -34,10 +34,13 @@ class RelayApplication : Application(), Configuration.Provider {
         // 1. Initialize App State Manager (Requirement: App State Awareness)
         AppStateManager.init(this)
 
-        // 2. Setup Watchdog for Self-healing (Requirement: Auto Restart)
+        // 2. Register all modular features into FeatureRegistry
+        com.example.android_screen_relay.core.feature.FeatureInitializer.registerAll()
+
+        // 3. Setup Watchdog for Self-healing (Requirement: Auto Restart)
         setupWatchdog()
         
-        // 3. Global Exception Logger to Google Sheets & Firebase
+        // 4. Global Exception Logger to Google Sheets & Firebase
         setupExceptionHandler()
     }
 
