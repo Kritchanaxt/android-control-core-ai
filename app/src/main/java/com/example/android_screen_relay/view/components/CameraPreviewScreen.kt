@@ -172,7 +172,9 @@ fun CameraPreviewScreen(
     selfieOutputType: String, selfieSelectClass: String, onSelfieOutputTypeChange: (String) -> Unit, onSelfieSelectClassChange: (String) -> Unit, selectedOcrModel: String,
     onSelectedOcrModelChange: (String) -> Unit,
     isIdCardMode: Boolean,
-    onIsIdCardModeChange: (Boolean) -> Unit
+    onIsIdCardModeChange: (Boolean) -> Unit,
+    autoFramingEnabled: Boolean = false,
+    onAutoFramingEnabledChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -295,6 +297,11 @@ fun CameraPreviewScreen(
 
     LaunchedEffect(zoomScale) {
         cameraController?.setZoom(zoomScale)
+    }
+
+    // 🌟 Auto-framing (Center Stage) sync
+    LaunchedEffect(autoFramingEnabled) {
+        cameraController?.setAutoFraming(autoFramingEnabled)
     }
 
     LaunchedEffect(isPreviewPaused, isProcessingBusy) {
@@ -1213,6 +1220,32 @@ fun CameraPreviewScreen(
                     Icon(
                         imageVector = Icons.Default.SwapVert,
                         contentDescription = "Flip Vertical",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // 🌟 Auto-framing (Center Stage) Toggle Button
+                IconButton(
+                    onClick = {
+                        val newState = !autoFramingEnabled
+                        onAutoFramingEnabledChange(newState)
+                        // Show user feedback via Toast
+                        val msg = if (newState) "Auto-framing ON" else "Auto-framing OFF"
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            if (autoFramingEnabled) Color(0xFF7C4DFF).copy(alpha = 0.7f) else Color.White.copy(alpha = 0.2f),
+                            CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CenterFocusStrong,
+                        contentDescription = "Auto-framing (Center Stage)",
                         tint = Color.White,
                         modifier = Modifier.size(20.dp)
                     )

@@ -222,6 +222,9 @@ class AiScreenStateWrapper(private val composeState: androidx.compose.runtime.St
     var selectedOcrModel: String
         get() = composeState.value.selectedOcrModel
         set(value) { AiStateManager.updateState { it.copy(selectedOcrModel = value) } }
+    var autoFramingEnabled: Boolean
+        get() = composeState.value.autoFramingEnabled
+        set(value) { AiStateManager.updateState { it.copy(autoFramingEnabled = value) } }
     val watchdogMessage: String?
         get() = composeState.value.watchdogMessage
     val watchdogStatus: WatchdogStatus
@@ -499,6 +502,8 @@ fun AIScreenLayout() {
                 onSelectedOcrModelChange = { selectedOcrModel = it },
                 isIdCardMode = isIdCardMode,
                 onIsIdCardModeChange = { isIdCardMode = it },
+                autoFramingEnabled = autoFramingEnabled,
+                onAutoFramingEnabledChange = { autoFramingEnabled = it },
                 onStableDetection = { bitmap, isFront ->
                     if (isProcessing || currentAiMode == AiMode.PREVIEW) return@CameraPreviewScreen Pair(false, emptyList())
                     val options = mapOf(

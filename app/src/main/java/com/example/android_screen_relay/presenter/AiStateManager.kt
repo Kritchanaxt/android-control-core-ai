@@ -53,6 +53,7 @@ data class AiState(
     val cpuUsage: String = "0.0%",
     val isCapturing: Boolean = false,
     val isFrontCamera: Boolean = false,
+    val autoFramingEnabled: Boolean = false,
     val watchdogMessage: String? = null,
     val watchdogStatus: WatchdogStatus = WatchdogStatus.NORMAL
 )

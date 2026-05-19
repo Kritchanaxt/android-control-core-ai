@@ -65,6 +65,59 @@ class Camera2Controller(
     private var maxSensorProcessingSize: Size = Size(1920, 1080)
     var isFrontCamera: Boolean = false
     private var isFlashEnabled: Boolean = false
+    private var isAutoFramingEnabled: Boolean = false
+
+    /**
+     * 🌟 Auto-framing (Center Stage) support via CONTROL_AUTOFRAMING (Android 14+ / API 34)
+     * This checks hardware support and sets the CaptureRequest parameter to ON or OFF.
+     */
+    @android.annotation.SuppressLint("NewApi")
+    fun setAutoFraming(enable: Boolean) {
+        if (isAutoFramingEnabled == enable) return
+        isAutoFramingEnabled = enable
+
+        try {
+            val session = captureSession ?: return
+            val charas = characteristics ?: return
+            val builder = previewRequestBuilder ?: return
+
+            // Check if the device supports auto-framing (Android 14+ / API 34)
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                val autoFramingAvailable = try {
+                    charas.get(CameraCharacteristics.CONTROL_AUTOFRAMING_AVAILABLE)
+                } catch (e: Exception) { null }
+
+                if (autoFramingAvailable == true) {
+                    builder.set(
+                        CaptureRequest.CONTROL_AUTOFRAMING,
+                        if (enable) CaptureRequest.CONTROL_AUTOFRAMING_ON
+                        else CaptureRequest.CONTROL_AUTOFRAMING_OFF
+                    )
+                    session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                    Log.d(TAG, "Auto-framing set to: $enable")
+                } else {
+                    Log.w(TAG, "Auto-framing not supported on this device")
+                }
+            } else {
+                Log.w(TAG, "Auto-framing requires Android 14 (API 34)+, current: ${android.os.Build.VERSION.SDK_INT}")
+            }
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "CameraDevice closed while setting auto-framing", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set auto-framing", e)
+        }
+    }
+
+    /**
+     * Check if the current camera hardware supports Auto-framing (CONTROL_AUTOFRAMING)
+     */
+    @android.annotation.SuppressLint("NewApi")
+    fun isAutoFramingSupported(): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 34) return false
+        return try {
+            characteristics?.get(CameraCharacteristics.CONTROL_AUTOFRAMING_AVAILABLE) == true
+        } catch (e: Exception) { false }
+    }
 
     fun setZoom(scale: Float) {
         if (zoomScale == scale) return
@@ -552,6 +605,18 @@ class Camera2Controller(
                             } else {
                                 builder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
                                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                            }
+
+                            // 🌟 Apply Auto-framing (Center Stage) if enabled and supported
+                            if (isAutoFramingEnabled && android.os.Build.VERSION.SDK_INT >= 34) {
+                                try {
+                                    val autoFramingAvailable = characteristics?.get(CameraCharacteristics.CONTROL_AUTOFRAMING_AVAILABLE)
+                                    if (autoFramingAvailable == true) {
+                                        builder.set(CaptureRequest.CONTROL_AUTOFRAMING, CaptureRequest.CONTROL_AUTOFRAMING_ON)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Auto-framing not available during session setup", e)
+                                }
                             }
 
                             session.setRepeatingRequest(builder.build(), null, backgroundHandler)
